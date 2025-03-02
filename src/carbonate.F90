@@ -45,7 +45,7 @@ contains
 !BOC
       call self%get_parameter(self%iswCO2X,'iswCO2','','carbonate system diagnostics (0: off, 1: on)',default=1,minimum=0,maximum=1)
       call self%get_parameter(self%iswASFLUX,'iswASFLUX','','air-sea CO2 exchange (0: none, 1: Nightingale et al. 2000, 2: Wanninkhof 1992 without chemical enhancement, 3: Wanninkhof 1992 with chemical enhancement, 4: Wanninkhof and McGillis 1999, 5: Wanninkhof 1992 switching to Wanninkhof and McGillis 1999, 6: Wanninkhof 2014)',default=6,minimum=0, maximum=6)
-      call self%get_parameter(self%iswtalk,'iswtalk','','alkalinity formulation (1-4: from salinity and temperature, 5: dynamic alkalinity)',default=5, minimum=1, maximum=5)
+      call self%get_parameter(self%iswtalk,'iswtalk','','alkalinity formulation (1-4: from salinity and temperature, 5: dynamic alkalinity)',default=5, minimum=1, maximum=6)
       call self%get_parameter(self%phscale,'pHscale','','pH scale (1: total, 0: SWS, -1: SWS backward compatible)',default=1,minimum=-1,maximum=1)
 
       call self%register_state_variable(self%id_O3c,'c','mmol C/m^3','total dissolved inorganic carbon', 2200._rk,minimum=0._rk)
@@ -146,6 +146,8 @@ contains
          else
             TA = 2305._rk+58.66_rk*(S-35._rk)+2.32_rk*(S-35._rk)**2-1.41_rk*(T-20._rk)+0.04_rk*(T-20._rk)**2   ! Lee et al., Geophys Res Lett, 1998
          ENDIF
+      elseif (iswtalk==6) then
+         TA = 846.48_rk + 43.626 * S  ! Endo et al., Frontiers in Marine Science, 2023  
       end if
    end function
 
