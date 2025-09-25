@@ -99,6 +99,65 @@ If exposing optional parameters/diagnostics in `carbonate.F90`:
 - Refine dissolution kinetics, grain-size effects, and passivation.
 - Optionally add dynamic Ca as a state variable in a follow-up change.
 
+## Implementation Record
+
+### Completed Implementation (2025-09-25)
+
+The CaO dissolution feature has been successfully implemented following Approach A (dedicated benthic module):
+
+#### Files Created/Modified:
+1. **`src/benthic_cao.F90`** - New benthic module for CaO dissolution
+   - Implements 3 dissolution modes (off, constant, pH-dependent, stock depletion)
+   - Registers dependency on TA via `standard_variables%alkalinity_expressed_as_mole_equivalent`
+   - Bottom flux increases alkalinity by +2 eq per mol CaO
+
+2. **`src/ersem_model_library.F90`** - Added module registration
+   - Added `use ersem_benthic_cao` statement
+   - Added case for `'benthic_cao'` in create subroutine
+
+3. **`src/CMakeLists.txt`** - Added to build system
+   - Added `benthic_cao.F90` to source file list
+
+4. **Example configuration created:**
+   - `~/work/NipponSteel/Cheng_model/model/711-14a/fabm111a_cao.yaml`
+   - Demonstrates usage with `iswCaO: 1` and `CaO_flux_rate: 5.0`
+
+#### Build and Installation:
+```bash
+# Build process
+cd ~/Github/fabm/src/drivers/0d
+./install_ersem_fabm0d.sh
+
+# Executable installed to:
+~/local/fabm-ifx/0d/bin/fabm0d
+
+# Also copied to working directory as:
+~/work/NipponSteel/Cheng_model/model/711-14a/fabm0d_cao
+```
+
+#### Testing:
+- Build completed successfully with Intel Fortran compiler (ifx)
+- Backward compatibility verified (iswCaO=0 by default)
+- Ready for sensitivity analysis experiments
+
+#### Usage Example:
+```bash
+cd ~/work/NipponSteel/Cheng_model/model/711-14a/
+
+# Run without CaO (original behavior)
+./fabm0d -y fabm111a.yaml
+
+# Run with CaO dissolution
+./fabm0d_cao -y fabm111a_cao.yaml
+```
+
+#### Key Implementation Details:
+- Full backward compatibility maintained through default parameter values
+- pH-dependent dissolution follows: `flux = base_rate * max(0, pH_factor * (8.3 - pH))`
+- Temperature dependence via Q10: `flux *= Q10^((T-10)/10)`
+- Diagnostic variable `CaO_dissolution` tracks flux (mmol/m²/d)
+- Stock depletion mode enables finite slag amount simulation
+
 ## References
 - Renforth & Henderson (2017) Reviews of Geophysics 55, 636–674.
 - Moras et al. (2022) Biogeosciences 19, 3757–3777.

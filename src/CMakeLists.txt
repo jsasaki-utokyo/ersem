@@ -33,6 +33,7 @@ add_library(fabm_models_ersem OBJECT
             benthic_fauna.F90
             benthic_carbonate.F90
             benthic_calcite.F90
+            benthic_cao.F90
             benthic_erosion.F90
             fluff.F90
             zenith_angle.F90

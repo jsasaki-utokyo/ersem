@@ -28,6 +28,7 @@ module ersem_model_library
    use ersem_benthic_carbonate
    use ersem_benthic_calcite
    use ersem_benthic_erosion
+   use ersem_benthic_cao
    use ersem_fluff
    use ersem_zenith_angle
 
@@ -81,6 +82,7 @@ contains
          case ('benthic_carbonate');                       allocate(type_ersem_benthic_carbonate::model)
          case ('benthic_calcite');                         allocate(type_ersem_benthic_calcite::model)
          case ('benthic_erosion');                         allocate(type_ersem_benthic_erosion::model)
+         case ('benthic_cao');                             allocate(type_ersem_benthic_cao::model)
          case ('fluff');                                   allocate(type_ersem_fluff::model)
          case ('zenith_angle');                            allocate(type_ersem_zenith_angle::model)
          ! Add new models here
