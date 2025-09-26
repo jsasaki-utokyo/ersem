@@ -21,6 +21,7 @@ module ersem_benthic_cao
       real(rk) :: k_CaO_diss       ! Dissolution rate constant for stock depletion (1/d)
       real(rk) :: pH_factor        ! pH sensitivity factor for pH-dependent mode
       real(rk) :: temp_Q10         ! Q10 temperature factor
+      real(rk) :: CaO_half_sat     ! Half-saturation constant for stock limitation (mmol/m^2)
       real(rk) :: CaO_stock0       ! Initial CaO stock (mmol/m^2)
 
       ! State variables and dependencies
@@ -67,6 +68,10 @@ contains
          'Q10 temperature factor for dissolution', &
          default=2.0_rk, minimum=1.0_rk)
 
+      call self%get_parameter(self%CaO_stock0, 'CaO_stock0', 'mmol/m^2', &
+         'initial CaO stock at bottom (only used in mode 3)', &
+         default=1000.0_rk, minimum=0.0_rk)
+
       ! Only proceed with registration if CaO dissolution is enabled
       if (self%iswCaO > 0) then
          ! Register dependency on total alkalinity (standard variable)
@@ -86,13 +91,12 @@ contains
 
          ! Register stock state variable for stock depletion mode
          if (self%iswCaO == 3) then
-            call self%get_parameter(self%CaO_stock0, 'CaO_stock0', 'mmol/m^2', &
-               'initial CaO stock at bottom', &
-               default=1000.0_rk, minimum=0.0_rk)
-
             call self%register_bottom_state_variable(self%id_cao_stock, 'CaO_stock', 'mmol/m^2', &
                'CaO stock at bottom', &
                self%CaO_stock0, minimum=0.0_rk)
+            call self%get_parameter(self%CaO_half_sat, 'CaO_half_sat', 'mmol/m^2', &
+               'half-saturation constant for stock limitation', &
+               default=100.0_rk, minimum=0.0_rk)
 
             call self%register_dependency(self%id_pH, standard_variables%ph_reported_on_total_scale)
             call self%register_dependency(self%id_temp, standard_variables%temperature)
@@ -106,7 +110,7 @@ contains
       _DECLARE_ARGUMENTS_DO_BOTTOM_
 
       real(rk) :: cao_flux, pH, temp, stock
-      real(rk) :: f_pH, f_temp
+      real(rk) :: f_pH, f_temp, f_stock
 
       ! Exit immediately if CaO dissolution is disabled
       if (self%iswCaO == 0) return
@@ -140,9 +144,12 @@ contains
                   ! pH and temperature functions as above
                   f_pH = max(0.0_rk, self%pH_factor * (8.3_rk - pH))
                   f_temp = self%temp_Q10 ** ((temp - 10.0_rk) / 10.0_rk)
-
                   ! Flux depends on remaining stock
-                  cao_flux = self%k_CaO_diss * stock * f_pH * f_temp
+                  ! bug: cao_flux = self%k_CaO_diss * stock * f_pH * f_temp
+                  ! Stock limitation using Michaelis-Menten kinetics
+                  f_stock = stock / (stock + self%CaO_half_sat)
+
+                  cao_flux = self%CaO_flux_rate * f_pH * f_temp * f_stock
 
                   ! Deplete the stock
                   _SET_BOTTOM_ODE_(self%id_cao_stock, -cao_flux)
