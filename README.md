@@ -43,10 +43,10 @@ This repository contains a development version of ERSEM (European Regional Seas 
 mkdir -p ~/Github && cd ~/Github
 
 # Clone FABM
-git clone https://github.com/jsasaki-utokyo/fabm.git
+git clone git@github.com:jsasaki-utokyo/fabm.git
 
 # Clone this ERSEM repository
-git clone https://github.com/jsasaki-utokyo/ersem.git
+git clone git@github.com:jsasaki-utokyo/ersem.git
 ```
 
 #### GOTM (For 0D and 1D Water Column Models)
@@ -57,7 +57,7 @@ Only needed for FABM0D and GOTM-ERSEM configurations:
 cd ~/Github
 
 # Clone GOTM with submodules
-git clone --recurse-submodules https://github.com/gotm-model/code.git gotm/code
+git clone --recurse-submodules git@github.com:gotm-model/code.git gotm/code
 ```
 
 #### FVCOM (For 3D Unstructured Grid Applications)
@@ -68,7 +68,7 @@ For coastal and estuary applications with 3D hydrodynamics:
 cd ~/Github
 
 # Clone FVCOM with FABM support (estuarine-utokyo version)
-git clone -b uk-fabm-v5.1.0-dev https://github.com/estuarine-utokyo/FVCOM.git
+git clone -b uk-fabm-v5.1.0-dev git@github.com:estuarine-utokyo/FVCOM.git
 ```
 
 **Note:** This uses a customized FVCOM v5.1.0-dev with FABM integration developed for Japanese estuarine applications. See `FVCOM/branches/uk-fabm-v5.1.0-dev/README-FABM.md` for detailed documentation.
