@@ -1,12 +1,12 @@
 [![DOI](https://zenodo.org/badge/302390544.svg)](https://zenodo.org/badge/latestdoi/302390544)
 
-# ERSEM - Japanese Waters Configuration
+# ERSEM - UTokyo Estuarine Configuration
 
 ![ERSEM diagram](docs/images/ERSEM.png)
 
 ## Overview
 
-This repository contains a development version of ERSEM (European Regional Seas Ecosystem Model) configured for Japanese waters. ERSEM is a marine biogeochemical and ecosystem model describing the cycling of carbon, nitrogen, phosphorus, silicon, oxygen and iron through the lower trophic level pelagic and benthic ecosystems.
+This repository contains a development version of ERSEM (European Regional Seas Ecosystem Model) configured for estuarine and coastal applications at UTokyo. ERSEM is a marine biogeochemical and ecosystem model describing the cycling of carbon, nitrogen, phosphorus, silicon, oxygen and iron through the lower trophic level pelagic and benthic ecosystems.
 
 **Key Features:**
 - Multi-element biogeochemical cycling (C, N, P, Si, O, Fe)
@@ -17,7 +17,7 @@ This repository contains a development version of ERSEM (European Regional Seas 
   - **1D**: Water column models (FABM-ERSEM-GOTM)
   - **3D**: Coupled with FVCOM, ROMS, NEMO, and other ocean models (FABM-ERSEM-FVCOM, etc.)
 
-**Note:** This is a development branch for Japanese waters. The upstream version is maintained at https://github.com/pmlmodelling/ersem (master branch).
+**Note:** This is a development version optimized for estuarine and coastal systems. The upstream version is maintained at https://github.com/pmlmodelling/ersem (master branch).
 
 ## Installation from Source
 
@@ -73,7 +73,7 @@ cd ~/Github
 git clone -b uk-fabm-v5.1.0-dev git@github.com:estuarine-utokyo/FVCOM.git
 ```
 
-**Note:** This uses a customized FVCOM v5.1.0-dev with FABM integration developed for Japanese estuarine applications. See `FVCOM/branches/uk-fabm-v5.1.0-dev/README-FABM.md` for detailed documentation.
+**Note:** This uses a customized FVCOM v5.1.0-dev with FABM integration developed for estuarine applications at UTokyo. See `FVCOM/branches/uk-fabm-v5.1.0-dev/README-FABM.md` for detailed documentation.
 
 ### 2. Build Options
 
