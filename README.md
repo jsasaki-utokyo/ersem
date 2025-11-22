@@ -236,6 +236,12 @@ For 3-dimensional coastal and estuarine simulations with unstructured grids.
 #!/bin/bash
 # Build FABM with FVCOM host driver
 
+# Use minimum of 8 cores or nproc/4, with floor of 4
+NPROC=$(nproc)
+CPU=$(( NPROC < 32 ? NPROC : NPROC / 4 ))
+CPU=$(( CPU > 8 ? 8 : CPU ))
+CPU=$(( CPU < 4 ? 4 : CPU ))
+
 FABM_SRC="${HOME}/Github/fabm"
 ERSEM_SRC="${HOME}/Github/ersem"
 INSTALL_DIR="${HOME}/local/fabm-ifx-ersem"
@@ -252,7 +258,7 @@ cmake ${FABM_SRC} \
     -DCMAKE_BUILD_TYPE=Release \
     -DFABM_EMBED_VERSION=ON
 
-make -j $(nproc)
+make -j ${CPU}
 make install
 ```
 
@@ -275,9 +281,15 @@ FABMINC = -I$(FABMDIR)/include -I$(FABMDIR)/include/yaml
 **Step 3: Build FVCOM**
 
 ```bash
+# Use minimum of 8 cores or nproc/4, with floor of 4
+NPROC=$(nproc)
+CPU=$(( NPROC < 32 ? NPROC : NPROC / 4 ))
+CPU=$(( CPU > 8 ? 8 : CPU ))
+CPU=$(( CPU < 4 ? 4 : CPU ))
+
 cd ~/Github/FVCOM/src
 make clean
-make -j $(nproc)
+make -j ${CPU}
 ```
 
 **Step 4: Runtime Configuration**
