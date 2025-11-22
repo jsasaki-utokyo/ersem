@@ -106,7 +106,12 @@ while getopts "f:" flag; do
     esac
 done
 
-CPU="$(nproc)"
+# Use minimum of 8 cores or nproc/4, with floor of 4
+NPROC=$(nproc)
+CPU=$(( NPROC < 32 ? NPROC : NPROC / 4 ))
+CPU=$(( CPU > 8 ? 8 : CPU ))
+CPU=$(( CPU < 4 ? 4 : CPU ))
+
 FABM_HOST=0d
 
 # Specify ifx or gfortran
@@ -169,7 +174,12 @@ while getopts ":f:" flag; do
     esac
 done
 
-CPU="$(nproc)"
+# Use minimum of 8 cores or nproc/4, with floor of 4
+NPROC=$(nproc)
+CPU=$(( NPROC < 32 ? NPROC : NPROC / 4 ))
+CPU=$(( CPU > 8 ? 8 : CPU ))
+CPU=$(( CPU < 4 ? 4 : CPU ))
+
 FABM_HOST=gotm
 
 # Select ifx or gfortran
