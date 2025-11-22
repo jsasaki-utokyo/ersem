@@ -7,7 +7,7 @@ __pycache__
 
 # the module index is built each time the docs
 docs/source/module_index.rst
-
+build/
 # removing swap files
 *.swp
 
