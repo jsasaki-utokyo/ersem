@@ -13,9 +13,9 @@ This repository contains a development version of ERSEM (European Regional Seas 
 - Pelagic and benthic ecosystem components
 - Integration with FABM (Framework for Aquatic Biogeochemical Models)
 - Multiple deployment options:
-  - **0D**: Box models (FABM0D)
-  - **1D**: Water column models (GOTM-ERSEM)
-  - **3D**: Coupled with FVCOM, ROMS, NEMO, and other ocean models
+  - **0D**: Box models (FABM-ERSEM-0D)
+  - **1D**: Water column models (FABM-ERSEM-GOTM)
+  - **3D**: Coupled with FVCOM, ROMS, NEMO, and other ocean models (FABM-ERSEM-FVCOM, etc.)
 
 **Note:** This is a development branch for Japanese waters. The upstream version is maintained at https://github.com/pmlmodelling/ersem (master branch).
 
@@ -30,8 +30,8 @@ This repository contains a development version of ERSEM (European Regional Seas 
 - Git
 
 **Additional requirements depend on your use case:**
-- **FABM0D / GOTM-ERSEM**: GOTM (General Ocean Turbulence Model)
-- **FVCOM-ERSEM**: FVCOM (Finite Volume Community Ocean Model) with FABM coupler
+- **FABM-ERSEM-0D / FABM-ERSEM-GOTM**: GOTM (General Ocean Turbulence Model)
+- **FABM-ERSEM-FVCOM**: FVCOM (Finite Volume Community Ocean Model) with FABM coupler
 - **Other 3D models**: ROMS, NEMO, MOM, HYCOM, SCHISM (not covered here)
 
 ### 1. Clone Repositories
@@ -51,7 +51,7 @@ git clone git@github.com:jsasaki-utokyo/ersem.git
 
 #### GOTM (For 0D and 1D Water Column Models)
 
-Only needed for FABM0D and GOTM-ERSEM configurations (GOTM v6 required):
+Only needed for FABM-ERSEM-0D and FABM-ERSEM-GOTM configurations (GOTM v6 required):
 
 ```bash
 cd ~/Github
@@ -81,15 +81,15 @@ ERSEM can be coupled with different hydrodynamic models through FABM. Choose the
 
 | Configuration | Description | Use Case |
 |--------------|-------------|----------|
-| **FABM0D** | 0-dimensional box model | Aquarium setups, mesocosm experiments, testing |
-| **GOTM-ERSEM** | 1-dimensional water column | Vertical profiling, L4 station, single-point simulations |
-| **FVCOM-ERSEM** | 3D unstructured grid | Coastal regions, estuaries, complex bathymetry |
+| **FABM-ERSEM-0D** | 0-dimensional box model | Aquarium setups, mesocosm experiments, testing |
+| **FABM-ERSEM-GOTM** | 1-dimensional water column | Vertical profiling, L4 station, single-point simulations |
+| **FABM-ERSEM-FVCOM** | 3D unstructured grid | Coastal regions, estuaries, complex bathymetry |
 
 #### Build Instructions by Configuration
 
 ---
 
-#### Option 1: FABM0D (Box Model / Aquarium Setup)
+#### Option 1: FABM-ERSEM-0D (Box Model / Aquarium Setup)
 
 For 0-dimensional box model simulations. Executables installed in `~/local/fabm-{compiler}/0d/bin/`.
 
@@ -152,7 +152,7 @@ chmod +x install_ersem_fabm0d.sh
 
 ---
 
-#### Option 2: GOTM-ERSEM (1D Water Column Model)
+#### Option 2: FABM-ERSEM-GOTM (1D Water Column Model)
 
 For 1-dimensional water column simulations with turbulence. Executables installed in `~/local/fabm-{compiler}/gotm/bin/`.
 
@@ -185,7 +185,7 @@ FABM_ERSEM_BASE=~/Github/ersem
 FABM_BASE=~/Github/fabm/
 CMAKE_INSTALL_PREFIX=~/local/fabm-${CMAKE_Fortran_COMPILER}/${FABM_HOST}
 
-echo "Building GOTM-FABM-ERSEM"
+echo "Building FABM-ERSEM-GOTM"
 rm -rf ~/build  # Delete if exits
 mkdir ~/build && cd ~/build
 cmake $GOTM_BASE \
@@ -211,7 +211,7 @@ chmod +x install_ersem_gotm.sh
 
 ---
 
-#### Option 3: FVCOM-ERSEM (3D Unstructured Grid Model)
+#### Option 3: FABM-ERSEM-FVCOM (3D Unstructured Grid Model)
 
 For 3-dimensional coastal and estuarine simulations with unstructured grids.
 
