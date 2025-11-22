@@ -51,13 +51,15 @@ git clone git@github.com:jsasaki-utokyo/ersem.git
 
 #### GOTM (For 0D and 1D Water Column Models)
 
-Only needed for FABM0D and GOTM-ERSEM configurations:
+Only needed for FABM0D and GOTM-ERSEM configurations (GOTM v6 required):
 
 ```bash
 cd ~/Github
-
-# Clone GOTM with submodules
-git clone --recurse-submodules git@github.com:gotm-model/code.git gotm/code
+mkdir gotm
+cd gotm
+git clone git@github.com:jsasaki-utokyo/code.git
+cd code
+git submodule update --init --recursive
 ```
 
 #### FVCOM (For 3D Unstructured Grid Applications)
