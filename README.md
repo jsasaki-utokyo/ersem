@@ -24,7 +24,7 @@ This repository contains a development version of ERSEM (European Regional Seas 
 ### Prerequisites
 
 **Required for all configurations:**
-- Fortran compiler (Intel ifx, ifort, or gfortran)
+- Fortran compiler (Intel ifx or gfortran)
 - CMake (>= 3.10)
 - NetCDF libraries
 - Git
@@ -47,10 +47,6 @@ git clone https://github.com/jsasaki-utokyo/fabm.git
 
 # Clone this ERSEM repository
 git clone https://github.com/jsasaki-utokyo/ersem.git
-
-# Optional: Create topic branches for development
-cd fabm && git checkout -b topic && cd ..
-cd ersem && git checkout -b topic && cd ..
 ```
 
 #### GOTM (For 0D and 1D Water Column Models)
@@ -62,9 +58,6 @@ cd ~/Github
 
 # Clone GOTM with submodules
 git clone --recurse-submodules https://github.com/gotm-model/code.git gotm/code
-
-# Optional: Create topic branch
-cd gotm/code && git checkout -b topic && cd ../..
 ```
 
 #### FVCOM (For 3D Unstructured Grid Applications)
@@ -114,7 +107,7 @@ done
 CPU="$(nproc)"
 FABM_HOST=0d
 
-# Specify ifx, ifort, or gfortran
+# Specify ifx or gfortran
 CMAKE_Fortran_COMPILER=ifx
 
 # You may want to use -O3 for better performance but check whether
@@ -174,7 +167,7 @@ done
 CPU="$(nproc)"
 FABM_HOST=gotm
 
-# Select ifx, ifort, or gfortran
+# Select ifx or gfortran
 CMAKE_Fortran_COMPILER=ifx
 
 # You may want to use -O3 for better performance but check whether
@@ -303,7 +296,6 @@ Create `fabm.yaml` configuration file in your case directory (see `testcases/` f
 
 **Supported Compilers:**
 - `ifx` - Intel Fortran Compiler (oneAPI, recommended)
-- `ifort` - Intel Fortran Compiler (classic)
 - `gfortran` - GNU Fortran Compiler
 
 **Optimization Levels:**
