@@ -139,13 +139,16 @@ cmake $FABM_BASE \
 make install -j $CPU
 ```
 
-Make executable and run:
+Save the script to any directory (e.g., your home directory or a scripts folder), make it executable, and run:
+
 ```bash
 chmod +x install_ersem_fabm0d.sh
 ./install_ersem_fabm0d.sh
 # Or with additional CMake flags:
 ./install_ersem_fabm0d.sh -f "-DIRON=ON"
 ```
+
+**Note:** The script can be run from any directory. It uses absolute paths (`~/Github/`, `~/build/`, `~/local/`) and will create build directories as needed.
 
 ---
 
@@ -195,13 +198,16 @@ cmake $GOTM_BASE \
 make install -j $CPU
 ```
 
-Make executable and run:
+Save the script to any directory, make it executable, and run:
+
 ```bash
 chmod +x install_ersem_gotm.sh
 ./install_ersem_gotm.sh
 # Or with additional CMake flags:
 ./install_ersem_gotm.sh -f "-DIRON=ON"
 ```
+
+**Note:** The script can be run from any directory. It uses absolute paths (`~/Github/`, `~/build/`, `~/local/`) and will create build directories as needed.
 
 ---
 
