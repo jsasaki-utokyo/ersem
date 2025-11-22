@@ -1,50 +1,26 @@
-![Tests](https://img.shields.io/github/actions/workflow/status/pmlmodelling/ersem/ersem.yml?label=tests&style=flat-square)
-[![Documentation Status](https://readthedocs.org/projects/ersem/badge/?version=latest)](https://ersem.readthedocs.io/en/latest/?badge=latest)
 [![DOI](https://zenodo.org/badge/302390544.svg)](https://zenodo.org/badge/latestdoi/302390544)
 
-# ERSEM
+# ERSEM - Japanese Waters Configuration
 
 ![ERSEM diagram](docs/images/ERSEM.png)
 
 ## Overview
 
-[ERSEM](http://ersem.com) (European Regional Seas Ecosystem Model) is a marine biogeochemical and ecosystem model. It describes the cycling of carbon, nitrogen, phosphorus, silicon, oxygen and iron through the lower trophic level pelagic and benthic ecosystems.
+This repository contains a development version of ERSEM (European Regional Seas Ecosystem Model) configured for Japanese waters. ERSEM is a marine biogeochemical and ecosystem model describing the cycling of carbon, nitrogen, phosphorus, silicon, oxygen and iron through the lower trophic level pelagic and benthic ecosystems.
 
 **Key Features:**
 - Multi-element biogeochemical cycling (C, N, P, Si, O, Fe)
 - Pelagic and benthic ecosystem components
 - Integration with FABM (Framework for Aquatic Biogeochemical Models)
-- Multiple deployment options (0D, 1D, 3D)
+- Multiple deployment options (0D box model, 1D water column)
 
-## Quick Start
-
-### Conda Installation (Recommended for Users)
-
-```bash
-conda install -c conda-forge ersem
-```
-
-For detailed tutorials, see: https://ersem.readthedocs.io/en/latest/tutorials/index.html
-
-### Python Interface (PyFABM-ERSEM)
-
-```bash
-# Clone dependencies
-git clone https://github.com/fabm-model/fabm.git
-git clone https://github.com/pmlmodelling/ersem.git
-
-# Build and install
-cd fabm
-python -m pip install .
-```
+**Note:** This is a development branch for Japanese waters. The upstream version is maintained at https://github.com/pmlmodelling/ersem (master branch).
 
 ## Installation from Source
 
-For developers and advanced users who need to build ERSEM from source.
-
 ### Prerequisites
 
-- Fortran compiler (Intel ifort or gfortran)
+- Fortran compiler (Intel ifx, ifort, or gfortran)
 - CMake (>= 3.0)
 - NetCDF libraries
 - Git
@@ -57,19 +33,19 @@ The following assumes repositories are cloned in `~/Github/`:
 # Create directory structure
 mkdir -p ~/Github && cd ~/Github
 
-# Clone GOTM with submodules (v6.0 branch)
-git clone --recurse-submodules -b v6.0 https://github.com/gotm-model/code.git gotm
+# Clone GOTM with submodules
+git clone --recurse-submodules https://github.com/gotm-model/code.git gotm/code
 
-# Clone FABM (main branch)
+# Clone FABM
 git clone https://github.com/fabm-model/fabm.git
 
-# Clone ERSEM (main branch)
-git clone https://github.com/pmlmodelling/ersem.git
+# Clone this ERSEM repository
+git clone https://github.com/jsasaki-utokyo/ersem.git
 
 # Optional: Create topic branches for development
 cd fabm && git checkout -b topic && cd ..
 cd ersem && git checkout -b topic && cd ..
-cd gotm && git checkout -b topic && cd ..
+cd gotm/code && git checkout -b topic && cd ../..
 ```
 
 ### 2. Build Options
@@ -78,133 +54,157 @@ Choose the configuration that matches your needs:
 
 #### FABM0D (Box Model / Aquarium Setup)
 
-For 0-dimensional box model simulations. Build files are created in `~/build/`, executables installed in `~/local/fabm-{compiler}/0d/bin/`.
+For 0-dimensional box model simulations. Executables installed in `~/local/fabm-{compiler}/0d/bin/`.
 
 **Installation Script** (`install_ersem_fabm0d.sh`):
 
 ```bash
 #!/bin/bash
+# install_ersem_fabm0d.sh
 
-# Compiler selection: ifort or gfortran
-COMPILER=ifort
-# COMPILER=gfortran
+CMAKE_FLAG=""
+while getopts "f:" flag; do
+    case "${flag}" in
+        f) CMAKE_FLAG=${OPTARG};;
+    esac
+done
 
-# Number of cores for compilation
-NCORES=$(nproc)
+CPU="$(nproc)"
+FABM_HOST=0d
 
-# Set paths
-GITHUB_DIR=~/Github
-BUILD_DIR=~/build
-INSTALL_BASE=~/local/fabm-${COMPILER}
+# Specify ifx, ifort, or gfortran
+CMAKE_Fortran_COMPILER=ifx
 
-# Create build directory
-mkdir -p ${BUILD_DIR}/fabm-${COMPILER}/0d
-cd ${BUILD_DIR}/fabm-${COMPILER}/0d
+# You may want to use -O3 for better performance but check whether
+# the change in results are acceptable.
+# Default of -O2 will be used with commenting out the next line.
+# FFLAGS=-O3
 
-# Configure with CMake
-cmake ${GITHUB_DIR}/fabm/src/drivers/0d \
-  -DFABM_HOST=0d \
-  -DFABM_BASE=${GITHUB_DIR}/fabm \
-  -DFABM_ERSEM_BASE=${GITHUB_DIR}/ersem \
-  -DCMAKE_Fortran_COMPILER=${COMPILER} \
-  -DCMAKE_INSTALL_PREFIX=${INSTALL_BASE}/0d
+GOTM_BASE=~/Github/gotm/code
+FABM_ERSEM_BASE=~/Github/ersem
+FABM_BASE=~/Github/fabm/src/drivers/$FABM_HOST
+# CMAKE_BUILD_TYPE=Debug
 
-# Build and install
-make -j${NCORES}
-make install
+CMAKE_INSTALL_PREFIX=~/local/fabm-${CMAKE_Fortran_COMPILER}/${FABM_HOST}
+
+echo $CMAKE_FLAG
+
+rm -rf ~/build  # Delete if exits
+mkdir ~/build && cd ~/build
+cmake $FABM_BASE \
+  -DGOTM_BASE=$GOTM_BASE \
+  -DFABM_ERSEM_BASE=$FABM_ERSEM_BASE \
+  -DFABM_HOST=$FABM_HOST \
+  -DCMAKE_Fortran_COMPILER=$CMAKE_Fortran_COMPILER \
+  -DCMAKE_INSTALL_PREFIX=$CMAKE_INSTALL_PREFIX \
+  -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE \
+  $CMAKE_FLAG
+make install -j $CPU
 ```
 
 Make executable and run:
 ```bash
 chmod +x install_ersem_fabm0d.sh
 ./install_ersem_fabm0d.sh
+# Or with additional CMake flags:
+./install_ersem_fabm0d.sh -f "-DIRON=ON"
 ```
 
 #### GOTM-ERSEM (1D Water Column Model)
 
-For 1-dimensional water column simulations with turbulence. Build files are created in `~/build/`, executables installed in `~/local/fabm-{compiler}/gotm/bin/`.
+For 1-dimensional water column simulations with turbulence. Executables installed in `~/local/fabm-{compiler}/gotm/bin/`.
 
 **Installation Script** (`install_ersem_gotm.sh`):
 
 ```bash
 #!/bin/bash
+# install_ersem_gotm.sh
 
-# Compiler selection: ifort or gfortran
-COMPILER=ifort
-# COMPILER=gfortran
+CMAKE_FLAG=""
+while getopts ":f:" flag; do
+    case "${flag}" in
+        f) CMAKE_FLAG=${OPTARG};;
+    esac
+done
 
-# Number of cores for compilation
-NCORES=$(nproc)
+CPU="$(nproc)"
+FABM_HOST=gotm
 
-# Set paths
-GITHUB_DIR=~/Github
-BUILD_DIR=~/build
-INSTALL_BASE=~/local/fabm-${COMPILER}
+# Select ifx, ifort, or gfortran
+CMAKE_Fortran_COMPILER=ifx
 
-# Create build directory
-mkdir -p ${BUILD_DIR}/fabm-${COMPILER}/gotm
-cd ${BUILD_DIR}/fabm-${COMPILER}/gotm
+# You may want to use -O3 for better performance but check whether
+# the change in results are acceptable.
+# Default of -O2 will be used with commenting out the next line.
+# FFLAGS=-O3
 
-# Configure with CMake
-cmake ${GITHUB_DIR}/gotm \
-  -DFABM_BASE=${GITHUB_DIR}/fabm \
-  -DFABM_ERSEM_BASE=${GITHUB_DIR}/ersem \
-  -DCMAKE_Fortran_COMPILER=${COMPILER} \
-  -DCMAKE_INSTALL_PREFIX=${INSTALL_BASE}/gotm
+GOTM_BASE=~/Github/gotm/code
+FABM_ERSEM_BASE=~/Github/ersem
+FABM_BASE=~/Github/fabm/
+CMAKE_INSTALL_PREFIX=~/local/fabm-${CMAKE_Fortran_COMPILER}/${FABM_HOST}
 
-# Build and install
-make -j${NCORES}
-make install
+echo "Building GOTM-FABM-ERSEM"
+rm -rf ~/build  # Delete if exits
+mkdir ~/build && cd ~/build
+cmake $GOTM_BASE \
+  -DFABM_BASE=$FABM_BASE \
+  -DFABM_ERSEM_BASE=$FABM_ERSEM_BASE \
+  -DCMAKE_Fortran_COMPILER=$CMAKE_Fortran_COMPILER \
+  -DCMAKE_INSTALL_PREFIX=$CMAKE_INSTALL_PREFIX \
+  -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE \
+  $CMAKE_FLAG
+make install -j $CPU
 ```
 
 Make executable and run:
 ```bash
 chmod +x install_ersem_gotm.sh
 ./install_ersem_gotm.sh
+# Or with additional CMake flags:
+./install_ersem_gotm.sh -f "-DIRON=ON"
 ```
 
-#### Build Notes
+### Compiler Options
 
-- Add `-DIRON` CMake flag to enable iron cycling
-- For custom NetCDF locations, add: `-DNETCDF_CONFIG=/path/to/nc-config`
-- Default installation creates executables: `fabm0d` and `gotm` respectively
+**Supported Compilers:**
+- `ifx` - Intel Fortran Compiler (oneAPI, recommended)
+- `ifort` - Intel Fortran Compiler (classic)
+- `gfortran` - GNU Fortran Compiler
+
+**Optimization Levels:**
+- Default: `-O2` (balanced optimization)
+- High performance: `-O3` (uncomment `FFLAGS=-O3` in scripts, verify results)
+
+**Additional CMake Options:**
+- Enable iron cycling: `-f "-DIRON=ON"`
+- Debug build: Uncomment `CMAKE_BUILD_TYPE=Debug` in scripts
+- Custom NetCDF: `-f "-DNETCDF_CONFIG=/path/to/nc-config"`
+
+### Python Interface (PyFABM-ERSEM)
+
+```bash
+# From fabm directory
+cd ~/Github/fabm
+python -m pip install .
+```
 
 ## Testing
 
-ERSEM includes comprehensive automated tests run via GitHub Actions:
+Test configurations are available in the `testcases/` directory with various YAML setups.
 
-```bash
-# PyFABM tests
-pytest github-actions/pyfabm-ersem
+## Configuration
 
-# GOTM-FABM-ERSEM tests
-pytest github-actions/gotm-fabm-ersem/test_state_variables.py
-pytest github-actions/gotm-fabm-ersem/test_gotm.py
+Model setup through YAML files (examples in `testcases/`):
+- Define state variables, parameters, and coupling
+- Different configurations for various complexity levels
+- Template: `fabm-ersem.yaml.template`
 
-# FABM0d tests
-pytest github-actions/fabm0d-gotm-ersem
-```
+## Documentation
 
-Test configurations are available in the `testcases/` directory.
-
-**View test results:** https://github.com/pmlmodelling/ersem/actions
-
-## Documentation & Resources
-
-- **User Documentation:** https://ersem.readthedocs.io/en/latest/
-- **Tutorials:** https://ersem.readthedocs.io/en/latest/tutorials/index.html
-- **Developer Guide:** https://ersem.readthedocs.io/en/latest/developers/index.html
-- **Test Cases:** `testcases/` directory contains various YAML configurations
-- **Model Configuration:** `fabm-ersem.yaml.template` for setup examples
-
-## Support
-
-We strongly encourage everyone using the ERSEM code to register as a user by filling a [short registration form](https://forms.office.com/r/X0iXv8AvTC).
-
-This helps us:
-- Understand who is using ERSEM and for what applications
-- Provide better support to the user community
-- Keep you informed about latest model developments and news
+**General ERSEM Documentation:**
+- Official ERSEM website: http://ersem.com
+- Upstream repository: https://github.com/pmlmodelling/ersem
+- Main publication: Butenschön et al. (2016), GMD, doi:10.5194/gmd-9-1293-2016
 
 ## How to Cite
 
@@ -214,7 +214,6 @@ Butenschön, M., Clark, J., Aldridge, J.N., Allen, J.I., Artioli, Y., Blackford,
 
 To refer specifically to the ERSEM source code, you may use its Zenodo DOI (badge at top of page).
 
-## Acknowledgements & License
+## License
 
-- **Acknowledgements:** https://ersem.readthedocs.io/en/latest/acknowledgements.html
-- **License:** https://ersem.readthedocs.io/en/latest/license.html
+See upstream repository for license information: https://ersem.readthedocs.io/en/latest/license.html
