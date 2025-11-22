@@ -12,7 +12,10 @@ This repository contains a development version of ERSEM (European Regional Seas 
 - Multi-element biogeochemical cycling (C, N, P, Si, O, Fe)
 - Pelagic and benthic ecosystem components
 - Integration with FABM (Framework for Aquatic Biogeochemical Models)
-- Multiple deployment options (0D box model, 1D water column)
+- Multiple deployment options:
+  - **0D**: Box models (FABM0D)
+  - **1D**: Water column models (GOTM-ERSEM)
+  - **3D**: Coupled with FVCOM, ROMS, NEMO, and other ocean models
 
 **Note:** This is a development branch for Japanese waters. The upstream version is maintained at https://github.com/pmlmodelling/ersem (master branch).
 
@@ -20,24 +23,27 @@ This repository contains a development version of ERSEM (European Regional Seas 
 
 ### Prerequisites
 
+**Required for all configurations:**
 - Fortran compiler (Intel ifx, ifort, or gfortran)
-- CMake (>= 3.0)
+- CMake (>= 3.10)
 - NetCDF libraries
 - Git
 
+**Additional requirements depend on your use case:**
+- **FABM0D / GOTM-ERSEM**: GOTM (General Ocean Turbulence Model)
+- **FVCOM-ERSEM**: FVCOM (Finite Volume Community Ocean Model) with FABM coupler
+- **Other 3D models**: ROMS, NEMO, MOM, HYCOM, SCHISM (not covered here)
+
 ### 1. Clone Repositories
 
-The following assumes repositories are cloned in `~/Github/`:
+#### Core Components (Required for All)
 
 ```bash
 # Create directory structure
 mkdir -p ~/Github && cd ~/Github
 
-# Clone GOTM with submodules
-git clone --recurse-submodules https://github.com/gotm-model/code.git gotm/code
-
 # Clone FABM
-git clone https://github.com/fabm-model/fabm.git
+git clone https://github.com/jsasaki-utokyo/fabm.git
 
 # Clone this ERSEM repository
 git clone https://github.com/jsasaki-utokyo/ersem.git
@@ -45,14 +51,50 @@ git clone https://github.com/jsasaki-utokyo/ersem.git
 # Optional: Create topic branches for development
 cd fabm && git checkout -b topic && cd ..
 cd ersem && git checkout -b topic && cd ..
+```
+
+#### GOTM (For 0D and 1D Water Column Models)
+
+Only needed for FABM0D and GOTM-ERSEM configurations:
+
+```bash
+cd ~/Github
+
+# Clone GOTM with submodules
+git clone --recurse-submodules https://github.com/gotm-model/code.git gotm/code
+
+# Optional: Create topic branch
 cd gotm/code && git checkout -b topic && cd ../..
 ```
 
+#### FVCOM (For 3D Unstructured Grid Applications)
+
+For coastal and estuary applications with 3D hydrodynamics:
+
+```bash
+cd ~/Github
+
+# Clone FVCOM with FABM support (estuarine-utokyo version)
+git clone -b uk-fabm-v5.1.0-dev https://github.com/estuarine-utokyo/FVCOM.git
+```
+
+**Note:** This uses a customized FVCOM v5.1.0-dev with FABM integration developed for Japanese estuarine applications. See `FVCOM/branches/uk-fabm-v5.1.0-dev/README-FABM.md` for detailed documentation.
+
 ### 2. Build Options
 
-Choose the configuration that matches your needs:
+ERSEM can be coupled with different hydrodynamic models through FABM. Choose the configuration that matches your application:
 
-#### FABM0D (Box Model / Aquarium Setup)
+| Configuration | Description | Use Case |
+|--------------|-------------|----------|
+| **FABM0D** | 0-dimensional box model | Aquarium setups, mesocosm experiments, testing |
+| **GOTM-ERSEM** | 1-dimensional water column | Vertical profiling, L4 station, single-point simulations |
+| **FVCOM-ERSEM** | 3D unstructured grid | Coastal regions, estuaries, complex bathymetry |
+
+#### Build Instructions by Configuration
+
+---
+
+#### Option 1: FABM0D (Box Model / Aquarium Setup)
 
 For 0-dimensional box model simulations. Executables installed in `~/local/fabm-{compiler}/0d/bin/`.
 
@@ -110,7 +152,9 @@ chmod +x install_ersem_fabm0d.sh
 ./install_ersem_fabm0d.sh -f "-DIRON=ON"
 ```
 
-#### GOTM-ERSEM (1D Water Column Model)
+---
+
+#### Option 2: GOTM-ERSEM (1D Water Column Model)
 
 For 1-dimensional water column simulations with turbulence. Executables installed in `~/local/fabm-{compiler}/gotm/bin/`.
 
@@ -163,6 +207,97 @@ chmod +x install_ersem_gotm.sh
 # Or with additional CMake flags:
 ./install_ersem_gotm.sh -f "-DIRON=ON"
 ```
+
+---
+
+#### Option 3: FVCOM-ERSEM (3D Unstructured Grid Model)
+
+For 3-dimensional coastal and estuarine simulations with unstructured grids.
+
+**Prerequisites:**
+- FVCOM with FABM integration (see [FVCOM repository cloning](#fvcom-for-3d-unstructured-grid-applications) above)
+- All core components (FABM, ERSEM)
+- NetCDF libraries
+
+**Step 1: Build FABM with FVCOM Driver**
+
+```bash
+#!/bin/bash
+# Build FABM with FVCOM host driver
+
+FABM_SRC="${HOME}/Github/fabm"
+ERSEM_SRC="${HOME}/Github/ersem"
+INSTALL_DIR="${HOME}/local/fabm-ifx-ersem"
+BUILD_DIR="${HOME}/build/fabm-fvcom-ersem"
+
+mkdir -p ${BUILD_DIR}
+cd ${BUILD_DIR}
+
+cmake ${FABM_SRC} \
+    -DCMAKE_INSTALL_PREFIX=${INSTALL_DIR} \
+    -DFABM_HOST=fvcom \
+    -DFABM_ERSEM_BASE=${ERSEM_SRC} \
+    -DCMAKE_Fortran_COMPILER=ifx \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DFABM_EMBED_VERSION=ON
+
+make -j $(nproc)
+make install
+```
+
+**Important:** Use `-DFABM_HOST=fvcom` to ensure proper 2D driver configuration.
+
+**Step 2: Configure FVCOM Build**
+
+Edit `FVCOM/src/make.inc`:
+
+```fortran
+# Enable FABM (around line 540)
+FLAG_48 = -DFABM
+
+# Set FABM installation paths
+FABMDIR = ${HOME}/local/fabm-ifx-ersem
+FABMLIB = -L$(FABMDIR)/lib64 -lfabm
+FABMINC = -I$(FABMDIR)/include -I$(FABMDIR)/include/yaml
+```
+
+**Step 3: Build FVCOM**
+
+```bash
+cd ~/Github/FVCOM/src
+make clean
+make -j $(nproc)
+```
+
+**Step 4: Runtime Configuration**
+
+Create runtime namelist with FABM section (`CASENAME_run.nml`):
+
+```fortran
+&NML_FABM
+  FABM_MODEL = T                    ! Enable FABM
+  FABM_YAML = 'fabm.yaml'           ! FABM configuration file
+  NC_FABM = 'fabm_output.nc'        ! FABM output file
+  FABM_DIAG_OUT = T                 ! Output diagnostic variables
+  OBC_FABM_NUDGING = T              ! Enable open boundary nudging
+  OBC_FABM_FILE = 'ersem_obc.nc'    ! Boundary conditions (if needed)
+  STARTUP_FABM_TYPE = 'set_values'  ! or 'constant'
+/
+```
+
+Create `fabm.yaml` configuration file in your case directory (see `testcases/` for examples).
+
+**Key Features:**
+- NetCDF boundary conditions for open boundaries
+- River source input with biogeochemical variables
+- Hot start from restart files
+- Parallel MPI execution support
+
+**Detailed Documentation:**
+- See `~/Github/FVCOM/branches/uk-fabm-v5.1.0-dev/README-FABM.md` for comprehensive guide
+- Includes OBC setup, river forcing, restart files, and troubleshooting
+
+---
 
 ### Compiler Options
 
