@@ -14,7 +14,7 @@
 
   # Hydrogen sulfide in water column
   N8_H2S:
-    long_name: hydrogen_sulfide
+    long_name: Sulfide
     model: ersem/pelagic_base
     parameters:
       composition: h                                       # custom composition for H2S
@@ -23,7 +23,7 @@
 
   # Elemental sulfur in water column (blue tide indicator)
   N8_S0:
-    long_name: elemental_sulfur
+    long_name: S^0
     model: ersem/pelagic_base
     parameters:
       composition: e                                       # custom composition for S0
@@ -52,7 +52,7 @@
 
   # Benthic hydrogen sulfide - transported through all 3 layers
   G2_H2S:
-    long_name: benthic_hydrogen_sulfide
+    long_name: Benthic Sulfide
     model: ersem/benthic_column_dissolved_matter
     parameters:
       composition: h                                       # hydrogen sulfide
@@ -67,7 +67,7 @@
 
   # Benthic elemental sulfur - transported through all 3 layers
   G2_S0:
-    long_name: benthic_elemental_sulfur
+    long_name: Benthic S^0
     model: ersem/benthic_column_dissolved_matter
     parameters:
       composition: e                                       # elemental sulfur

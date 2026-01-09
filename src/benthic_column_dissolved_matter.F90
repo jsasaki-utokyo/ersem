@@ -128,9 +128,9 @@ contains
          case ('a')
             call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'a','mEq/m^2','alkalinity')
          case ('h')
-            call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'h','mmol/m^2','hydrogen_sulfide')
+            call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'h','mmol/m^2','Sulfide')
          case ('e')
-            call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'e','mmol/m^2','elemental_sulfur')
+            call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'e','mmol/m^2','S^0')
          case default
             call self%fatal_error('benthic_dissolved_matter_initialize','Invalid value for parameter "composition". Permitted: c,n,p,s,o,a,h,e.')
          end select

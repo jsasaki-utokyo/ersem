@@ -44,12 +44,12 @@ ERSEM's 3-layer model already handles:
 
 ### Essential Components (Must Have)
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| H2S state variable | Benthic (all layers) + Pelagic | Track sulfide, replace K6/N6 |
-| Sulfate reduction | Benthic Layer 3 | Primary H2S source |
-| H2S oxidation | Benthic Layer 1 + Pelagic | Remove H2S when O2 present |
-| Transport | Via `benthic_column_dissolved_matter` | Move H2S between layers |
+| Component | Location | Configuration | Purpose |
+|-----------|----------|---------------|---------|
+| H2S state variable | Benthic + Pelagic | **`last_layer: 1`** | Track sulfide with chemical barrier at redox interface |
+| Sulfate reduction | Benthic Layer 3 | - | Primary H2S source |
+| H2S oxidation | Benthic Layer 1 + Pelagic | - | Remove H2S when O2 present |
+| Transport | Via `benthic_column_dissolved_matter` | - | Move H2S between layers, respecting equilibrium profiles |
 
 ### Important Components (Recommended)
 
@@ -71,20 +71,22 @@ ERSEM's 3-layer model already handles:
 
 ```
 Step 1: Add H2S to benthic_column_dissolved_matter (composition 'h')
-        - Enables transport through all layers
-        - Enables pelagic-benthic exchange
+        - CRITICAL: Use last_layer: 1 to create chemical barrier
+        - Enables transport with equilibrium profile dropping to 0 at Layer 1
+        - Enables pelagic-benthic exchange only during anoxia
 
 Step 2: Add sulfate reduction in Layer 3
         - Couple to H2 bacteria respiration rate
         - Simple: H2S production = stoich_S_C × remin_rate
 
-Step 3: Add H2S oxidation in Layer 1
-        - Rate limited by O2 availability
-        - When D1m → minD, oxidation stops automatically
+Step 3: Add H2S oxidation in Layer 1 (optional with last_layer: 1)
+        - The last_layer: 1 setting already creates chemical barrier
+        - Explicit oxidation provides additional sink for H2S pool
+        - When D1m → minD, barrier collapses automatically
 
 Step 4: Add pelagic H2S oxidation
         - Same kinetics as benthic Layer 1
-        - Handles H2S that escapes to water column
+        - Handles H2S that escapes during anoxia events
 
 Step 5: (Optional) Add S0 intermediate
         - Split oxidation: H2S → S0 → SO4
@@ -311,6 +313,106 @@ R_S0_ox = K_S0_ox * S0 * O2 / (O2 + K_O2_half)
 
 ## Integration with 3-Layer Benthic Model
 
+### Dynamic Layer Depth Mechanism
+
+ERSEM's benthic layer depths (D1m, D2m) are **state variables** that dynamically adjust based on chemical equilibrium. This is a key architectural feature that must be understood for proper sulfur cycle integration.
+
+#### How Layer Depths are Controlled
+
+The `benthic_column_dissolved_matter.F90` module calculates equilibrium concentration profiles and relaxes layer depths toward equilibrium:
+
+```fortran
+! Equilibrium depth where concentration drops to zero (line 595)
+D = -2*sigma*C0/(P+2*P_deep)
+
+! Layer depth relaxes toward equilibrium (line 349)
+_SET_BOTTOM_ODE_(self%id_layer, (d_top - Dm(self%last_layer)) / self%relax)
+```
+
+Where:
+- `sigma` = diffusivity (m²/d)
+- `C0` = concentration at layer top (from pelagic)
+- `P` = source/sink in current layer (negative for consumption)
+- `P_deep` = source/sink in deeper layers
+
+**Key insight**: When pelagic concentration (C0) is HIGH, the equilibrium depth D increases proportionally.
+
+#### Layer Control Mapping
+
+| Module | `last_layer` | Controls | Behavior |
+|--------|--------------|----------|----------|
+| G2 (oxygen) | 1 | D1m | D1m expands when bottom water O2 is high |
+| K3 (nitrate) | 2 | D2m | D2m expands when NO3 supply is high |
+
+#### Observed Correlations (Tokyo Bay Test Case)
+
+Analysis of model output confirms the dynamic layer mechanism is working:
+
+| Correlation | Value | Interpretation |
+|-------------|-------|----------------|
+| O2_bottom vs D1m | **0.39** | Moderate positive - D1m responds to O2 |
+| O2_bottom vs D2m | **0.39** | Moderate positive - D2m also responds |
+| D1m vs nitrification | **0.97** | Very strong - larger D1m → more nitrification |
+
+**Layer depths at different O2 conditions**:
+- High O2 (>200 mmol/m³): D1m = 0.0028 m (**40% larger** than mean)
+- Overall mean: D1m = 0.002 m
+
+This confirms that oxygen penetration depth increases when bottom water O2 is high, leading to enhanced nitrification and NO3 production in Layer 1.
+
+### Sulfur Cycle Architectural Issue
+
+**Problem Identified**: The current implementation allows H2S to diffuse directly from Layer 3 to the pelagic without being fully oxidized at the oxic/anoxic interface.
+
+#### Root Cause Analysis
+
+The nitrogen cycle handles this correctly through the `last_layer` mechanism:
+- **G2 (oxygen)**: `last_layer: 1` → O2 drops to zero at Layer 1 bottom
+- **K3 (nitrate)**: `last_layer: 2` → NO3 drops to zero at Layer 2 bottom
+
+However, the original sulfur implementation used:
+- **K_H2S**: `last_layer: 3` (default) → H2S has non-zero profile throughout all layers
+
+This means:
+1. H2S produced in Layer 3 diffuses upward through all layers
+2. The oxidation in Layer 1 only acts on the H2S **pool** (H2S_1), not the diffusing **flux**
+3. When diffusion rate exceeds oxidation rate, H2S escapes to pelagic
+
+#### Quantitative Evidence
+
+From Tokyo Bay simulation with ben_sulfur module:
+- H2S production rate: 3.0 mmol S/m²/d (in Layer 3)
+- H2S oxidation rate: 0.05 mmol S/m²/d (in Layer 1)
+- **Imbalance ratio: ~60x** (production >> oxidation)
+- Result: H2S appears in pelagic even when O2 > 200 mmol/m³
+
+#### Solution: Use `last_layer: 1` for H2S
+
+Configure K_H2S similarly to G2 (oxygen):
+
+```yaml
+K_H2S:
+  long_name: benthic hydrogen sulfide
+  model: ersem/benthic_column_dissolved_matter
+  parameters:
+    composition: h
+    last_layer: 1          # H2S drops to zero at Layer 1 (like oxygen)
+    relax: 5.0             # Relaxation rate (1/d)
+    minD: 0.0001           # Minimum layer depth (m)
+  initialization:
+    h: 0.0
+  coupling:
+    h_pel: pel_sulfur/H2S
+```
+
+**Effect of `last_layer: 1`**:
+1. H2S equilibrium profile drops to zero at Layer 1 bottom
+2. This creates an implicit "chemical barrier" at the oxic/anoxic interface
+3. The benthic-pelagic flux is controlled by the equilibrium profile, not bulk diffusion
+4. H2S can only escape to pelagic when D1m collapses (during anoxia)
+
+This matches the physical reality: H2S is rapidly oxidized when it encounters oxygen, creating a sharp gradient at the redox boundary.
+
 ### Layer-Specific Process Assignment
 
 ```
@@ -388,46 +490,54 @@ When bottom water O2 decreases:
 2. D1m (oxic layer depth) relaxes toward minD (typically 0.0001 m)
 3. Layer 1 effectively collapses, removing the oxidation barrier
 
-#### Schematic: Normal vs Anoxic Conditions
+#### Schematic: Normal vs Anoxic Conditions (with `last_layer: 1` for H2S)
 
 ```
 NORMAL (Oxic bottom water)        ANOXIC (O2 → 0 in bottom water)
 
 Water: O2 = 200 mmol/m³           Water: O2 ≈ 0 (anoxic event)
        ↓ O2 diffuses down                ↓ No O2 supply to sediment
+       H2S ≈ 0 (blocked by barrier)      H2S escapes to water!
 ═══════════════════════════       ═══════════════════════════
-Layer 1: D1m ≈ 9 mm               Layer 1: D1m → minD (0.1 mm)
+Layer 1: D1m ≈ 2.8 mm             Layer 1: D1m → minD (0.1 mm)
   - O2 present in pore water        - O2 ≈ 0 (no supply from above)
-  - H2S + 0.5 O2 → S0 (active)      - Oxidation rate → 0 (no O2)
-  - H2S flux attenuated             - H2S passes through unoxidized!
+  - H2S → 0 at bottom (barrier!)    - Barrier collapses with layer
+  - H2S flux BLOCKED                - H2S passes through!
 ───────────────────────────       ───────────────────────────
-Layer 2: D2m - D1m ≈ 40 mm        Layer 2: Expands
+Layer 2: D2m - D1m ≈ 43 mm        Layer 2: Expands
   - Denitrification zone            - NO3 may still be present initially
+  - H2S = 0 (below barrier)         - H2S gradient forms
   - Transport only (Phase 1)        - Thiodenitrification possible (Phase 2)
 ───────────────────────────       ───────────────────────────
 Layer 3: d_tot - D2m ≈ 250 mm     Layer 3: Dominates column
   - Sulfate reduction active        - Enhanced H2S production
-  - H2S produced here               - H2S diffuses directly to water
+  - H2S produced and trapped        - H2S diffuses directly to water
+  - No escape when barrier exists
 ═══════════════════════════       ═══════════════════════════
+
+KEY: With last_layer: 1 for H2S, the equilibrium profile forces H2S → 0
+at the Layer 1 bottom, creating an effective oxidation barrier. H2S can
+only escape to pelagic when D1m collapses during anoxia (D1m → minD).
 ```
 
-#### H2S Flux Under Anoxia
+#### H2S Flux Behavior with `last_layer: 1`
 
-The pelagic-benthic H2S flux is calculated by `benthic_column_dissolved_matter`:
+With `last_layer: 1` configured for H2S, the `benthic_column_dissolved_matter` module calculates equilibrium profiles where H2S concentration drops to zero at the bottom of Layer 1. The benthic-pelagic flux is determined by this equilibrium profile, not simple bulk diffusion.
 
-```
-Flux = (c_sediment_surface - c_bottom_water) / cmix
-```
+**Under normal (oxic) conditions**:
+- D1m expands (e.g., 2.8 mm at high O2)
+- H2S equilibrium profile → 0 at Layer 1 bottom
+- Benthic-pelagic H2S flux ≈ 0 (chemical barrier effective)
+- H2S produced in Layer 3 is "trapped" below the barrier
 
-Under normal conditions:
-- H2S oxidized in Layer 1, c_sediment_surface ≈ 0
-- Flux to water column is small
-
-Under anoxic conditions:
-- No oxidation barrier, H2S diffuses through collapsed Layer 1
-- c_sediment_surface ≈ H2S concentration from Layer 2/3
+**Under anoxic conditions**:
+- D1m collapses toward minD (0.1 mm)
+- Chemical barrier becomes ineffective (layer too thin)
+- H2S equilibrium profile extends to sediment surface
 - Flux to water column increases dramatically
 - In water column: if any O2 present → partial oxidation → S0 (blue tide)
+
+**Key mechanism**: The `last_layer` parameter creates an implicit oxidation barrier by forcing the equilibrium profile to zero at the specified layer boundary. This is more robust than relying on explicit oxidation reactions, which may not keep pace with diffusive flux.
 
 #### Limitation of 3-Layer Approach
 
@@ -897,12 +1007,16 @@ G2s_SO4:
     s_so4_pel: N8_sulfur/SO4   # Link to pelagic sulfate
 
 # --- Benthic Hydrogen Sulfide ---
+# IMPORTANT: Use last_layer: 1 to create chemical barrier at oxic/anoxic interface
+# This prevents unrealistic H2S flux to pelagic when bottom water is oxygenated
 G2s_H2S:
   long_name: benthic hydrogen sulfide
   model: ersem/benthic_column_dissolved_matter
   parameters:
     composition: s_h2s
-    last_layer: 3              # Present in all layers
+    last_layer: 1              # H2S drops to zero at Layer 1 (like oxygen)
+    relax: 5.0                 # Relaxation rate (1/d)
+    minD: 0.0001               # Minimum layer depth (m)
   initialization:
     s_h2s: 0.0
   coupling:
@@ -1150,7 +1264,14 @@ Create a test configuration in `testcases/fabm-ersem-sulfur-test.yaml` that:
 
 ## Notes for Implementers
 
-1. **Phase 1: K6 coexistence**:
+1. **Critical: Use `last_layer: 1` for H2S**:
+   - Configure K_H2S with `last_layer: 1` (same as G2/oxygen)
+   - This creates an implicit chemical barrier at the oxic/anoxic interface
+   - Without this setting, H2S will diffuse to pelagic even when O2 is high
+   - The `last_layer` mechanism handles the sharp redox gradient correctly
+   - S0 can use `last_layer: 3` (default) as it is less reactive
+
+2. **Phase 1: K6 coexistence**:
    - Keep K6 and N6 in parallel with new H2S variables
    - Do NOT modify benthic_nitrogen_cycle.F90 or benthic_bacteria.F90 in Phase 1
    - This allows validation of new sulfur cycle against existing behavior
