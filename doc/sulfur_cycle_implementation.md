@@ -15,10 +15,14 @@ Currently, ERSEM handles this process implicitly through "oxygen debt" (K6), but
 
 ## Design Decisions
 
-1. **Replace K6 (oxygen debt)** with explicit H2S
+1. **Phased K6 transition**:
+   - **Phase 1**: Keep K6 in parallel with new H2S for backward compatibility
+   - **Phase 2**: Deprecate K6, make H2S the primary mechanism
+   - **Phase 3**: Remove K6 completely after validation
 2. **Sulfur cycle only** - no iron-sulfur interactions (FeS, FeS2) in Phase 1
 3. **Explicit sulfur species** in both water column and sediments: SO4^2-, H2S, S0
 4. **Minimal implementation first** (Phase 1), with expansion possible in later phases
+5. **Sulfate (SO4) treatment**: While SO4 is nearly conservative in seawater (~28 mM), it is explicitly tracked in the model to maintain mass balance. Changes due to sulfate reduction are small relative to the background concentration but are computed for completeness
 
 ## New State Variables
 
@@ -38,21 +42,27 @@ Currently, ERSEM handles this process implicitly through "oxygen debt" (K6), but
 | `G2s_H2S` | mmol S/m^2 | Benthic hydrogen sulfide | All layers (1-3) |
 | `G2s_S0` | mmol S/m^2 | Benthic elemental sulfur | All layers (1-3) |
 
-### Variables to Remove
+### Variables to Transition (Phased Removal)
 
-| Variable | Reason |
-|----------|--------|
-| `K6` | Replaced by explicit H2S |
-| `N6` | Replaced by N8s_H2S |
-| `o_deep` (negative values) | Oxygen should be non-negative; use H2S instead |
+| Variable | Phase 1 | Phase 2 | Phase 3 | Reason |
+|----------|---------|---------|---------|--------|
+| `K6` | Keep (parallel) | Deprecate | Remove | Replaced by explicit H2S |
+| `N6` | Keep (parallel) | Deprecate | Remove | Replaced by N8s_H2S |
+| `o_deep` (negative values) | Keep | Constrain to ≥0 | Remove | Oxygen should be non-negative; use H2S instead |
+
+**Note**: During Phase 1, both K6/N6 and the new H2S variables coexist. This allows validation against existing behavior before transitioning.
 
 ## Chemical Reactions
 
 ### Reaction Equations
 
 ```
-R1: Sulfate Reduction (Layer 2-3, anaerobic)
+R1: Sulfate Reduction (Layer 3 only in Phase 1, anaerobic)
     SO4^2- + 2CH2O -> H2S + 2HCO3^-
+
+    Note: Thermodynamically, sulfate reduction can occur in Layer 2 when NO3
+    is depleted. However, in Phase 1 implementation, R1 is restricted to
+    Layer 3 for simplicity. Layer 2 sulfate reduction may be added in Phase 2.
 
 R2: Sulfide Oxidation (Layer 1 and water column, aerobic)
     H2S + 0.5 O2 -> S0 + H2O
@@ -69,14 +79,23 @@ Based on BROM model approach using smooth tanh transitions:
 
 ```fortran
 ! Anoxia function (sulfate reduction inhibited by oxygen)
+! O2_scale controls transition sharpness (smaller = sharper)
 f_anox(O2) = 0.5 * (1.0 - tanh((O2 - O2_threshold) / O2_scale))
 
 ! Nitrate inhibition (sulfate reduction inhibited by nitrate)
+! NO3_scale controls transition sharpness (smaller = sharper)
 f_no_NO3(NO3) = 0.5 * (1.0 - tanh((NO3 - NO3_threshold) / NO3_scale))
 
 ! Combined sulfate reduction factor
+! f_sulfate_reduction ≈ 1 when both O2 and NO3 are below thresholds
+! f_sulfate_reduction ≈ 0 when either O2 or NO3 is above threshold
 f_sulfate_reduction = f_anox * f_no_NO3
 ```
+
+**Behavior of tanh transition**:
+- When O2 >> O2_threshold: f_anox → 0 (sulfate reduction suppressed)
+- When O2 << O2_threshold: f_anox → 1 (sulfate reduction enabled)
+- O2_scale determines the width of the transition zone
 
 #### R1: Sulfate Reduction Rate
 
@@ -98,15 +117,23 @@ R_S0_ox = K_S0_ox * S0 * O2 / (O2 + K_O2_half)
 
 ### Default Parameter Values (from BROM)
 
+**Important**: All concentrations use **mmol/m³** as the standard unit in ERSEM.
+1 mmol/m³ = 1 µmol/L = 1000 µmol/m³
+
 | Parameter | Value | Units | Description |
 |-----------|-------|-------|-------------|
 | `K_SO4_rd` | 0.000005 | 1/d | Sulfate reduction rate constant |
-| `K_SO4_half` | 1600 | umol/m^3 | Half-saturation for sulfate |
+| `K_SO4_half` | 1.6 | mmol/m³ | Half-saturation for sulfate (1600 µmol/m³) |
 | `K_H2S_ox` | 0.5 | 1/d | H2S oxidation rate constant |
 | `K_S0_ox` | 0.02 | 1/d | S0 oxidation rate constant |
-| `K_O2_half` | 2 | umol/m^3 | Half-saturation for oxygen |
-| `O2_threshold` | 10 | umol/m^3 | O2 threshold for sulfate reduction |
-| `NO3_threshold` | 5 | umol/m^3 | NO3 threshold for sulfate reduction |
+| `K_O2_half` | 0.002 | mmol/m³ | Half-saturation for oxygen (2 µmol/m³) |
+| `O2_threshold` | 0.01 | mmol/m³ | O2 threshold for sulfate reduction (10 µmol/m³) |
+| `NO3_threshold` | 0.005 | mmol/m³ | NO3 threshold for sulfate reduction (5 µmol/m³) |
+| `O2_scale` | 0.01 | mmol/m³ | O2 transition width for tanh function |
+| `NO3_scale` | 0.005 | mmol/m³ | NO3 transition width for tanh function |
+| `stoich_S_C` | 0.5 | mol S/mol C | Stoichiometry of sulfate reduction |
+
+**Note on scale parameters**: Setting scale equal to threshold gives a smooth transition where f ≈ 0.12 at concentration = 0 and f ≈ 0.88 at concentration = 2×threshold. Smaller scale values create sharper transitions.
 
 ### Stoichiometry
 
@@ -134,13 +161,16 @@ Layer 1 (Oxic): 0 to D1m
 
 Layer 2 (Denitrification): D1m to D2m
   Variables: G2s_SO4_2, G2s_H2S_2, G2s_S0_2, G2o_2(~0), K3n_2
-  Reactions: Limited sulfate reduction (NO3 takes priority)
+  Reactions: Transport only (Phase 1); sulfate reduction may be added in Phase 2
+  Note: NO3 reduction (denitrification) takes priority over sulfate reduction
 
 Layer 3 (Anoxic): D2m to d_tot
   Variables: G2s_SO4_3, G2s_H2S_3, G2s_S0_3
   Reactions: R1 (sulfate reduction) - PRIMARY H2S SOURCE
-  Note: Linked to H2 (anaerobic bacteria) respiration
+  Note: Linked to H2 (anaerobic bacteria) respiration rate
 ```
+
+**Phase 1 Simplification**: Sulfate reduction is implemented only in Layer 3, where conditions are guaranteed to be anoxic with depleted nitrate. This avoids complexity in handling the transition zone in Layer 2.
 
 ### Transport Mechanism
 
@@ -151,6 +181,24 @@ Use the existing `benthic_column_dissolved_matter` transport scheme:
 - Pelagic-benthic exchange at sediment-water interface
 
 **Important**: H2S produced in Layer 3 diffuses through Layer 2 and Layer 1 before reaching the water column. It does NOT bypass intermediate layers. The existing transport code handles this correctly.
+
+### Oxygen Budget Integration
+
+The sulfur cycle modules modify oxygen through ODE contributions. This integrates with ERSEM's existing oxygen model as follows:
+
+**FABM's ODE accumulation**: Multiple modules can contribute to the same state variable's rate of change. FABM accumulates all `_SET_ODE_` contributions before time integration.
+
+```
+Total dO2/dt = (existing ERSEM O2 terms)
+             + (sulfur_cycle contribution: -0.5*R_H2S_ox - 1.5*R_S0_ox)
+             + (benthic_sulfur_cycle contribution to G2o)
+```
+
+**Oxygen non-negativity**:
+- Phase 1: Rely on existing ERSEM oxygen handling (may allow negative values as "oxygen debt")
+- Phase 2+: Enforce O2 ≥ 0 constraint; negative demand is implicitly handled by H2S accumulation
+
+**Consistency check**: The sulfur module should not consume more O2 than available. The Michaelis-Menten formulation `O2/(O2+K_O2_half)` naturally reduces reaction rates as O2 approaches zero, preventing excessive consumption.
 
 ### Behavior Under Bottom Water Anoxia
 
@@ -183,13 +231,19 @@ src/
 
 ### Files to Modify
 
+**Phase 1 (minimal changes to existing code):**
 ```
 src/
-├── benthic_column_dissolved_matter.F90  # Add s_so4, s_h2s, s_s0 composition
-├── benthic_nitrogen_cycle.F90           # Remove K6 dependency
-├── benthic_bacteria.F90                 # Remove K6 reference from H2
-├── oxygen.F90                           # Enforce non-negative oxygen
+├── benthic_column_dissolved_matter.F90  # Add s_so4, s_h2s, s_s0 composition types
 ├── ersem_model_library.F90              # Register new modules
+```
+
+**Phase 2+ (K6 deprecation - NOT in Phase 1):**
+```
+src/
+├── benthic_nitrogen_cycle.F90           # Remove K6 dependency (Phase 2)
+├── benthic_bacteria.F90                 # Remove K6 reference from H2 (Phase 2)
+├── oxygen.F90                           # Enforce non-negative oxygen (Phase 2)
 ```
 
 ## Module Implementation
@@ -333,6 +387,8 @@ module ersem_benthic_sulfur_cycle
       real(rk) :: K_O2_half      ! Half-saturation for oxygen (mmol/m3)
       real(rk) :: O2_threshold   ! O2 threshold for sulfate reduction (mmol/m3)
       real(rk) :: NO3_threshold  ! NO3 threshold for sulfate reduction (mmol/m3)
+      real(rk) :: O2_scale       ! O2 transition width for tanh (mmol/m3)
+      real(rk) :: NO3_scale      ! NO3 transition width for tanh (mmol/m3)
       real(rk) :: stoich_S_C     ! Stoichiometry: mol S per mol C oxidized
 
    contains
@@ -363,6 +419,10 @@ contains
            'O2 threshold for sulfate reduction', default=0.01_rk)
       call self%get_parameter(self%NO3_threshold, 'NO3_threshold', 'mmol/m^3', &
            'NO3 threshold for sulfate reduction', default=0.005_rk)
+      call self%get_parameter(self%O2_scale, 'O2_scale', 'mmol/m^3', &
+           'O2 transition width for tanh', default=0.01_rk)
+      call self%get_parameter(self%NO3_scale, 'NO3_scale', 'mmol/m^3', &
+           'NO3 transition width for tanh', default=0.005_rk)
       call self%get_parameter(self%stoich_S_C, 'stoich_S_C', 'mol S/mol C', &
            'stoichiometry of sulfate reduction', default=0.5_rk)
 
@@ -424,6 +484,7 @@ contains
       real(rk) :: S0_1, S0_2, S0_3
       real(rk) :: O2_1, O2_2, NO3_2
       real(rk) :: D1m, D2m, Dtot
+      real(rk) :: D1m_safe, O2_conc_1   ! Guarded values for safe division
       real(rk) :: remin_rate
       real(rk) :: f_anox, f_no_NO3, f_sulfate_red
       real(rk) :: R_sulfate_red, R_H2S_ox_1, R_S0_ox_1
@@ -456,13 +517,19 @@ contains
          _GET_HORIZONTAL_(self%id_remin_rate, remin_rate)
 
          ! Calculate layer 3 thickness and concentration
+         ! Guard against division by zero when layer collapses
          layer3_thickness = max(Dtot - D2m, 0.0001_rk)
          SO4_conc_3 = SO4_3 / layer3_thickness
 
+         ! Guard D1m against extremely small values to prevent numerical issues
+         ! minD = 0.0001 m is the minimum layer thickness in ERSEM
+         D1m_safe = max(D1m, 0.0001_rk)
+
          ! Electron acceptor cascade control
          ! Layer 3 is by definition anoxic (O2=0, NO3~0), so f_sulfate_red ~ 1
-         f_anox = 0.5_rk * (1.0_rk - tanh((O2_2 - self%O2_threshold) * 100._rk))
-         f_no_NO3 = 0.5_rk * (1.0_rk - tanh((NO3_2 - self%NO3_threshold) * 100._rk))
+         ! Use scale parameters for smooth tanh transition
+         f_anox = 0.5_rk * (1.0_rk - tanh((O2_2 - self%O2_threshold) / self%O2_scale))
+         f_no_NO3 = 0.5_rk * (1.0_rk - tanh((NO3_2 - self%NO3_threshold) / self%NO3_scale))
          f_sulfate_red = f_anox * f_no_NO3
 
          ! R1: Sulfate reduction in layer 3
@@ -472,10 +539,12 @@ contains
 
          ! R2: H2S oxidation in layer 1
          ! Convert depth-integrated O2 to concentration for rate calculation
-         R_H2S_ox_1 = self%K_H2S_ox * H2S_1 * (O2_1/D1m) / ((O2_1/D1m) + self%K_O2_half)
+         ! Use D1m_safe to prevent division by very small numbers
+         O2_conc_1 = O2_1 / D1m_safe
+         R_H2S_ox_1 = self%K_H2S_ox * H2S_1 * O2_conc_1 / (O2_conc_1 + self%K_O2_half)
 
          ! R3: S0 oxidation in layer 1
-         R_S0_ox_1 = self%K_S0_ox * S0_1 * (O2_1/D1m) / ((O2_1/D1m) + self%K_O2_half)
+         R_S0_ox_1 = self%K_S0_ox * S0_1 * O2_conc_1 / (O2_conc_1 + self%K_O2_half)
 
          ! Set ODEs for layer 3 (sulfate reduction)
          _SET_BOTTOM_ODE_(self%id_SO4_3, -R_sulfate_red)
@@ -533,32 +602,33 @@ call add(factory, 'sulfur_cycle', type_ersem_sulfur_cycle)
 call add(factory, 'benthic_sulfur_cycle', type_ersem_benthic_sulfur_cycle)
 ```
 
-### Modifications to oxygen.F90
+### Modifications to oxygen.F90 (Phase 2+)
 
-Enforce non-negative oxygen:
+**Note**: This modification is NOT required for Phase 1. K6 continues to handle oxygen debt.
 
 ```fortran
-! Change the comment and behavior
+! Phase 2+: Change the comment and behavior
 ! Note: negative oxygen concentrations are NO LONGER permitted.
 ! Oxygen debt is now represented explicitly by H2S.
 
-! Ensure nonnegative constraint is applied
+! Ensure nonnegative constraint is applied by setting minimum=0.0_rk
+! in register_state_variable call
 ```
 
-### Modifications to benthic_nitrogen_cycle.F90
+### Modifications to benthic_nitrogen_cycle.F90 (Phase 2+)
 
-Remove K6 dependency:
+**Note**: This modification is NOT required for Phase 1. K6 coexists with H2S.
 
 ```fortran
-! Remove:
-! - id_K6_sms dependency
-! - K6_calculator child model
-! - K6-related calculations in do_bottom
+! Phase 2+: Remove K6 dependency
+! - Remove id_K6_sms dependency
+! - Remove K6_calculator child model
+! - Remove K6-related calculations in do_bottom
 
-! The electron acceptor cascade is now handled by:
-! 1. Oxygen consumption (primary)
-! 2. Denitrification (when O2 depleted)
-! 3. Sulfate reduction (when O2 and NO3 depleted) - handled by benthic_sulfur_cycle
+! The electron acceptor cascade will then be handled by:
+! 1. Oxygen consumption (primary) - existing
+! 2. Denitrification (when O2 depleted) - existing
+! 3. Sulfate reduction (when O2 and NO3 depleted) - new benthic_sulfur_cycle
 ```
 
 ## YAML Configuration Example
@@ -628,8 +698,10 @@ ben_sulfur:
     K_H2S_ox: 0.5              # H2S oxidation rate (1/d)
     K_S0_ox: 0.02              # S0 oxidation rate (1/d)
     K_O2_half: 0.002           # Half-saturation O2 (mmol/m3)
-    O2_threshold: 0.01         # O2 threshold for sulfate reduction
-    NO3_threshold: 0.005       # NO3 threshold for sulfate reduction
+    O2_threshold: 0.01         # O2 threshold for sulfate reduction (mmol/m3)
+    NO3_threshold: 0.005       # NO3 threshold for sulfate reduction (mmol/m3)
+    O2_scale: 0.01             # O2 transition width for tanh (mmol/m3)
+    NO3_scale: 0.005           # NO3 transition width for tanh (mmol/m3)
     stoich_S_C: 0.5            # mol S per mol C
   coupling:
     # Layer-specific sulfur species
@@ -663,66 +735,163 @@ Create `github-actions/pyfabm-ersem/test_sulfur_cycle.py`:
 ```python
 import pytest
 import pyfabm
+import numpy as np
 
-def test_sulfate_reduction_requires_anoxia():
-    """Sulfate reduction should only occur under anoxic conditions"""
-    # Test with O2 > threshold: R_sulfate_red should be ~0
-    # Test with O2 < threshold: R_sulfate_red should be > 0
-    pass
+class TestSulfurCycle:
+    """Test suite for sulfur cycle implementation"""
 
-def test_h2s_oxidation_requires_oxygen():
-    """H2S oxidation should require oxygen"""
-    # Test with O2 > 0: H2S should decrease
-    # Test with O2 = 0: H2S should remain constant
-    pass
+    # Test conditions
+    O2_OXIC = 0.2          # mmol/m3 - oxic conditions
+    O2_ANOXIC = 0.001      # mmol/m3 - anoxic conditions
+    H2S_INIT = 0.1         # mmol/m3 - initial H2S
+    S0_INIT = 0.05         # mmol/m3 - initial S0
+    SO4_INIT = 28000.0     # mmol/m3 - seawater sulfate
 
-def test_sulfur_mass_conservation():
-    """Total sulfur should be conserved"""
-    # SO4 + H2S + S0 = constant (in closed system)
-    pass
+    # Tolerances
+    RATE_TOLERANCE = 1e-10  # For "zero" rate checks
+    MASS_TOLERANCE = 1e-6   # For mass conservation (relative)
 
-def test_oxygen_consumption_stoichiometry():
-    """Verify O2 consumption matches stoichiometry"""
-    # R2: 0.5 mol O2 per mol H2S
-    # R3: 1.5 mol O2 per mol S0
-    pass
+    def test_sulfate_reduction_requires_anoxia(self, model):
+        """Sulfate reduction should only occur under anoxic conditions"""
+        # Test Case 1: Oxic conditions (O2 = 0.2 mmol/m3)
+        # Expected: f_anox ≈ 0, R_sulfate_red ≈ 0
+        model.state['O2'] = self.O2_OXIC
+        model.state['NO3'] = 0.001  # Below threshold
+        rate_oxic = model.get_diagnostic('R_sulfate_red')
+        assert rate_oxic < self.RATE_TOLERANCE, \
+            f"Sulfate reduction should be ~0 under oxic conditions, got {rate_oxic}"
 
-def test_blue_tide_scenario():
-    """Test blue tide conditions"""
-    # Under bottom water anoxia:
-    # 1. H2S should accumulate in sediments
-    # 2. H2S should flux to water column
-    # 3. S0 should increase in water column
-    pass
+        # Test Case 2: Anoxic conditions (O2 = 0.001 mmol/m3)
+        # Expected: f_anox ≈ 1, R_sulfate_red > 0
+        model.state['O2'] = self.O2_ANOXIC
+        rate_anoxic = model.get_diagnostic('R_sulfate_red')
+        assert rate_anoxic > self.RATE_TOLERANCE, \
+            f"Sulfate reduction should be > 0 under anoxic conditions, got {rate_anoxic}"
+
+    def test_h2s_oxidation_requires_oxygen(self, model):
+        """H2S oxidation should require oxygen"""
+        model.state['H2S'] = self.H2S_INIT
+
+        # Test Case 1: With oxygen
+        model.state['O2'] = self.O2_OXIC
+        rate_with_O2 = model.get_diagnostic('R_H2S_ox')
+        assert rate_with_O2 > 0, "H2S oxidation rate should be > 0 with oxygen"
+
+        # Test Case 2: Without oxygen
+        model.state['O2'] = 0.0
+        rate_no_O2 = model.get_diagnostic('R_H2S_ox')
+        assert rate_no_O2 < self.RATE_TOLERANCE, \
+            f"H2S oxidation rate should be ~0 without oxygen, got {rate_no_O2}"
+
+    def test_sulfur_mass_conservation(self, model):
+        """Total sulfur should be conserved in closed system"""
+        # Initial total sulfur
+        S_total_init = (model.state['SO4'] + model.state['H2S'] + model.state['S0'])
+
+        # Run for 1 day
+        model.integrate(dt=86400.0)
+
+        # Final total sulfur
+        S_total_final = (model.state['SO4'] + model.state['H2S'] + model.state['S0'])
+
+        # Check conservation (relative error)
+        rel_error = abs(S_total_final - S_total_init) / S_total_init
+        assert rel_error < self.MASS_TOLERANCE, \
+            f"Sulfur not conserved: initial={S_total_init}, final={S_total_final}, error={rel_error}"
+
+    def test_oxygen_consumption_stoichiometry(self, model):
+        """Verify O2 consumption matches stoichiometry"""
+        model.state['H2S'] = self.H2S_INIT
+        model.state['S0'] = self.S0_INIT
+        model.state['O2'] = self.O2_OXIC
+
+        R_H2S_ox = model.get_diagnostic('R_H2S_ox')
+        R_S0_ox = model.get_diagnostic('R_S0_ox')
+        dO2_dt = model.get_rate('O2')
+
+        # Expected O2 consumption: -0.5*R_H2S_ox - 1.5*R_S0_ox
+        expected_dO2 = -0.5 * R_H2S_ox - 1.5 * R_S0_ox
+
+        assert abs(dO2_dt - expected_dO2) < self.RATE_TOLERANCE, \
+            f"O2 stoichiometry mismatch: got {dO2_dt}, expected {expected_dO2}"
+
+    def test_blue_tide_scenario(self, model):
+        """Test blue tide conditions: anoxic bottom water -> S0 accumulation"""
+        # Initial conditions: anoxic water, H2S flux from sediment
+        model.state['O2'] = self.O2_ANOXIC
+        model.state['H2S'] = 0.5  # mmol/m3 - elevated H2S from sediment
+        model.state['S0'] = 0.0
+
+        # Run for 1 hour
+        model.integrate(dt=3600.0)
+
+        # Under anoxic conditions:
+        # - H2S oxidation should be minimal
+        # - S0 should remain low (no significant oxidation of H2S)
+        # But if slight O2 present, some S0 forms
+
+        # Now simulate water column mixing bringing some O2
+        model.state['O2'] = 0.05  # mmol/m3 - slight oxygenation
+        model.integrate(dt=3600.0)
+
+        # S0 should increase as H2S is partially oxidized
+        assert model.state['S0'] > 0, "S0 should increase during partial H2S oxidation"
 ```
+
+### Specific Test Conditions
+
+| Test | Initial Conditions | Expected Result | Tolerance |
+|------|-------------------|-----------------|-----------|
+| Anoxic suppression | O2=0.2, NO3=0.001 mmol/m³ | R_sulfate_red < 1e-10 | 1e-10 mmol/m²/d |
+| Sulfate reduction | O2=0.001, NO3=0.001 mmol/m³, SO4=28 mM | R_sulfate_red > 0 | - |
+| H2S oxidation | H2S=0.1, O2=0.2 mmol/m³ | R_H2S_ox > 0 | - |
+| Mass conservation | SO4+H2S+S0 initial | SO4+H2S+S0 after 1d same | <0.0001% |
+| O2 stoichiometry | H2S=0.1, S0=0.05, O2=0.2 | dO2/dt = -0.5*R2 - 1.5*R3 | 1e-10 |
 
 ### Integration Tests
 
 Create a test configuration in `testcases/fabm-ersem-sulfur-test.yaml` that:
-1. Simulates a shallow coastal system
-2. Induces bottom water hypoxia/anoxia
-3. Verifies H2S production and S0 accumulation
+1. Simulates a shallow coastal system (10m depth, 0.3m sediment)
+2. Initial conditions: O2=200 mmol/m³, SO4=28000 mmol/m³, H2S=0, S0=0
+3. Forces bottom water anoxia by reducing surface O2 flux
+4. Verifies:
+   - H2S accumulation in sediment Layer 3 after 10 days
+   - H2S flux to water column when Layer 1 O2 depletes
+   - S0 peak in water column during partial re-oxygenation
 
 ## Implementation Phases
 
 ### Phase 1 (Current Proposal)
 
-- Sulfur species: SO4, H2S, S0 only
-- Reactions: R1-R3 (sulfate reduction, H2S oxidation, S0 oxidation)
-- No iron interactions
-- Estimated effort: 1-2 weeks
+**Scope**:
+- New sulfur species: SO4, H2S, S0 in pelagic and benthic compartments
+- New reactions: R1-R3 (sulfate reduction in Layer 3, H2S/S0 oxidation)
+- K6/N6 coexistence: Existing oxygen debt mechanism remains unchanged
+- Minimal changes to existing modules (only add composition types and register new modules)
+
+**Files to create**: `sulfur_cycle.F90`, `benthic_sulfur_cycle.F90`
+**Files to modify**: `benthic_column_dissolved_matter.F90`, `ersem_model_library.F90`
+
+**Validation**: Compare model behavior with and without sulfur cycle enabled
 
 ### Phase 2 (Future)
 
-- Add thiosulfate (S2O3) as intermediate
+**Scope**:
+- Deprecate K6: Remove oxygen debt mechanism, rely on explicit H2S
+- Enforce O2 ≥ 0 constraint
+- Add Layer 2 sulfate reduction (when NO3 is depleted)
+- Add thiosulfate (S2O3) as intermediate species
 - Add thiodenitrification (R4: H2S + NO3 -> S0 + N2)
-- Temperature dependence
-- pH effects on rates
+
+**Files to modify**: `benthic_nitrogen_cycle.F90`, `benthic_bacteria.F90`, `oxygen.F90`
 
 ### Phase 3 (Future)
 
+**Scope**:
+- Remove K6 completely
 - Add iron-sulfur species: FeS, FeS2
-- Integrate with ERSEM iron module (-DIRON)
+- Integrate with ERSEM iron module (-DIRON flag)
+- Temperature and pH dependencies
 - Full BROM-style redox chemistry
 
 ## References
@@ -734,19 +903,32 @@ Create a test configuration in `testcases/fabm-ersem-sulfur-test.yaml` that:
 
 ## Notes for Implementers
 
-1. **Start with K6 compatibility**: Initially keep K6 in parallel with H2S to avoid breaking existing configurations. Remove K6 in a later cleanup phase.
+1. **Phase 1: K6 coexistence**:
+   - Keep K6 and N6 in parallel with new H2S variables
+   - Do NOT modify benthic_nitrogen_cycle.F90 or benthic_bacteria.F90 in Phase 1
+   - This allows validation of new sulfur cycle against existing behavior
+   - K6 removal is deferred to Phase 2/3
 
 2. **Test incrementally**:
    - First implement pelagic sulfur_cycle.F90 alone
-   - Verify with simple box model
+   - Verify with simple box model (0D)
    - Then add benthic_sulfur_cycle.F90
-   - Finally, modify existing modules
+   - Test benthic-pelagic coupling
+   - Finally, in Phase 2+, modify existing modules to remove K6
 
 3. **Watch for unit conversions**:
    - Pelagic: mmol/m³ (concentration)
    - Benthic: mmol/m² (depth-integrated)
    - Layer concentrations need division by layer thickness
+   - All parameters in this document use **mmol/m³** (not µmol/m³)
 
-4. **Verify mass conservation**: Total sulfur (SO4 + H2S + S0) should be conserved in closed systems.
+4. **Guard against numerical issues**:
+   - Use `max(D1m, 0.0001)` before dividing by layer thickness
+   - Layer thickness can become very small under anoxic conditions
+   - The 0.0001 m minimum matches ERSEM's `minD` parameter
 
-5. **Consult BROM source**: https://github.com/fabm-model/fabm/blob/master/src/models/ihamocc/brom/brom_redox.F90 for reference implementation details.
+5. **Verify mass conservation**: Total sulfur (SO4 + H2S + S0) should be conserved in closed systems. Run conservation tests before integration.
+
+6. **Oxygen budget**: The sulfur modules contribute to O2 rates via `_SET_ODE_`. FABM accumulates all contributions. Verify that total O2 consumption is physically reasonable.
+
+7. **Consult BROM source**: https://github.com/fabm-model/fabm/blob/master/src/models/ihamocc/brom/brom_redox.F90 for reference implementation details.
