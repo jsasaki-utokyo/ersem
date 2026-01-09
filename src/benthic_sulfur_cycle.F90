@@ -9,7 +9,8 @@
 ! Reactions:
 !   Layer 3 (anoxic): OM -> H2S (sulfate reduction, coupled to H2 bacteria)
 !   Layer 1 (oxic):   H2S + 0.5 O2 -> S0
-!                     S0 + 1.5 O2 -> (removed from system)
+!                     S0 + 1.5 O2 -> SO4 (removed from system)
+!                     S0 -> burial (settling into deeper sediment)
 !   All layers:       H2S + Fe(II) -> FeS (burial, irreversible)
 !
 ! Key simplification: Layer 3 is by definition anoxic in ERSEM's 3-layer
@@ -67,6 +68,7 @@ module ersem_benthic_sulfur_cycle
       type(type_horizontal_diagnostic_variable_id) :: id_R_sulfate_red
       type(type_horizontal_diagnostic_variable_id) :: id_R_H2S_ox_ben
       type(type_horizontal_diagnostic_variable_id) :: id_R_S0_ox_ben
+      type(type_horizontal_diagnostic_variable_id) :: id_R_S0_burial
       type(type_horizontal_diagnostic_variable_id) :: id_R_barrier_ox
       type(type_horizontal_diagnostic_variable_id) :: id_R_FeS_ben
       type(type_horizontal_diagnostic_variable_id) :: id_R_FeS_pel
@@ -76,6 +78,7 @@ module ersem_benthic_sulfur_cycle
       real(rk) :: K_H2S_prod     ! H2S production rate per unit remineralization (mol S/mol C)
       real(rk) :: K_H2S_ox       ! H2S oxidation rate constant (1/d)
       real(rk) :: K_S0_ox        ! S0 oxidation rate constant (1/d)
+      real(rk) :: K_S0_burial    ! S0 burial rate (1/d)
       real(rk) :: K_O2_half      ! Half-saturation for oxygen (mmol/m3)
       real(rk) :: K_barrier      ! Oxic barrier effectiveness (1/m)
       real(rk) :: K_barrier_rate ! Rate at which barrier oxidizes H2S (1/d)
@@ -103,6 +106,8 @@ contains
            'H2S oxidation rate constant', default=0.5_rk)
       call self%get_parameter(self%K_S0_ox, 'K_S0_ox', '1/d', &
            'S0 oxidation rate constant', default=0.02_rk)
+      call self%get_parameter(self%K_S0_burial, 'K_S0_burial', '1/d', &
+           'S0 burial rate (settling into deeper sediment)', default=0.5_rk)
       call self%get_parameter(self%K_O2_half, 'K_O2_half', 'mmol/m^3', &
            'half-saturation O2 for oxidation', default=1.0_rk)
 
@@ -172,6 +177,9 @@ contains
       call self%register_diagnostic_variable(self%id_R_S0_ox_ben, 'R_S0_ox_ben', &
            'mmol S/m^2/d', 'benthic S0 oxidation rate', &
            domain=domain_bottom, source=source_do_bottom)
+      call self%register_diagnostic_variable(self%id_R_S0_burial, 'R_S0_burial', &
+           'mmol S/m^2/d', 'benthic S0 burial rate', &
+           domain=domain_bottom, source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_R_barrier_ox, 'R_barrier_ox', &
            'mmol S/m^2/d', 'H2S oxidation by oxic barrier', &
            domain=domain_bottom, source=source_do_bottom)
@@ -195,7 +203,7 @@ contains
       real(rk) :: H2S_pel, S0_pel, O2_pel
       real(rk) :: D1m, remin_rate
       real(rk) :: O2_conc_1, f_O2, f_O2_pel
-      real(rk) :: R_sulfate_red, R_H2S_ox_1, R_S0_ox_1
+      real(rk) :: R_sulfate_red, R_H2S_ox_1, R_S0_ox_1, R_S0_burial
       real(rk) :: f_barrier, R_barrier_ox
       real(rk) :: R_FeS_1, R_FeS_3, R_FeS_ben, R_FeS_pel
 
@@ -248,8 +256,13 @@ contains
          ! H2S + 0.5 O2 -> S0
          R_H2S_ox_1 = self%K_H2S_ox * H2S_1 * f_O2
 
-         ! S0 + 1.5 O2 -> (removed)
+         ! S0 + 1.5 O2 -> SO4 (removed from system)
          R_S0_ox_1 = self%K_S0_ox * S0_1 * f_O2
+
+         ! S0 burial (settling into deeper sediment, irreversible removal)
+         ! Elemental sulfur settles/buries into anoxic layers where it may
+         ! undergo disproportionation or further reactions
+         R_S0_burial = self%K_S0_burial * S0_1
 
          ! ============================================================
          ! OXIC BARRIER MECHANISM
@@ -325,8 +338,9 @@ contains
          _SET_BOTTOM_ODE_(self%id_H2S_3, R_sulfate_red - R_FeS_3)
 
          ! Layer 1: H2S consumption by oxidation and FeS precipitation
+         !          S0 production from H2S oxidation, loss from oxidation and burial
          _SET_BOTTOM_ODE_(self%id_H2S_1, -R_H2S_ox_1 - R_FeS_1)
-         _SET_BOTTOM_ODE_(self%id_S0_1,   R_H2S_ox_1 - R_S0_ox_1)
+         _SET_BOTTOM_ODE_(self%id_S0_1,   R_H2S_ox_1 - R_S0_ox_1 - R_S0_burial)
          _SET_BOTTOM_ODE_(self%id_G2o,   -0.5_rk * R_H2S_ox_1 - 1.5_rk * R_S0_ox_1)
 
          ! Pelagic: H2S removal by oxic barrier oxidation and FeS scavenging
@@ -340,6 +354,7 @@ contains
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_sulfate_red, R_sulfate_red)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_H2S_ox_ben, R_H2S_ox_1)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_S0_ox_ben, R_S0_ox_1)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_S0_burial, R_S0_burial)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_barrier_ox, R_barrier_ox)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_FeS_ben, R_FeS_ben)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_FeS_pel, R_FeS_pel)
