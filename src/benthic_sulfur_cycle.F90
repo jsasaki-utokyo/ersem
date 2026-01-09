@@ -3,11 +3,12 @@
 !-----------------------------------------------------------------------
 ! Benthic sulfur cycle module for ERSEM
 !
-! Handles sulfate reduction in Layer 3 and sulfide oxidation in Layer 1.
+! Handles sulfate reduction in Layer 3 and sulfide oxidation in Layers 1-2.
 ! Simplified implementation (Option B): H2S + S0 only, no explicit SO4.
 !
 ! Reactions:
 !   Layer 3 (anoxic): OM -> H2S (sulfate reduction, coupled to H2 bacteria)
+!   Layer 2 (suboxic): H2S + 0.4 NO3 -> S0 + 0.2 N2 (chemolithotrophic oxidation)
 !   Layer 1 (oxic):   H2S + 0.5 O2 -> S0
 !                     S0 + 1.5 O2 -> SO4 (removed from system)
 !                     S0 -> burial (settling into deeper sediment)
@@ -15,6 +16,14 @@
 !
 ! Key simplification: Layer 3 is by definition anoxic in ERSEM's 3-layer
 ! model, so no electron acceptor cascade check is needed.
+!
+! H2S-NO3 Oxidation (Layer 2 - Denitrification Zone):
+!   H2S diffusing from Layer 3 through Layer 2 is oxidized by nitrate
+!   through chemolithotrophic sulfur oxidation coupled to denitrification:
+!     5 H2S + 2 NO3- -> 5 S0 + N2 + 4 H2O (partial oxidation to S0)
+!   This prevents H2S from reaching Layer 1 and the pelagic when
+!   a thick denitrification zone exists (as in winter).
+!   The presence of NO3 in Layer 2 indicates that H2S cannot coexist.
 !
 ! FeS Precipitation (Iron Sulfide Burial):
 !   Free sulfide is buffered by reactive iron, forming FeS which is buried.
@@ -37,6 +46,7 @@
 !   - ERSEM benthic_nitrogen_cycle.F90 for patterns
 !   - Luther et al. (2011) Thermodynamics and Kinetics of Sulfide Oxidation
 !   - Rickard & Luther (2007) Chemistry of Iron Sulfides
+!   - Brunet & Garcia-Gil (1996) Sulfide-induced dissimilatory nitrate reduction
 !-----------------------------------------------------------------------
 
 module ersem_benthic_sulfur_cycle
@@ -49,9 +59,10 @@ module ersem_benthic_sulfur_cycle
 
    type, extends(type_base_model), public :: type_ersem_benthic_sulfur_cycle
       ! State variable dependencies (layer-specific via benthic_column_dissolved_matter)
-      type(type_bottom_state_variable_id) :: id_H2S_1, id_H2S_3
+      type(type_bottom_state_variable_id) :: id_H2S_1, id_H2S_2, id_H2S_3
       type(type_bottom_state_variable_id) :: id_S0_1
       type(type_bottom_state_variable_id) :: id_G2o  ! Oxygen in Layer 1
+      type(type_bottom_state_variable_id) :: id_NO3_2  ! NO3 in Layer 2 for H2S-NO3 oxidation
 
       ! Pelagic H2S at bottom for oxic barrier mechanism
       type(type_state_variable_id) :: id_H2S_pel
@@ -67,6 +78,7 @@ module ersem_benthic_sulfur_cycle
       ! Diagnostic variables
       type(type_horizontal_diagnostic_variable_id) :: id_R_sulfate_red
       type(type_horizontal_diagnostic_variable_id) :: id_R_H2S_ox_ben
+      type(type_horizontal_diagnostic_variable_id) :: id_R_H2S_NO3_ox  ! H2S oxidation by NO3 in Layer 2
       type(type_horizontal_diagnostic_variable_id) :: id_R_S0_ox_ben
       type(type_horizontal_diagnostic_variable_id) :: id_R_S0_burial
       type(type_horizontal_diagnostic_variable_id) :: id_R_barrier_ox
@@ -77,6 +89,8 @@ module ersem_benthic_sulfur_cycle
       ! Parameters
       real(rk) :: K_H2S_prod     ! H2S production rate per unit remineralization (mol S/mol C)
       real(rk) :: K_H2S_ox       ! H2S oxidation rate constant (1/d)
+      real(rk) :: K_H2S_NO3_ox   ! H2S oxidation by NO3 rate constant (1/d)
+      real(rk) :: K_NO3_half     ! Half-saturation for NO3 (mmol/m3)
       real(rk) :: K_S0_ox        ! S0 oxidation rate constant (1/d)
       real(rk) :: K_S0_burial    ! S0 burial rate (1/d)
       real(rk) :: K_O2_half      ! Half-saturation for oxygen (mmol/m3)
@@ -111,6 +125,17 @@ contains
       call self%get_parameter(self%K_O2_half, 'K_O2_half', 'mmol/m^3', &
            'half-saturation O2 for oxidation', default=1.0_rk)
 
+      ! H2S-NO3 oxidation parameters (Layer 2 - denitrification zone)
+      ! Chemolithotrophic sulfur oxidation coupled to denitrification:
+      !   5 H2S + 2 NO3- -> 5 S0 + N2 + 4 H2O
+      ! This is the key mechanism that prevents H2S from reaching Layer 1
+      ! when a thick denitrification zone (Layer 2) exists.
+      ! Typical rate: 10-100 1/d (fast reaction when both substrates present)
+      call self%get_parameter(self%K_H2S_NO3_ox, 'K_H2S_NO3_ox', '1/d', &
+           'H2S oxidation rate by NO3 in Layer 2', default=50.0_rk)
+      call self%get_parameter(self%K_NO3_half, 'K_NO3_half', 'mmol/m^3', &
+           'half-saturation NO3 for H2S-NO3 oxidation', default=10.0_rk)
+
       ! Oxic barrier parameters
       ! K_barrier: controls how effective the oxic layer is at blocking H2S
       ! Physical basis: exp(-K_barrier * D1m) represents the fraction of H2S
@@ -140,6 +165,8 @@ contains
       ! These link to variables created by benthic_column_dissolved_matter with composition 'h' and 'e'
       call self%register_state_dependency(self%id_H2S_1, 'H2S_1', 'mmol S/m^2', &
            'hydrogen sulfide in layer 1')
+      call self%register_state_dependency(self%id_H2S_2, 'H2S_2', 'mmol S/m^2', &
+           'hydrogen sulfide in layer 2')
       call self%register_state_dependency(self%id_H2S_3, 'H2S_3', 'mmol S/m^2', &
            'hydrogen sulfide in layer 3')
       call self%register_state_dependency(self%id_S0_1, 'S0_1', 'mmol S/m^2', &
@@ -148,6 +175,10 @@ contains
       ! Oxygen in Layer 1 for oxidation reactions
       call self%register_state_dependency(self%id_G2o, 'G2o', 'mmol O_2/m^2', &
            'oxygen in layer 1')
+
+      ! NO3 in Layer 2 for H2S-NO3 oxidation (chemolithotrophic denitrification)
+      call self%register_state_dependency(self%id_NO3_2, 'NO3_2', 'mmol N/m^2', &
+           'nitrate in layer 2')
 
       ! Pelagic variables at bottom for oxic barrier mechanism
       call self%register_state_dependency(self%id_H2S_pel, 'H2S_pel', 'mmol S/m^3', &
@@ -172,7 +203,10 @@ contains
            'mmol S/m^2/d', 'sulfate reduction rate (H2S production)', &
            domain=domain_bottom, source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_R_H2S_ox_ben, 'R_H2S_ox_ben', &
-           'mmol S/m^2/d', 'benthic H2S oxidation rate', &
+           'mmol S/m^2/d', 'benthic H2S oxidation rate (O2)', &
+           domain=domain_bottom, source=source_do_bottom)
+      call self%register_diagnostic_variable(self%id_R_H2S_NO3_ox, 'R_H2S_NO3_ox', &
+           'mmol S/m^2/d', 'H2S oxidation by NO3 in Layer 2', &
            domain=domain_bottom, source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_R_S0_ox_ben, 'R_S0_ox_ben', &
            'mmol S/m^2/d', 'benthic S0 oxidation rate', &
@@ -199,38 +233,43 @@ contains
       class(type_ersem_benthic_sulfur_cycle), intent(in) :: self
       _DECLARE_ARGUMENTS_DO_BOTTOM_
 
-      real(rk) :: H2S_1, H2S_3, S0_1, G2o
+      real(rk) :: H2S_1, H2S_2, H2S_3, S0_1, G2o, NO3_2
       real(rk) :: H2S_pel, S0_pel, O2_pel
-      real(rk) :: D1m, remin_rate
-      real(rk) :: O2_conc_1, f_O2, f_O2_pel
-      real(rk) :: R_sulfate_red, R_H2S_ox_1, R_S0_ox_1, R_S0_burial
+      real(rk) :: D1m, D2m, remin_rate
+      real(rk) :: O2_conc_1, NO3_conc_2, f_O2, f_O2_pel, f_NO3
+      real(rk) :: R_sulfate_red, R_H2S_ox_1, R_H2S_NO3_ox, R_S0_ox_1, R_S0_burial
       real(rk) :: f_barrier, R_barrier_ox
-      real(rk) :: R_FeS_1, R_FeS_3, R_FeS_ben, R_FeS_pel
+      real(rk) :: R_FeS_1, R_FeS_2, R_FeS_3, R_FeS_ben, R_FeS_pel
 
       _HORIZONTAL_LOOP_BEGIN_
 
          ! Get state variables
          _GET_HORIZONTAL_(self%id_H2S_1, H2S_1)
+         _GET_HORIZONTAL_(self%id_H2S_2, H2S_2)
          _GET_HORIZONTAL_(self%id_H2S_3, H2S_3)
          _GET_HORIZONTAL_(self%id_S0_1, S0_1)
          _GET_HORIZONTAL_(self%id_G2o, G2o)
+         _GET_HORIZONTAL_(self%id_NO3_2, NO3_2)
 
          ! Get pelagic variables at bottom
          _GET_(self%id_H2S_pel, H2S_pel)
          _GET_(self%id_S0_pel, S0_pel)
          _GET_(self%id_O2_pel, O2_pel)
 
-         ! Get layer depth
+         ! Get layer depths
          _GET_HORIZONTAL_(self%id_D1m, D1m)
+         _GET_HORIZONTAL_(self%id_D2m, D2m)
 
          ! Get remineralization rate from H2 bacteria
          _GET_HORIZONTAL_(self%id_remin_rate, remin_rate)
 
          ! Ensure non-negative
          H2S_1 = max(0.0_rk, H2S_1)
+         H2S_2 = max(0.0_rk, H2S_2)
          H2S_3 = max(0.0_rk, H2S_3)
          S0_1 = max(0.0_rk, S0_1)
          G2o = max(0.0_rk, G2o)
+         NO3_2 = max(0.0_rk, NO3_2)
          H2S_pel = max(0.0_rk, H2S_pel)
          S0_pel = max(0.0_rk, S0_pel)
          O2_pel = max(0.0_rk, O2_pel)
@@ -263,6 +302,30 @@ contains
          ! Elemental sulfur settles/buries into anoxic layers where it may
          ! undergo disproportionation or further reactions
          R_S0_burial = self%K_S0_burial * S0_1
+
+         ! ============================================================
+         ! LAYER 2: H2S oxidation by NO3 (chemolithotrophic denitrification)
+         ! ============================================================
+         ! H2S diffusing from Layer 3 through Layer 2 is oxidized by nitrate.
+         ! This is the key mechanism that prevents H2S from reaching Layer 1
+         ! (and the pelagic) when a thick denitrification zone exists.
+         !
+         ! Reaction: 5 H2S + 2 NO3- -> 5 S0 + N2 + 4 H2O
+         ! Stoichiometry: 0.4 mol NO3 consumed per mol H2S oxidized
+         !
+         ! The presence of NO3 in Layer 2 indicates an active denitrification
+         ! zone where H2S cannot coexist - any H2S passing through is oxidized.
+         !
+         ! Convert depth-integrated NO3 to concentration
+         ! Layer 2 thickness = D2m - D1m
+         NO3_conc_2 = NO3_2 / max(D2m - D1m, 0.0001_rk)
+
+         ! NO3 limitation (Michaelis-Menten)
+         f_NO3 = NO3_conc_2 / (NO3_conc_2 + self%K_NO3_half)
+
+         ! H2S oxidation by NO3 in Layer 2
+         ! This is a fast reaction when both substrates are present
+         R_H2S_NO3_ox = self%K_H2S_NO3_ox * H2S_2 * f_NO3
 
          ! ============================================================
          ! OXIC BARRIER MECHANISM
@@ -320,12 +383,16 @@ contains
          ! Lower rate because Fe is mostly in oxidized form (Fe(III))
          R_FeS_1 = self%K_FeS_ben * 0.1_rk * H2S_1  ! Reduced rate in oxic layer
 
+         ! FeS precipitation in benthic Layer 2 (suboxic layer)
+         ! Intermediate rate - some Fe(II) available from reduction
+         R_FeS_2 = self%K_FeS_ben * 0.5_rk * H2S_2
+
          ! FeS precipitation in benthic Layer 3 (anoxic layer)
          ! Higher rate because Fe(II) is abundant from Fe(III) reduction
          R_FeS_3 = self%K_FeS_ben * H2S_3
 
          ! Total benthic FeS precipitation
-         R_FeS_ben = R_FeS_1 + R_FeS_3
+         R_FeS_ben = R_FeS_1 + R_FeS_2 + R_FeS_3
 
          ! FeS precipitation (scavenging) in pelagic bottom water
          ! Removes H2S through reaction with particulate Fe or settling FeS
@@ -336,6 +403,11 @@ contains
          ! ============================================================
          ! Layer 3: H2S production from sulfate reduction, loss from FeS burial
          _SET_BOTTOM_ODE_(self%id_H2S_3, R_sulfate_red - R_FeS_3)
+
+         ! Layer 2: H2S consumption by NO3 oxidation and FeS precipitation
+         !          NO3 consumption by H2S oxidation (stoichiometry: 0.4 mol NO3 per mol H2S)
+         _SET_BOTTOM_ODE_(self%id_H2S_2, -R_H2S_NO3_ox - R_FeS_2)
+         _SET_BOTTOM_ODE_(self%id_NO3_2, -0.4_rk * R_H2S_NO3_ox)
 
          ! Layer 1: H2S consumption by oxidation and FeS precipitation
          !          S0 production from H2S oxidation, loss from oxidation and burial
@@ -353,6 +425,7 @@ contains
          ! Set diagnostics
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_sulfate_red, R_sulfate_red)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_H2S_ox_ben, R_H2S_ox_1)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_H2S_NO3_ox, R_H2S_NO3_ox)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_S0_ox_ben, R_S0_ox_1)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_S0_burial, R_S0_burial)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_barrier_ox, R_barrier_ox)

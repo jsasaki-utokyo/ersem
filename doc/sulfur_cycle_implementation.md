@@ -60,12 +60,66 @@ ERSEM's 3-layer model already handles:
 | Two-step oxidation | H2S → S0 → SO4 | Capture partial oxidation |
 | SO4 state variable | Benthic + Pelagic | Mass balance (optional: can assume constant) |
 
+### Layer 2 H2S-NO3 Oxidation (Implemented - Critical for Winter)
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| **H2S-NO3 oxidation** | Benthic Layer 2 | **Prevents H2S from reaching pelagic when NO3 zone exists** |
+
+**Physical basis**: H2S diffusing from Layer 3 through Layer 2 (denitrification zone) is oxidized by nitrate through chemolithotrophic sulfur oxidation coupled to denitrification:
+```
+5 H2S + 2 NO3⁻ → 5 S0 + N2 + 4 H2O
+
+Stoichiometry: 0.4 mol NO3 consumed per mol H2S oxidized
+```
+
+**Why this is critical**: In winter, Layer 2 (NO3 zone) is thick (~20-26 cm). H2S and NO3 cannot coexist - the presence of NO3 indicates that H2S has been oxidized. Without this mechanism, H2S can pass through Layer 2 and appear in the pelagic even during winter when it should be zero.
+
+**Validation results** (Tokyo Bay test case):
+- Before implementation: H2S-NO3 coexistence in 99.8% of timesteps
+- After implementation: H2S-NO3 coexistence reduced to 3.1%
+- Winter H2S: Reduced from 0.001-0.002 mmol/m³ to 0.000000 mmol/m³
+
+**Rate formulation**:
+```fortran
+! Convert depth-integrated NO3 to concentration
+NO3_conc_2 = NO3_2 / max(D2m - D1m, 0.0001_rk)
+
+! NO3 limitation (Michaelis-Menten)
+f_NO3 = NO3_conc_2 / (NO3_conc_2 + K_NO3_half)
+
+! H2S oxidation by NO3 in Layer 2
+R_H2S_NO3_ox = K_H2S_NO3_ox * H2S_2 * f_NO3
+
+! ODEs
+dH2S_2/dt = -R_H2S_NO3_ox  ! H2S consumed
+dNO3_2/dt = -0.4 * R_H2S_NO3_ox  ! NO3 consumed (stoichiometry)
+```
+
+**Parameters**:
+| Parameter | Value | Units | Description |
+|-----------|-------|-------|-------------|
+| `K_H2S_NO3_ox` | 50.0 | 1/d | H2S oxidation rate by NO3 (fast reaction) |
+| `K_NO3_half` | 10.0 | mmol/m³ | Half-saturation NO3 for H2S-NO3 oxidation |
+
+**YAML configuration**:
+```yaml
+ben_sulfur:
+  parameters:
+    K_H2S_NO3_ox: 50.0    # H2S oxidation by NO3 in Layer 2 (1/d)
+    K_NO3_half: 10.0      # half-saturation NO3 (mmol/m^3)
+  coupling:
+    H2S_2: K_H2S/per_layer/h2  # H2S in layer 2
+    NO3_2: K4/per_layer/n2     # NO3 in layer 2 (ammonium pool has NO3 in layer 2)
+```
+
+**Note**: This mechanism is now implemented as part of Phase 1, not Phase 2 as originally planned. It was found to be essential for correct winter behavior.
+
 ### Optional Components (Phase 2+)
 
 | Component | Purpose | Complexity |
 |-----------|---------|------------|
 | Thiosulfate (S2O3) | BROM-compatible pathway | Medium |
-| Thiodenitrification | H2S + NO3 coupling | Medium |
 | Iron-sulfur (FeS, FeS2) | Full redox chemistry | High |
 
 ### Recommended Implementation Order
@@ -202,7 +256,7 @@ This implementation is based on the BROM (Bottom RedOx Model) sulfur chemistry b
 | H2S oxidation kinetics | Linear: K × O2 × H2S | Michaelis-Menten for O2 | Prevents excessive rates at high O2 |
 | Benthic structure | None (water column) | 3-layer sediment | Adapted to ERSEM architecture |
 | Iron coupling | Full Fe-S system | None | Deferred to Phase 3 |
-| Thiodenitrification | H2S + NO3 → S0 + N2 | None | Deferred to Phase 2 |
+| Thiodenitrification | H2S + NO3 → S0 + N2 | Implemented in Layer 2 | Critical for winter behavior |
 
 ### Parameter Correspondence
 
@@ -470,8 +524,8 @@ Layer 1 (Oxic): 0 to D1m
 
 Layer 2 (Denitrification): D1m to D2m
   Variables: G2s_SO4_2, G2s_H2S_2, G2s_S0_2, G2o_2(~0), K3n_2
-  Reactions: Transport only (Phase 1); sulfate reduction may be added in Phase 2
-  Note: NO3 reduction (denitrification) takes priority over sulfate reduction
+  Reactions: H2S-NO3 oxidation (chemolithotrophic denitrification)
+  Note: H2S diffusing from Layer 3 is oxidized by NO3, preventing H2S-NO3 coexistence
 
 Layer 3 (Anoxic): D2m to d_tot
   Variables: G2s_SO4_3, G2s_H2S_3, G2s_S0_3
@@ -1266,8 +1320,9 @@ Create a test configuration in `testcases/fabm-ersem-sulfur-test.yaml` that:
 - Enforce O2 ≥ 0 constraint
 - Add Layer 2 sulfate reduction (when NO3 is depleted)
 - Add thiosulfate (S2O3) as intermediate species (completing BROM pathway: H2S → S0 → S2O3 → SO4)
-- Add thiodenitrification reactions from BROM:
-  - R4: 5 H2S + 8 NO3⁻ → 5 SO4²⁻ + 4 N2 + 4 H2O (K_hs_no3 = 0.8 1/d in BROM)
+- ~~Add thiodenitrification reactions~~ (H2S-NO3 oxidation now implemented in Phase 1)
+- Add additional thiodenitrification pathways from BROM:
+  - ~~R4: 5 H2S + 2 NO3⁻ → 5 S0 + N2 + 4 H2O~~ (implemented in Phase 1 as H2S-NO3 oxidation)
   - R5: 5 S0 + 6 NO3⁻ → 5 SO4²⁻ + 3 N2 (K_s0_no3 = 0.9 1/d in BROM)
   - R6: 5 S2O3²⁻ + 8 NO3⁻ → 10 SO4²⁻ + 4 N2 (K_s2o3_no3 = 0.01 1/d in BROM)
 - Add S0 disproportionation: 4 S0 + 3 H2O → 2 H2S + S2O3²⁻ + 2 H⁺ (K_s0_disp = 0.001 1/d)
