@@ -4,85 +4,106 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Overview
 
-ERSEM (European Regional Seas Ecosystem Model) is a marine biogeochemical and ecosystem model describing carbon, nitrogen, phosphorus, silicon, oxygen, and iron cycling through lower trophic level pelagic and benthic ecosystems. The codebase is primarily written in Fortran 90 and integrates with the FABM (Framework for Aquatic Biogeochemical Models) framework.
+ERSEM (European Regional Seas Ecosystem Model) is a marine biogeochemical and ecosystem model describing carbon, nitrogen, phosphorus, silicon, oxygen, and iron cycling through pelagic and benthic ecosystems. The codebase is Fortran 90, integrating with the FABM (Framework for Aquatic Biogeochemical Models) framework.
 
-## Build System
+This is a UTokyo development version optimized for estuarine and coastal systems. Upstream: https://github.com/pmlmodelling/ersem
 
-ERSEM uses CMake for building and requires integration with FABM. The main build configurations:
+## Build Commands
 
 ### PyFABM-ERSEM (Python interface)
 ```bash
-# Clone dependencies
 git clone https://github.com/fabm-model/fabm.git
-git clone https://github.com/pmlmodelling/ersem.git
-
-# Build and install
-cd fabm
-python -m pip install .
+cd fabm && python -m pip install .
 ```
 
-### GOTM-FABM-ERSEM (with General Ocean Turbulence Model)
+### GOTM-FABM-ERSEM (1D water column)
 ```bash
-# Clone all components
-git clone https://github.com/pmlmodelling/ersem.git
-git clone https://github.com/fabm-model/fabm.git
-git clone https://github.com/gotm-model/code.git gotm
-
-# Build with CMake
 mkdir build && cd build
 cmake ../gotm -DFABM_BASE=../fabm -DFABM_ERSEM_BASE=../ersem
 make install -j $(nproc)
 ```
 
-### FABM0d (0-dimensional aquarium setup)
-Similar to GOTM build but uses the 0d configuration for box model simulations.
+### FABM0d (0D box model)
+```bash
+cmake ../fabm/src/drivers/0d -DGOTM_BASE=../gotm/code -DFABM_ERSEM_BASE=../ersem
+make install -j $(nproc)
+```
+
+### CMake Options
+- `-DERSEM_USE_IRON=ON` - Enable iron cycling (adds `-DIRON` preprocessor flag)
+- `-DCMAKE_Fortran_COMPILER=ifx` or `gfortran`
+- `-DCMAKE_Fortran_FLAGS="-fcheck=all"` - Enable runtime checks for debugging
 
 ## Testing
 
-Tests are run via GitHub Actions (`.github/workflows/ersem.yml`):
-
-- **PyFABM tests**: `pytest github-actions/pyfabm-ersem`
-- **GOTM tests**: `pytest github-actions/gotm-fabm-ersem/test_state_variables.py github-actions/gotm-fabm-ersem/test_gotm.py`
-- **FABM0d tests**: `pytest github-actions/fabm0d-gotm-ersem`
-
-Test configurations are in `testcases/` directory with various YAML setups.
+Tests run via pytest in the `github-actions/` directory:
+```bash
+pytest github-actions/pyfabm-ersem           # PyFABM tests
+pytest github-actions/gotm-fabm-ersem        # GOTM tests
+pytest github-actions/fabm0d-gotm-ersem      # FABM0d tests
+```
 
 ## Code Architecture
 
-### Core Modules (`src/`)
+### FABM Integration Pattern
 
-The model is organized into functional modules:
+All ERSEM modules follow the FABM model pattern:
+1. Each module defines a type extending a base class (e.g., `type_ersem_primary_producer` extends `type_ersem_pelagic_base`)
+2. Types implement `initialize` (parameter/variable registration) and `do` (rate calculations) procedures
+3. The model factory in `ersem_model_library.F90` registers all models and maps YAML names to Fortran types
 
-**Pelagic Components:**
-- `primary_producer.F90` - Phytoplankton dynamics
-- `microzooplankton.F90`, `mesozooplankton.F90` - Zooplankton
-- `bacteria.F90`, `bacteria_docdyn.F90` - Bacterial processes
+### Module Hierarchy
 
-**Benthic Components:**
-- `benthic_base.F90` - Base benthic functionality
-- `benthic_bacteria.F90`, `benthic_fauna.F90` - Benthic organisms
-- `benthic_column_*.F90` - Sediment-water column interactions
+```
+ersem_model_library.F90  -- Factory: maps "ersem/xyz" names to types
+    |
+    +-- shared.F90           -- Constants, flags (use_iron), standard variables
+    |
+    +-- pelagic_base.F90     -- Base for pelagic state variables (C, N, P, Si, Fe, Chl)
+    |   +-- primary_producer.F90   -- P1-P4 phytoplankton
+    |   +-- microzooplankton.F90   -- Heterotrophic nanoflagellates
+    |   +-- mesozooplankton.F90    -- Copepods, etc.
+    |   +-- bacteria.F90           -- Standard bacterial remineralization
+    |   +-- bacteria_docdyn.F90    -- Dynamic DOC bacteria
+    |
+    +-- benthic_base.F90     -- Base for benthic state variables
+        +-- benthic_column.F90              -- Sediment layering/diffusion
+        +-- benthic_bacteria.F90            -- Sediment bacteria
+        +-- benthic_fauna.F90               -- Deposit/filter feeders
+        +-- benthic_nitrogen_cycle.F90      -- Nitrification/denitrification
+```
 
-**Biogeochemical Processes:**
-- `carbonate.F90`, `calcification.F90` - Carbon system
-- `oxygen.F90` - Oxygen dynamics
-- `nitrification.F90`, `nitrous_oxide.F90` - Nitrogen cycle
-- `light.F90`, `light_iop*.F90` - Light attenuation
+### Key Files
 
-**Framework Integration:**
-- `ersem_model_library.F90` - Main FABM interface
-- `shared.F90` - Shared utilities
-- Iron support optional via `-DIRON` flag
+- `src/ersem_model_library.F90` - Model factory; add new models to the `select case` block
+- `src/shared.F90` - Shared constants (`CMass`, `ZeroX`), `use_iron` flag, aggregate standard variables
+- `src/primary_producer.F90` - Primary production with optional silicate, calcification, iron
+- `testcases/*.yaml` - Example configurations showing model coupling
 
-### Configuration
+### Adding a New Model
 
-Model setup through YAML files (examples in `testcases/`):
-- Define state variables, parameters, and coupling
-- Different configurations for various complexity levels
+1. Create `src/new_model.F90` following existing module patterns
+2. Add `use ersem_new_model` to `ersem_model_library.F90`
+3. Add case to the factory: `case ('new_model'); allocate(type_ersem_new_model::model)`
+4. Add source file to `src/CMakeLists.txt`
+5. Create YAML configuration entry in testcases
+
+## Coding Conventions
+
+- Fortran 90 free-form (`.F90`), lower_snake_case for modules/variables
+- Types: `type_ersem_*`; variable IDs: `id_*`
+- Keep lines under ~100 chars
+- Use `!` for comments with clear procedure headers
+
+## Configuration
+
+Model setup via YAML files (examples in `testcases/`):
+- Instance names map to `ersem/<model_name>`
+- Parameters, initial conditions, and variable coupling defined per instance
 - Template: `fabm-ersem.yaml.template`
 
 ## Documentation
 
-- User docs: https://ersem.readthedocs.io/
-- Build documentation: `cd docs && make html`
-- Main publication: Butenschön et al. (2016), GMD, doi:10.5194/gmd-9-1293-2016
+- Build docs: `cd docs && pip install -r requirements.txt && make html`
+- Online: https://ersem.readthedocs.io/
+- Reference: Butenschön et al. (2016), GMD, doi:10.5194/gmd-9-1293-2016

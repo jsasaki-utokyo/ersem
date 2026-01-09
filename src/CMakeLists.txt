@@ -37,6 +37,8 @@ add_library(fabm_models_ersem OBJECT
             benthic_erosion.F90
             fluff.F90
             zenith_angle.F90
+            sulfur_cycle.F90
+            benthic_sulfur_cycle.F90
            )
 
 target_link_libraries(fabm_models_ersem PRIVATE fabm_base)

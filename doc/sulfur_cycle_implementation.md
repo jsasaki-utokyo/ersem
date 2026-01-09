@@ -24,6 +24,133 @@ Currently, ERSEM handles this process implicitly through "oxygen debt" (K6), but
 4. **Minimal implementation first** (Phase 1), with expansion possible in later phases
 5. **Sulfate (SO4) treatment**: While SO4 is nearly conservative in seawater (~28 mM), it is explicitly tracked in the model to maintain mass balance. Changes due to sulfate reduction are small relative to the background concentration but are computed for completeness
 
+## Best Practice: Simplified Implementation Strategy
+
+Given ERSEM's existing 3-layer benthic architecture, the recommended approach is to **leverage existing infrastructure** rather than introducing a continuous BROM-style model.
+
+### Core Principle
+
+```
+ERSEM's 3-layer model already handles:
+- Dynamic layer boundaries based on O2/NO3 penetration
+- Equilibrium concentration profiles within layers
+- Diffusive transport between layers and to water column
+- Layer collapse under anoxic conditions
+
+→ Add sulfur species to this existing framework
+→ Add reaction terms to appropriate layers
+→ Let existing transport handle the rest
+```
+
+### Essential Components (Must Have)
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| H2S state variable | Benthic (all layers) + Pelagic | Track sulfide, replace K6/N6 |
+| Sulfate reduction | Benthic Layer 3 | Primary H2S source |
+| H2S oxidation | Benthic Layer 1 + Pelagic | Remove H2S when O2 present |
+| Transport | Via `benthic_column_dissolved_matter` | Move H2S between layers |
+
+### Important Components (Recommended)
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| S0 state variable | Benthic + Pelagic | Blue tide indicator |
+| Two-step oxidation | H2S → S0 → SO4 | Capture partial oxidation |
+| SO4 state variable | Benthic + Pelagic | Mass balance (optional: can assume constant) |
+
+### Optional Components (Phase 2+)
+
+| Component | Purpose | Complexity |
+|-----------|---------|------------|
+| Thiosulfate (S2O3) | BROM-compatible pathway | Medium |
+| Thiodenitrification | H2S + NO3 coupling | Medium |
+| Iron-sulfur (FeS, FeS2) | Full redox chemistry | High |
+
+### Recommended Implementation Order
+
+```
+Step 1: Add H2S to benthic_column_dissolved_matter (composition 'h')
+        - Enables transport through all layers
+        - Enables pelagic-benthic exchange
+
+Step 2: Add sulfate reduction in Layer 3
+        - Couple to H2 bacteria respiration rate
+        - Simple: H2S production = stoich_S_C × remin_rate
+
+Step 3: Add H2S oxidation in Layer 1
+        - Rate limited by O2 availability
+        - When D1m → minD, oxidation stops automatically
+
+Step 4: Add pelagic H2S oxidation
+        - Same kinetics as benthic Layer 1
+        - Handles H2S that escapes to water column
+
+Step 5: (Optional) Add S0 intermediate
+        - Split oxidation: H2S → S0 → SO4
+        - Enables blue tide simulation
+```
+
+### Key Simplification: Layer 3 is Always Anoxic
+
+In ERSEM's 3-layer model, Layer 3 is **by definition** below the denitrification zone. Therefore:
+- No need for electron acceptor cascade check in Layer 3
+- Sulfate reduction is always enabled in Layer 3
+- The rate is controlled by organic matter availability (H2 bacteria respiration)
+
+This is simpler than BROM's continuous approach where cascade logic is needed everywhere.
+
+### Implementation Options
+
+Choose based on your modeling needs:
+
+#### Option A: Minimal (H2S only)
+**Use case**: Basic sulfur dynamics, oxygen consumption by sulfide oxidation
+
+```
+Species: H2S only (SO4 assumed constant at 28 mM)
+Reactions:
+  - Benthic Layer 3: OM → H2S (sulfate reduction)
+  - Benthic Layer 1: H2S + O2 → (removed)
+  - Pelagic: H2S + O2 → (removed)
+
+Pros: Simplest implementation, captures H2S toxicity
+Cons: No S0 (cannot simulate blue tide color), no sulfur mass balance
+Files: 1 new module + modifications to benthic_column_dissolved_matter
+```
+
+#### Option B: H2S + S0 (Recommended for Blue Tide)
+**Use case**: Blue tide simulation, partial oxidation dynamics
+
+```
+Species: H2S, S0 (SO4 assumed constant)
+Reactions:
+  - Benthic Layer 3: OM → H2S
+  - Benthic Layer 1: H2S + O2 → S0; S0 + O2 → (removed)
+  - Pelagic: same as Layer 1
+
+Pros: Captures blue tide (S0 accumulation), moderate complexity
+Cons: No explicit sulfur mass balance
+Files: 2 new modules + modifications to benthic_column_dissolved_matter
+```
+
+#### Option C: Full Sulfur Cycle (Current Guide)
+**Use case**: Complete sulfur mass balance, future BROM integration
+
+```
+Species: SO4, H2S, S0 (all explicit)
+Reactions:
+  - Benthic Layer 3: SO4 + OM → H2S
+  - Benthic Layer 1: H2S + O2 → S0; S0 + O2 → SO4
+  - Pelagic: same as Layer 1
+
+Pros: Full mass balance, ready for Phase 2 expansion
+Cons: Most complex, requires tracking SO4 (mostly constant)
+Files: 2 new modules + modifications to benthic_column_dissolved_matter
+```
+
+**Recommendation**: Start with **Option B** (H2S + S0) for blue tide simulation. SO4 can be added later if mass balance is important.
+
 ## New State Variables
 
 ### Pelagic (Water Column) Variables
@@ -51,6 +178,42 @@ Currently, ERSEM handles this process implicitly through "oxygen debt" (K6), but
 | `o_deep` (negative values) | Keep | Constrain to ≥0 | Remove | Oxygen should be non-negative; use H2S instead |
 
 **Note**: During Phase 1, both K6/N6 and the new H2S variables coexist. This allows validation against existing behavior before transitioning.
+
+## Comparison with BROM Model
+
+This implementation is based on the BROM (Bottom RedOx Model) sulfur chemistry but adapted for ERSEM's 3-layer benthic structure. Key differences:
+
+### BROM Characteristics
+- **Water column model**: BROM operates in a single vertically-resolved domain without explicit benthic layers
+- **4 sulfur species**: SO4, S2O3 (thiosulfate), S0, H2S
+- **Iron-sulfur coupling**: FeS, FeS2, MnS precipitation/dissolution
+- **Thiodenitrification**: H2S oxidation coupled to NO3 reduction
+
+### Phase 1 Simplifications
+
+| Aspect | BROM | ERSEM Phase 1 | Rationale |
+|--------|------|---------------|-----------|
+| Sulfur species | SO4, S2O3, S0, H2S | SO4, S0, H2S | S2O3 omitted for simplicity |
+| Oxidation pathway | H2S → S0 → S2O3 → SO4 | H2S → S0 → SO4 | Direct S0 → SO4 in one step |
+| H2S oxidation kinetics | Linear: K × O2 × H2S | Michaelis-Menten for O2 | Prevents excessive rates at high O2 |
+| Benthic structure | None (water column) | 3-layer sediment | Adapted to ERSEM architecture |
+| Iron coupling | Full Fe-S system | None | Deferred to Phase 3 |
+| Thiodenitrification | H2S + NO3 → S0 + N2 | None | Deferred to Phase 2 |
+
+### Parameter Correspondence
+
+The following parameters are taken directly from BROM (confirmed from FABM testcases):
+- `K_SO4_rd = 0.000005` (1/d) - Sulfate reduction rate
+- `K_H2S_ox = 0.5` (1/d) - H2S oxidation rate
+- `K_S0_ox = 0.02` (1/d) - S0 oxidation rate
+- `stoich_S_C = 0.5` (mol S/mol C) - From BROM stoichiometry: 53 SO4 per 106 C
+
+### Adaptation to ERSEM Benthic Layers
+
+BROM's redox zonation (oxic → suboxic → anoxic) maps to ERSEM's benthic layers:
+- **Layer 1** (oxic): H2S and S0 oxidation active
+- **Layer 2** (denitrification): Transport only in Phase 1; thiodenitrification in Phase 2
+- **Layer 3** (anoxic): Sulfate reduction active
 
 ## Chemical Reactions
 
@@ -123,15 +286,18 @@ R_S0_ox = K_S0_ox * S0 * O2 / (O2 + K_O2_half)
 | Parameter | Value | Units | Description |
 |-----------|-------|-------|-------------|
 | `K_SO4_rd` | 0.000005 | 1/d | Sulfate reduction rate constant |
-| `K_SO4_half` | 1.6 | mmol/m³ | Half-saturation for sulfate (1600 µmol/m³) |
+| `K_SO4_half` | 1.6 | mmol/m³ | Half-saturation for sulfate |
 | `K_H2S_ox` | 0.5 | 1/d | H2S oxidation rate constant |
 | `K_S0_ox` | 0.02 | 1/d | S0 oxidation rate constant |
-| `K_O2_half` | 0.002 | mmol/m³ | Half-saturation for oxygen (2 µmol/m³) |
-| `O2_threshold` | 0.01 | mmol/m³ | O2 threshold for sulfate reduction (10 µmol/m³) |
-| `NO3_threshold` | 0.005 | mmol/m³ | NO3 threshold for sulfate reduction (5 µmol/m³) |
-| `O2_scale` | 0.01 | mmol/m³ | O2 transition width for tanh function |
-| `NO3_scale` | 0.005 | mmol/m³ | NO3 transition width for tanh function |
-| `stoich_S_C` | 0.5 | mol S/mol C | Stoichiometry of sulfate reduction |
+| `K_O2_half` | 0.002 | mmol/m³ | Half-saturation for oxygen |
+| `stoich_S_C` | 0.5 | mol S/mol C | Stoichiometry of sulfate reduction (53 SO4 : 106 C) |
+
+**Phase 2 parameters** (for Layer 2 sulfate reduction and thiodenitrification):
+| Parameter | Value | Units | Description |
+|-----------|-------|-------|-------------|
+| `O2_threshold` | 0.01 | mmol/m³ | O2 threshold for sulfate reduction |
+| `NO3_threshold` | 0.005 | mmol/m³ | NO3 threshold for sulfate reduction |
+| `K_hs_no3` | 0.8 | 1/d | Thiodenitrification rate (H2S + NO3) |
 
 **Note on scale parameters**: Setting scale equal to threshold gives a smooth transition where f ≈ 0.12 at concentration = 0 and f ≈ 0.88 at concentration = 2×threshold. Smaller scale values create sharper transitions.
 
@@ -202,21 +368,87 @@ Total dO2/dt = (existing ERSEM O2 terms)
 
 ### Behavior Under Bottom Water Anoxia
 
-When bottom water becomes anoxic:
+#### BROM vs ERSEM: Key Architectural Difference
+
+**BROM (Continuous)**: Designed for vertically-resolved water+sediment continuum. Redox boundaries shift smoothly based on O2/NO3 concentrations. No discrete layers - reactions occur at any depth based on local conditions.
+
+**ERSEM (3-Layer Discrete)**: Layer boundaries (D1m, D2m) are **state variables** that adjust dynamically based on oxygen/nitrate penetration depths calculated in `benthic_column_dissolved_matter.F90`. The key mechanism:
+
+```fortran
+! From benthic_column_dissolved_matter.F90:
+! Equilibrium concentration at sediment surface
+c_top = c_pel + cmix * sms   ! c_pel = bottom water conc, sms = net benthic production
+
+! Layer depth relaxes towards equilibrium (where constituent drops to zero)
+_SET_BOTTOM_ODE_(self%id_layer, (d_top + max(self%minD, H_eq) - D1m) * self%relax)
+```
+
+When bottom water O2 decreases:
+1. The equilibrium oxygen profile shifts upward
+2. D1m (oxic layer depth) relaxes toward minD (typically 0.0001 m)
+3. Layer 1 effectively collapses, removing the oxidation barrier
+
+#### Schematic: Normal vs Anoxic Conditions
 
 ```
-Normal Conditions:          Anoxic Conditions:
+NORMAL (Oxic bottom water)        ANOXIC (O2 → 0 in bottom water)
 
-Water: O2 > 0              Water: O2 ~ 0
-  | H2S oxidized             | H2S NOT oxidized -> accumulates
------------                -----------
-Layer 1: D1m ~ 9mm         Layer 1: D1m -> minD (nearly zero)
-  | H2S mostly oxidized      | No oxidation barrier
------------                -----------
-Layer 2: ~40mm             Layer 2: very thin
------------                -----------
-Layer 3: ~250mm            Layer 3: nearly entire column
-  H2S production             Massive H2S production -> direct flux to water
+Water: O2 = 200 mmol/m³           Water: O2 ≈ 0 (anoxic event)
+       ↓ O2 diffuses down                ↓ No O2 supply to sediment
+═══════════════════════════       ═══════════════════════════
+Layer 1: D1m ≈ 9 mm               Layer 1: D1m → minD (0.1 mm)
+  - O2 present in pore water        - O2 ≈ 0 (no supply from above)
+  - H2S + 0.5 O2 → S0 (active)      - Oxidation rate → 0 (no O2)
+  - H2S flux attenuated             - H2S passes through unoxidized!
+───────────────────────────       ───────────────────────────
+Layer 2: D2m - D1m ≈ 40 mm        Layer 2: Expands
+  - Denitrification zone            - NO3 may still be present initially
+  - Transport only (Phase 1)        - Thiodenitrification possible (Phase 2)
+───────────────────────────       ───────────────────────────
+Layer 3: d_tot - D2m ≈ 250 mm     Layer 3: Dominates column
+  - Sulfate reduction active        - Enhanced H2S production
+  - H2S produced here               - H2S diffuses directly to water
+═══════════════════════════       ═══════════════════════════
+```
+
+#### H2S Flux Under Anoxia
+
+The pelagic-benthic H2S flux is calculated by `benthic_column_dissolved_matter`:
+
+```
+Flux = (c_sediment_surface - c_bottom_water) / cmix
+```
+
+Under normal conditions:
+- H2S oxidized in Layer 1, c_sediment_surface ≈ 0
+- Flux to water column is small
+
+Under anoxic conditions:
+- No oxidation barrier, H2S diffuses through collapsed Layer 1
+- c_sediment_surface ≈ H2S concentration from Layer 2/3
+- Flux to water column increases dramatically
+- In water column: if any O2 present → partial oxidation → S0 (blue tide)
+
+#### Limitation of 3-Layer Approach
+
+The discrete 3-layer model cannot represent:
+1. **Gradual redox transition**: BROM allows reactions at any depth; ERSEM confines reactions to specific layers
+2. **Sub-layer O2 gradients**: Within Layer 1, ERSEM assumes uniform conditions
+3. **Dynamic micro-zonation**: Rapid O2 fluctuations create transient micro-zones not captured
+
+**Mitigation in Phase 1**: Use the existing `benthic_column_dissolved_matter` transport mechanism which calculates equilibrium profiles and diffusive fluxes correctly even when layers collapse. The Michaelis-Menten O2 limitation naturally reduces oxidation rates as O2 approaches zero.
+
+#### Critical Implementation Note
+
+The benthic sulfur cycle should NOT use Layer 2 O2/NO3 for cascade control when checking sulfate reduction conditions. Layer 3 is by definition anoxic. Instead:
+- Sulfate reduction in Layer 3: Always active (Layer 3 = anoxic by definition)
+- Oxidation in Layer 1: Rate-limited by actual O2 concentration in Layer 1
+
+```fortran
+! Correct: Use Layer 1 O2 for oxidation rate (naturally zero when D1m → minD)
+O2_conc_1 = max(0.0_rk, O2_1) / max(D1m, 0.0001_rk)
+R_H2S_ox_1 = K_H2S_ox * H2S_1 * O2_conc_1 / (O2_conc_1 + K_O2_half)
+! When O2_1 → 0 and D1m → minD, R_H2S_ox_1 → 0 automatically
 ```
 
 ## New Module Structure
@@ -234,6 +466,7 @@ src/
 **Phase 1 (minimal changes to existing code):**
 ```
 src/
+├── CMakeLists.txt                       # Add new source files to build
 ├── benthic_column_dissolved_matter.F90  # Add s_so4, s_h2s, s_s0 composition types
 ├── ersem_model_library.F90              # Register new modules
 ```
@@ -251,6 +484,8 @@ src/
 ### sulfur_cycle.F90 (Pelagic)
 
 ```fortran
+#include "fabm_driver.h"
+
 module ersem_sulfur_cycle
 
    use fabm_types
@@ -283,7 +518,7 @@ contains
       class(type_ersem_sulfur_cycle), intent(inout), target :: self
       integer, intent(in) :: configunit
 
-      ! Set time unit to d-1
+      ! Set time unit to d-1 (ERSEM convention: rates are per day)
       self%dt = 86400._rk
 
       ! Get parameters
@@ -302,10 +537,10 @@ contains
       call self%register_state_variable(self%id_S0, 'S0', 'mmol S/m^3', &
            'elemental sulfur', minimum=0.0_rk)
 
-      ! Register dependency on oxygen
-      call self%register_state_dependency(self%id_O2, 'O2', 'mmol O2/m^3', 'oxygen')
+      ! Register dependency on oxygen (link to external O2 state variable)
+      call self%register_state_dependency(self%id_O2, 'O2', 'mmol O_2/m^3', 'oxygen')
 
-      ! Register diagnostic variables
+      ! Register diagnostic variables for output
       call self%register_diagnostic_variable(self%id_R_H2S_ox, 'R_H2S_ox', &
            'mmol S/m^3/d', 'H2S oxidation rate', source=source_do)
       call self%register_diagnostic_variable(self%id_R_S0_ox, 'R_S0_ox', &
@@ -326,7 +561,10 @@ contains
          _GET_(self%id_S0, S0)
          _GET_(self%id_O2, O2)
 
-         ! Oxygen limitation function
+         ! Ensure non-negative oxygen for rate calculation
+         O2 = max(0.0_rk, O2)
+
+         ! Oxygen limitation function (Michaelis-Menten)
          f_O2 = O2 / (O2 + self%K_O2_half)
 
          ! R2: H2S + 0.5*O2 -> S0 + H2O
@@ -335,7 +573,7 @@ contains
          ! R3: S0 + 1.5*O2 + H2O -> SO4 + 2H+
          R_S0_ox = self%K_S0_ox * S0 * f_O2
 
-         ! Set ODEs
+         ! Set ODEs (rates in per day, matching self%dt)
          _SET_ODE_(self%id_H2S, -R_H2S_ox)
          _SET_ODE_(self%id_S0,   R_H2S_ox - R_S0_ox)
          _SET_ODE_(self%id_SO4,  R_S0_ox)
@@ -354,6 +592,8 @@ end module ersem_sulfur_cycle
 ### benthic_sulfur_cycle.F90 (Benthic)
 
 ```fortran
+#include "fabm_driver.h"
+
 module ersem_benthic_sulfur_cycle
 
    use fabm_types
@@ -364,14 +604,14 @@ module ersem_benthic_sulfur_cycle
 
    type, extends(type_base_model), public :: type_ersem_benthic_sulfur_cycle
       ! Layer-specific state variable dependencies
-      type(type_bottom_state_variable_id) :: id_SO4_1, id_SO4_2, id_SO4_3
-      type(type_bottom_state_variable_id) :: id_H2S_1, id_H2S_2, id_H2S_3
-      type(type_bottom_state_variable_id) :: id_S0_1, id_S0_2, id_S0_3
+      ! Phase 1: Only Layer 1 (oxidation) and Layer 3 (sulfate reduction) are active
+      type(type_bottom_state_variable_id) :: id_SO4_1, id_SO4_3
+      type(type_bottom_state_variable_id) :: id_H2S_1, id_H2S_3
+      type(type_bottom_state_variable_id) :: id_S0_1
       type(type_bottom_state_variable_id) :: id_O2_1
-      type(type_horizontal_dependency_id) :: id_O2_2, id_NO3_2
       type(type_horizontal_dependency_id) :: id_D1m, id_D2m, id_Dtot
 
-      ! Link to organic matter decomposition rate
+      ! Link to organic matter decomposition rate from H2 bacteria
       type(type_horizontal_dependency_id) :: id_remin_rate
 
       ! Diagnostic variables
@@ -385,10 +625,6 @@ module ersem_benthic_sulfur_cycle
       real(rk) :: K_H2S_ox       ! H2S oxidation rate constant (1/d)
       real(rk) :: K_S0_ox        ! S0 oxidation rate constant (1/d)
       real(rk) :: K_O2_half      ! Half-saturation for oxygen (mmol/m3)
-      real(rk) :: O2_threshold   ! O2 threshold for sulfate reduction (mmol/m3)
-      real(rk) :: NO3_threshold  ! NO3 threshold for sulfate reduction (mmol/m3)
-      real(rk) :: O2_scale       ! O2 transition width for tanh (mmol/m3)
-      real(rk) :: NO3_scale      ! NO3 transition width for tanh (mmol/m3)
       real(rk) :: stoich_S_C     ! Stoichiometry: mol S per mol C oxidized
 
    contains
@@ -402,9 +638,10 @@ contains
       class(type_ersem_benthic_sulfur_cycle), intent(inout), target :: self
       integer, intent(in) :: configunit
 
+      ! Set time unit to d-1 (ERSEM convention: rates are per day)
       self%dt = 86400._rk
 
-      ! Get parameters
+      ! Get parameters (values from BROM)
       call self%get_parameter(self%K_SO4_rd, 'K_SO4_rd', '1/d', &
            'sulfate reduction rate constant', default=0.000005_rk)
       call self%get_parameter(self%K_SO4_half, 'K_SO4_half', 'mmol/m^3', &
@@ -415,48 +652,30 @@ contains
            'S0 oxidation rate constant', default=0.02_rk)
       call self%get_parameter(self%K_O2_half, 'K_O2_half', 'mmol/m^3', &
            'half-saturation O2', default=0.002_rk)
-      call self%get_parameter(self%O2_threshold, 'O2_threshold', 'mmol/m^3', &
-           'O2 threshold for sulfate reduction', default=0.01_rk)
-      call self%get_parameter(self%NO3_threshold, 'NO3_threshold', 'mmol/m^3', &
-           'NO3 threshold for sulfate reduction', default=0.005_rk)
-      call self%get_parameter(self%O2_scale, 'O2_scale', 'mmol/m^3', &
-           'O2 transition width for tanh', default=0.01_rk)
-      call self%get_parameter(self%NO3_scale, 'NO3_scale', 'mmol/m^3', &
-           'NO3 transition width for tanh', default=0.005_rk)
       call self%get_parameter(self%stoich_S_C, 'stoich_S_C', 'mol S/mol C', &
            'stoichiometry of sulfate reduction', default=0.5_rk)
 
       ! Register dependencies for layer-specific sulfur variables
+      ! Phase 1: Only Layer 1 (oxidation) and Layer 3 (reduction) active
+      ! Layer 2 handles transport only via benthic_column_dissolved_matter
       call self%register_state_dependency(self%id_SO4_1, 'SO4_1', 'mmol S/m^2', &
            'sulfate in layer 1')
-      call self%register_state_dependency(self%id_SO4_2, 'SO4_2', 'mmol S/m^2', &
-           'sulfate in layer 2')
       call self%register_state_dependency(self%id_SO4_3, 'SO4_3', 'mmol S/m^2', &
            'sulfate in layer 3')
 
       call self%register_state_dependency(self%id_H2S_1, 'H2S_1', 'mmol S/m^2', &
            'hydrogen sulfide in layer 1')
-      call self%register_state_dependency(self%id_H2S_2, 'H2S_2', 'mmol S/m^2', &
-           'hydrogen sulfide in layer 2')
       call self%register_state_dependency(self%id_H2S_3, 'H2S_3', 'mmol S/m^2', &
            'hydrogen sulfide in layer 3')
 
       call self%register_state_dependency(self%id_S0_1, 'S0_1', 'mmol S/m^2', &
            'elemental sulfur in layer 1')
-      call self%register_state_dependency(self%id_S0_2, 'S0_2', 'mmol S/m^2', &
-           'elemental sulfur in layer 2')
-      call self%register_state_dependency(self%id_S0_3, 'S0_3', 'mmol S/m^2', &
-           'elemental sulfur in layer 3')
 
-      ! Oxygen and nitrate dependencies
-      call self%register_state_dependency(self%id_O2_1, 'O2_1', 'mmol O2/m^2', &
+      ! Oxygen dependency for Layer 1 oxidation
+      call self%register_state_dependency(self%id_O2_1, 'O2_1', 'mmol O_2/m^2', &
            'oxygen in layer 1')
-      call self%register_dependency(self%id_O2_2, 'O2_2', 'mmol O2/m^2', &
-           'oxygen in layer 2')
-      call self%register_dependency(self%id_NO3_2, 'NO3_2', 'mmol N/m^2', &
-           'nitrate in layer 2')
 
-      ! Layer depths
+      ! Layer depths (using standard variables from ersem_shared)
       call self%register_dependency(self%id_D1m, depth_of_bottom_interface_of_layer_1)
       call self%register_dependency(self%id_D2m, depth_of_bottom_interface_of_layer_2)
       call self%register_dependency(self%id_Dtot, depth_of_sediment_column)
@@ -465,13 +684,16 @@ contains
       call self%register_dependency(self%id_remin_rate, 'remin_rate', 'mmol C/m^2/d', &
            'organic matter remineralization rate in layer 3')
 
-      ! Diagnostic variables
+      ! Diagnostic variables (domain=domain_bottom required for benthic diagnostics)
       call self%register_diagnostic_variable(self%id_R_sulfate_red, 'R_sulfate_red', &
-           'mmol S/m^2/d', 'sulfate reduction rate', source=source_do_bottom)
+           'mmol S/m^2/d', 'sulfate reduction rate', &
+           domain=domain_bottom, source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_R_H2S_ox_ben, 'R_H2S_ox_ben', &
-           'mmol S/m^2/d', 'benthic H2S oxidation rate', source=source_do_bottom)
+           'mmol S/m^2/d', 'benthic H2S oxidation rate', &
+           domain=domain_bottom, source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_R_S0_ox_ben, 'R_S0_ox_ben', &
-           'mmol S/m^2/d', 'benthic S0 oxidation rate', source=source_do_bottom)
+           'mmol S/m^2/d', 'benthic S0 oxidation rate', &
+           domain=domain_bottom, source=source_do_bottom)
 
    end subroutine initialize
 
@@ -479,44 +701,34 @@ contains
       class(type_ersem_benthic_sulfur_cycle), intent(in) :: self
       _DECLARE_ARGUMENTS_DO_BOTTOM_
 
-      real(rk) :: SO4_1, SO4_2, SO4_3
-      real(rk) :: H2S_1, H2S_2, H2S_3
-      real(rk) :: S0_1, S0_2, S0_3
-      real(rk) :: O2_1, O2_2, NO3_2
+      real(rk) :: SO4_3, H2S_1, H2S_3, S0_1
+      real(rk) :: O2_1
       real(rk) :: D1m, D2m, Dtot
       real(rk) :: D1m_safe, O2_conc_1   ! Guarded values for safe division
       real(rk) :: remin_rate
-      real(rk) :: f_anox, f_no_NO3, f_sulfate_red
       real(rk) :: R_sulfate_red, R_H2S_ox_1, R_S0_ox_1
       real(rk) :: SO4_conc_3, layer3_thickness
 
       _HORIZONTAL_LOOP_BEGIN_
 
-         ! Get sulfur variables
-         _GET_HORIZONTAL_(self%id_SO4_1, SO4_1)
-         _GET_HORIZONTAL_(self%id_SO4_2, SO4_2)
+         ! Get sulfur variables needed for reactions
+         ! Layer 3: sulfate reduction
          _GET_HORIZONTAL_(self%id_SO4_3, SO4_3)
-         _GET_HORIZONTAL_(self%id_H2S_1, H2S_1)
-         _GET_HORIZONTAL_(self%id_H2S_2, H2S_2)
          _GET_HORIZONTAL_(self%id_H2S_3, H2S_3)
+         ! Layer 1: oxidation reactions
+         _GET_HORIZONTAL_(self%id_H2S_1, H2S_1)
          _GET_HORIZONTAL_(self%id_S0_1, S0_1)
-         _GET_HORIZONTAL_(self%id_S0_2, S0_2)
-         _GET_HORIZONTAL_(self%id_S0_3, S0_3)
-
-         ! Get oxygen and nitrate
          _GET_HORIZONTAL_(self%id_O2_1, O2_1)
-         _GET_HORIZONTAL_(self%id_O2_2, O2_2)
-         _GET_HORIZONTAL_(self%id_NO3_2, NO3_2)
 
          ! Get layer depths
          _GET_HORIZONTAL_(self%id_D1m, D1m)
          _GET_HORIZONTAL_(self%id_D2m, D2m)
          _GET_HORIZONTAL_(self%id_Dtot, Dtot)
 
-         ! Get remineralization rate
+         ! Get remineralization rate from H2 bacteria
          _GET_HORIZONTAL_(self%id_remin_rate, remin_rate)
 
-         ! Calculate layer 3 thickness and concentration
+         ! Calculate layer 3 thickness and SO4 concentration
          ! Guard against division by zero when layer collapses
          layer3_thickness = max(Dtot - D2m, 0.0001_rk)
          SO4_conc_3 = SO4_3 / layer3_thickness
@@ -525,22 +737,27 @@ contains
          ! minD = 0.0001 m is the minimum layer thickness in ERSEM
          D1m_safe = max(D1m, 0.0001_rk)
 
-         ! Electron acceptor cascade control
-         ! Layer 3 is by definition anoxic (O2=0, NO3~0), so f_sulfate_red ~ 1
-         ! Use scale parameters for smooth tanh transition
-         f_anox = 0.5_rk * (1.0_rk - tanh((O2_2 - self%O2_threshold) / self%O2_scale))
-         f_no_NO3 = 0.5_rk * (1.0_rk - tanh((NO3_2 - self%NO3_threshold) / self%NO3_scale))
-         f_sulfate_red = f_anox * f_no_NO3
+         ! ============================================================
+         ! PHASE 1 SIMPLIFICATION: No electron acceptor cascade check
+         ! ============================================================
+         ! In ERSEM's 3-layer model, Layer 3 is BY DEFINITION anoxic
+         ! (below the denitrification layer). The layer boundary D2m
+         ! is calculated based on nitrate penetration depth.
+         ! Therefore, sulfate reduction in Layer 3 is always enabled.
+         !
+         ! Note: In Phase 2, Layer 2 sulfate reduction may be added
+         ! when NO3 is depleted, requiring cascade logic there.
+         ! ============================================================
 
-         ! R1: Sulfate reduction in layer 3
-         ! Rate proportional to organic matter remineralization
+         ! R1: Sulfate reduction in Layer 3 (always active - Layer 3 is anoxic)
+         ! Rate proportional to organic matter remineralization by H2 bacteria
          R_sulfate_red = self%K_SO4_rd * SO4_conc_3 / (SO4_conc_3 + self%K_SO4_half) &
-                       * remin_rate * self%stoich_S_C * f_sulfate_red
+                       * remin_rate * self%stoich_S_C
 
          ! R2: H2S oxidation in layer 1
          ! Convert depth-integrated O2 to concentration for rate calculation
          ! Use D1m_safe to prevent division by very small numbers
-         O2_conc_1 = O2_1 / D1m_safe
+         O2_conc_1 = max(0.0_rk, O2_1) / D1m_safe
          R_H2S_ox_1 = self%K_H2S_ox * H2S_1 * O2_conc_1 / (O2_conc_1 + self%K_O2_half)
 
          ! R3: S0 oxidation in layer 1
@@ -590,16 +807,31 @@ case ('s_s0')
 
 ### Modifications to ersem_model_library.F90
 
-Register the new modules:
+Register the new modules. ERSEM uses a factory pattern with `select case` to map YAML model names to Fortran types:
 
 ```fortran
-! Add use statements
+! Add use statements at the top of the module (after existing use statements)
 use ersem_sulfur_cycle
 use ersem_benthic_sulfur_cycle
 
-! In the registration section, add:
-call add(factory, 'sulfur_cycle', type_ersem_sulfur_cycle)
-call add(factory, 'benthic_sulfur_cycle', type_ersem_benthic_sulfur_cycle)
+! In the 'create' subroutine, add cases to the select case block:
+! (add before the 'case default' line)
+case ('sulfur_cycle');         allocate(type_ersem_sulfur_cycle::model)
+case ('benthic_sulfur_cycle'); allocate(type_ersem_benthic_sulfur_cycle::model)
+```
+
+After these changes, the models can be referenced in YAML as `ersem/sulfur_cycle` and `ersem/benthic_sulfur_cycle`.
+
+### Modifications to src/CMakeLists.txt
+
+Add the new source files to the `add_library` command:
+
+```cmake
+add_library(fabm_models_ersem OBJECT
+            # ... existing files ...
+            sulfur_cycle.F90
+            benthic_sulfur_cycle.F90
+           )
 ```
 
 ### Modifications to oxygen.F90 (Phase 2+)
@@ -870,7 +1102,7 @@ Create a test configuration in `testcases/fabm-ersem-sulfur-test.yaml` that:
 - Minimal changes to existing modules (only add composition types and register new modules)
 
 **Files to create**: `sulfur_cycle.F90`, `benthic_sulfur_cycle.F90`
-**Files to modify**: `benthic_column_dissolved_matter.F90`, `ersem_model_library.F90`
+**Files to modify**: `CMakeLists.txt`, `benthic_column_dissolved_matter.F90`, `ersem_model_library.F90`
 
 **Validation**: Compare model behavior with and without sulfur cycle enabled
 
@@ -880,26 +1112,41 @@ Create a test configuration in `testcases/fabm-ersem-sulfur-test.yaml` that:
 - Deprecate K6: Remove oxygen debt mechanism, rely on explicit H2S
 - Enforce O2 ≥ 0 constraint
 - Add Layer 2 sulfate reduction (when NO3 is depleted)
-- Add thiosulfate (S2O3) as intermediate species
-- Add thiodenitrification (R4: H2S + NO3 -> S0 + N2)
+- Add thiosulfate (S2O3) as intermediate species (completing BROM pathway: H2S → S0 → S2O3 → SO4)
+- Add thiodenitrification reactions from BROM:
+  - R4: 5 H2S + 8 NO3⁻ → 5 SO4²⁻ + 4 N2 + 4 H2O (K_hs_no3 = 0.8 1/d in BROM)
+  - R5: 5 S0 + 6 NO3⁻ → 5 SO4²⁻ + 3 N2 (K_s0_no3 = 0.9 1/d in BROM)
+  - R6: 5 S2O3²⁻ + 8 NO3⁻ → 10 SO4²⁻ + 4 N2 (K_s2o3_no3 = 0.01 1/d in BROM)
+- Add S0 disproportionation: 4 S0 + 3 H2O → 2 H2S + S2O3²⁻ + 2 H⁺ (K_s0_disp = 0.001 1/d)
 
-**Files to modify**: `benthic_nitrogen_cycle.F90`, `benthic_bacteria.F90`, `oxygen.F90`
+**Files to modify**: `sulfur_cycle.F90`, `benthic_sulfur_cycle.F90`, `benthic_nitrogen_cycle.F90`, `benthic_bacteria.F90`, `oxygen.F90`
 
 ### Phase 3 (Future)
 
 **Scope**:
 - Remove K6 completely
-- Add iron-sulfur species: FeS, FeS2
-- Integrate with ERSEM iron module (-DIRON flag)
-- Temperature and pH dependencies
-- Full BROM-style redox chemistry
+- Add iron-sulfur species from BROM:
+  - FeS (iron monosulfide): H2S + Fe²⁺ → FeS + 2H⁺
+  - FeS2 (pyrite): FeS + S0 → FeS2
+  - MnS (manganese sulfide): H2S + Mn²⁺ → MnS + 2H⁺
+- Integrate with ERSEM iron module (-DERSEM_USE_IRON flag)
+- Add temperature dependencies (Q10 formulations as in BROM)
+- Full BROM-style redox chemistry including Mn cycling
+
+**New parameters from BROM**:
+- K_fes_form = 1.0e-6 (1/d) - FeS formation rate
+- K_fes_ox = 1.0e-5 (1/d) - FeS oxidation rate
+- K_fes2_form = 1.0e-7 (1/d) - Pyrite formation rate
+- K_fes2_ox = 1.0e-6 (1/d) - Pyrite oxidation rate
 
 ## References
 
-1. BROM model: https://github.com/fabm-model/fabm/tree/master/src/models/ihamocc/brom
-2. Butenschön et al. (2016). ERSEM 15.06. Geosci. Model Dev., 9, 1293-1339
-3. Jørgensen, B. B. (1982). Mineralization of organic matter in the sea bed. Nature, 296, 643-645
-4. Canfield, D. E. et al. (1993). Pathways of organic carbon oxidation in three continental margin sediments. Mar. Geol., 113, 27-40
+1. BROM model source: https://github.com/fabm-model/fabm/tree/master/src/models/niva/brom
+2. BROM test configuration: https://github.com/fabm-model/fabm/blob/master/testcases/fabm-niva-brom.yaml
+3. Butenschön et al. (2016). ERSEM 15.06. Geosci. Model Dev., 9, 1293-1339
+4. Jørgensen, B. B. (1982). Mineralization of organic matter in the sea bed. Nature, 296, 643-645
+5. Canfield, D. E. et al. (1993). Pathways of organic carbon oxidation in three continental margin sediments. Mar. Geol., 113, 27-40
+6. Yakushev, E. V. et al. (2017). Bottom RedOx Model (BROM v.1.1): a coupled benthic–pelagic model for simulation of water and sediment biogeochemistry. Geosci. Model Dev., 10, 453-482
 
 ## Notes for Implementers
 
@@ -931,4 +1178,4 @@ Create a test configuration in `testcases/fabm-ersem-sulfur-test.yaml` that:
 
 6. **Oxygen budget**: The sulfur modules contribute to O2 rates via `_SET_ODE_`. FABM accumulates all contributions. Verify that total O2 consumption is physically reasonable.
 
-7. **Consult BROM source**: https://github.com/fabm-model/fabm/blob/master/src/models/ihamocc/brom/brom_redox.F90 for reference implementation details.
+7. **Consult BROM source**: https://github.com/fabm-model/fabm/blob/master/src/models/niva/brom/brom_redox.F90 for reference implementation details. Note that BROM is a water column model; this guide adapts its chemistry to ERSEM's 3-layer benthic structure.

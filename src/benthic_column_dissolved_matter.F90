@@ -127,8 +127,12 @@ contains
             call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'o','mmol/m^2','oxygen', nonnegative=legacy_ersem_compatibility)
          case ('a')
             call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'a','mEq/m^2','alkalinity')
+         case ('h')
+            call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'h','mmol/m^2','hydrogen_sulfide')
+         case ('e')
+            call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'e','mmol/m^2','elemental_sulfur')
          case default
-            call self%fatal_error('benthic_dissolved_matter_initialize','Invalid value for parameter "composition". Permitted: c,n,p,s,o,a.')
+            call self%fatal_error('benthic_dissolved_matter_initialize','Invalid value for parameter "composition". Permitted: c,n,p,s,o,a,h,e.')
          end select
       end do
 

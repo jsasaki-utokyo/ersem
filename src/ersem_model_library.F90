@@ -31,6 +31,8 @@ module ersem_model_library
    use ersem_benthic_cao
    use ersem_fluff
    use ersem_zenith_angle
+   use ersem_sulfur_cycle
+   use ersem_benthic_sulfur_cycle
 
    implicit none
 
@@ -85,6 +87,8 @@ contains
          case ('benthic_cao');                             allocate(type_ersem_benthic_cao::model)
          case ('fluff');                                   allocate(type_ersem_fluff::model)
          case ('zenith_angle');                            allocate(type_ersem_zenith_angle::model)
+         case ('sulfur_cycle');                            allocate(type_ersem_sulfur_cycle::model)
+         case ('benthic_sulfur_cycle');                    allocate(type_ersem_benthic_sulfur_cycle::model)
          ! Add new models here
          case default
             call self%type_base_model_factory%create(name,model)

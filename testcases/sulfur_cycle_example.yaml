@@ -1,0 +1,132 @@
+#-----------------------------------------------------------------------
+# Sulfur Cycle Configuration Example for ERSEM
+#
+# This file shows how to configure the simplified sulfur cycle (Option B)
+# with H2S and S0 species. Add these sections to your fabm-ersem YAML file.
+#
+# Required: benthic_column_dissolved_matter instances for H2S and S0
+# Required: ersem/sulfur_cycle (pelagic) and ersem/benthic_sulfur_cycle
+#-----------------------------------------------------------------------
+
+# =========================================================================
+# PELAGIC SULFUR SPECIES
+# =========================================================================
+
+  # Hydrogen sulfide in water column
+  N8_H2S:
+    long_name: hydrogen_sulfide
+    model: ersem/pelagic_base
+    parameters:
+      composition: h                                       # custom composition for H2S
+    initialization:
+      h: 0.0                                               # hydrogen sulfide (mmol S/m^3) - starts at zero
+
+  # Elemental sulfur in water column (blue tide indicator)
+  N8_S0:
+    long_name: elemental_sulfur
+    model: ersem/pelagic_base
+    parameters:
+      composition: e                                       # custom composition for S0
+    initialization:
+      e: 0.0                                               # elemental sulfur (mmol S/m^3) - starts at zero
+
+# =========================================================================
+# PELAGIC SULFUR CYCLE MODULE
+# =========================================================================
+
+  sulfur_cycle:
+    long_name: pelagic_sulfur_reactions
+    model: ersem/sulfur_cycle
+    parameters:
+      K_H2S_ox: 0.5                                        # H2S oxidation rate constant (1/d)
+      K_S0_ox: 0.02                                        # S0 oxidation rate constant (1/d)
+      K_O2_half: 1.0                                       # half-saturation O2 for oxidation (mmol/m^3)
+    coupling:
+      H2S: N8_H2S/h                                        # link to pelagic H2S
+      S0: N8_S0/e                                          # link to pelagic S0
+      O2: O2/o                                             # link to oxygen
+
+# =========================================================================
+# BENTHIC SULFUR SPECIES (via benthic_column_dissolved_matter)
+# =========================================================================
+
+  # Benthic hydrogen sulfide - transported through all 3 layers
+  G2_H2S:
+    long_name: benthic_hydrogen_sulfide
+    model: ersem/benthic_column_dissolved_matter
+    parameters:
+      composition: h                                       # hydrogen sulfide
+      c0: 0.0                                              # background concentration (mmol/m^2)
+      ads1: 1.0                                            # no adsorption in layer 1
+      ads2: 1.0                                            # no adsorption in layer 2
+      ads3: 1.0                                            # no adsorption in layer 3
+    initialization:
+      h: 0.0                                               # hydrogen sulfide (mmol S/m^2)
+    coupling:
+      h_pel: N8_H2S/h                                      # link to pelagic H2S
+
+  # Benthic elemental sulfur - transported through all 3 layers
+  G2_S0:
+    long_name: benthic_elemental_sulfur
+    model: ersem/benthic_column_dissolved_matter
+    parameters:
+      composition: e                                       # elemental sulfur
+      c0: 0.0                                              # background concentration (mmol/m^2)
+      ads1: 1.0                                            # no adsorption
+      ads2: 1.0
+      ads3: 1.0
+    initialization:
+      e: 0.0                                               # elemental sulfur (mmol S/m^2)
+    coupling:
+      e_pel: N8_S0/e                                       # link to pelagic S0
+
+# =========================================================================
+# BENTHIC SULFUR CYCLE MODULE
+# =========================================================================
+
+  benthic_sulfur_cycle:
+    long_name: benthic_sulfur_reactions
+    model: ersem/benthic_sulfur_cycle
+    parameters:
+      K_H2S_prod: 0.5                                      # H2S production per C remineralized (mol S/mol C)
+      K_H2S_ox: 0.5                                        # H2S oxidation rate constant (1/d)
+      K_S0_ox: 0.02                                        # S0 oxidation rate constant (1/d)
+      K_O2_half: 1.0                                       # half-saturation O2 for oxidation (mmol/m^3)
+    coupling:
+      # Layer-specific H2S (created by benthic_column_dissolved_matter)
+      H2S_1: G2_H2S/per_layer/h1                           # H2S in layer 1
+      H2S_3: G2_H2S/per_layer/h3                           # H2S in layer 3
+      # Layer-specific S0
+      S0_1: G2_S0/per_layer/e1                             # S0 in layer 1
+      # Oxygen in layer 1
+      G2o: G2_O2/per_layer/o1                              # oxygen in layer 1
+      # Remineralization rate from H2 bacteria (anaerobic)
+      remin_rate: H2/fH2G2Oc                               # link to H2 bacteria respiration rate
+
+#-----------------------------------------------------------------------
+# NOTES:
+#
+# 1. Coupling to H2 bacteria:
+#    The benthic_sulfur_cycle module requires 'remin_rate' to be coupled
+#    to the anaerobic remineralization rate from H2 bacteria. The exact
+#    variable name depends on your H2 configuration.
+#
+# 2. Layer variables:
+#    benthic_column_dissolved_matter automatically creates per-layer
+#    variables (h1, h2, h3 for H2S; e1, e2, e3 for S0) under the
+#    'per_layer' child model.
+#
+# 3. Oxygen coupling:
+#    Make sure G2_O2 (benthic oxygen) is configured in your YAML file.
+#    The benthic_sulfur_cycle uses G2o (oxygen in layer 1) for oxidation.
+#
+# 4. Initial conditions:
+#    H2S and S0 typically start at zero. They will accumulate when
+#    anoxic conditions develop in the sediment.
+#
+# 5. Diagnostics:
+#    The modules provide diagnostic outputs:
+#    - R_H2S_ox: H2S oxidation rate (pelagic and benthic)
+#    - R_S0_ox: S0 oxidation rate (pelagic and benthic)
+#    - R_sulfate_red: Sulfate reduction rate (benthic only)
+#-----------------------------------------------------------------------
