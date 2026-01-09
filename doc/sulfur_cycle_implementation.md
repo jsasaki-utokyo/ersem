@@ -69,6 +69,10 @@ R2: Sulfide Oxidation (Layer 1 and water column, aerobic)
 
 R3: Elemental Sulfur Oxidation (Layer 1 and water column, aerobic)
     S0 + 1.5 O2 + H2O -> SO4^2- + 2H+
+
+    Note: R3 generates H+ which affects alkalinity and pH. In Phase 1,
+    these effects are ignored (pH assumed constant). Integration with
+    the carbonate system (carbonate.F90) may be added in Phase 2+.
 ```
 
 ### Rate Formulations
@@ -100,8 +104,10 @@ f_sulfate_reduction = f_anox * f_no_NO3
 #### R1: Sulfate Reduction Rate
 
 ```fortran
-R_sulfate_red = K_SO4_rd * SO4 / (SO4 + K_SO4_half) * remin_rate * f_sulfate_reduction
+R_sulfate_red = K_SO4_rd * SO4 / (SO4 + K_SO4_half) * remin_rate * stoich_S_C * f_sulfate_reduction
 ```
+
+Where `stoich_S_C` (mol S/mol C, default 0.5) couples sulfate reduction to organic matter remineralization rate.
 
 #### R2: H2S Oxidation Rate
 
@@ -143,6 +149,26 @@ R_S0_ox = K_S0_ox * S0 * O2 / (O2 + K_O2_half)
 | R2 | 0.5 mol O2 / mol H2S |
 | R3 | 1.5 mol O2 / mol S0 |
 
+### Benthic Unit Conversion
+
+**Critical**: Benthic state variables are depth-integrated (mmol/m²), but reaction kinetics use concentrations (mmol/m³). Conversion is required before applying rate equations:
+
+```fortran
+! Convert depth-integrated benthic variable to concentration
+! layer_thickness in meters, variable in mmol/m², concentration in mmol/m³
+concentration = variable / layer_thickness
+
+! Example for Layer 3 sulfate:
+layer3_thickness = max(Dtot - D2m, 0.0001_rk)  ! Guard against zero
+SO4_conc_3 = SO4_3 / layer3_thickness          ! mmol/m² -> mmol/m³
+
+! Example for Layer 1 oxygen:
+D1m_safe = max(D1m, 0.0001_rk)                 ! Guard against zero
+O2_conc_1 = O2_1 / D1m_safe                    ! mmol/m² -> mmol/m³
+```
+
+**Important**: All rate parameters (K_SO4_half, K_O2_half, thresholds, etc.) are in concentration units (mmol/m³), so state variables must be converted before use in Michaelis-Menten or tanh functions.
+
 ## Integration with 3-Layer Benthic Model
 
 ### Layer-Specific Process Assignment
@@ -167,8 +193,10 @@ Layer 2 (Denitrification): D1m to D2m
 Layer 3 (Anoxic): D2m to d_tot
   Variables: G2s_SO4_3, G2s_H2S_3, G2s_S0_3
   Reactions: R1 (sulfate reduction) - PRIMARY H2S SOURCE
-  Note: Linked to H2 (anaerobic bacteria) respiration rate
+  Note: Linked to H2 bacteria organic matter remineralization rate
 ```
+
+**What is H2?** In ERSEM, "H2" refers to the benthic anaerobic bacteria model defined in `benthic_bacteria.F90`. H2 bacteria decompose organic matter in anoxic sediment layers. The sulfate reduction rate is coupled to the H2 respiration/remineralization rate (`remin_rate`), ensuring that sulfate reduction scales with available organic matter.
 
 **Phase 1 Simplification**: Sulfate reduction is implemented only in Layer 3, where conditions are guaranteed to be anoxic with depleted nitrate. This avoids complexity in handling the transition zone in Layer 2.
 
@@ -461,7 +489,8 @@ contains
       call self%register_dependency(self%id_D2m, depth_of_bottom_interface_of_layer_2)
       call self%register_dependency(self%id_Dtot, depth_of_sediment_column)
 
-      ! Organic matter remineralization rate (link to H2 bacteria)
+      ! Organic matter remineralization rate from H2 (benthic anaerobic bacteria)
+      ! H2 is defined in benthic_bacteria.F90 and represents anaerobic decomposers
       call self%register_dependency(self%id_remin_rate, 'remin_rate', 'mmol C/m^2/d', &
            'organic matter remineralization rate in layer 3')
 
@@ -631,6 +660,39 @@ call add(factory, 'benthic_sulfur_cycle', type_ersem_benthic_sulfur_cycle)
 ! 3. Sulfate reduction (when O2 and NO3 depleted) - new benthic_sulfur_cycle
 ```
 
+## Initial and Boundary Conditions
+
+### Sulfate (SO4) Initialization
+
+Seawater sulfate concentration is approximately 28 mM (28,000 µmol/L = 28,000 mmol/m³). This value is nearly conservative in seawater.
+
+| Compartment | Variable | Initial Value | Units | Notes |
+|-------------|----------|---------------|-------|-------|
+| Pelagic | N8s_SO4 | 28000.0 | mmol S/m³ | ~28 mM seawater |
+| Benthic | G2s_SO4 | C_sw × d_tot | mmol S/m² | C_sw=28000, d_tot=0.3m → 8400 |
+
+### Sulfide and Elemental Sulfur Initialization
+
+Start with zero H2S and S0 for typical coastal simulations:
+
+| Compartment | Variable | Initial Value | Units |
+|-------------|----------|---------------|-------|
+| Pelagic | N8s_H2S | 0.0 | mmol S/m³ |
+| Pelagic | N8s_S0 | 0.0 | mmol S/m³ |
+| Benthic | G2s_H2S | 0.0 | mmol S/m² |
+| Benthic | G2s_S0 | 0.0 | mmol S/m² |
+
+### Boundary Conditions
+
+| Boundary | SO4 | H2S | S0 | Notes |
+|----------|-----|-----|-----|-------|
+| Surface | Fixed (28 mM) | Zero flux | Zero flux | Atmospheric equilibration |
+| Open boundaries | Fixed (28 mM) | 0.0 | 0.0 | Oceanic values |
+| River inflow | Site-specific | 0.0 | 0.0 | Freshwater SO4 << seawater |
+| Sediment bottom | Zero flux | Zero flux | Zero flux | No diffusion below d_tot |
+
+**Note**: For Tokyo Bay simulations, river SO4 should be reduced relative to seawater (typically 0.3-3 mM for freshwater).
+
 ## YAML Configuration Example
 
 ```yaml
@@ -722,7 +784,8 @@ ben_sulfur:
     D1m: ben_col/D1m
     D2m: ben_col/D2m
     Dtot: ben_col/Dtot
-    # Organic matter remineralization (link to H2 bacteria)
+    # Organic matter remineralization from H2 (benthic anaerobic bacteria)
+    # H2 is defined in benthic_bacteria.F90
     remin_rate: H2/respiration_rate
 ```
 
@@ -903,11 +966,20 @@ Create a test configuration in `testcases/fabm-ersem-sulfur-test.yaml` that:
 
 ## Notes for Implementers
 
-1. **Phase 1: K6 coexistence**:
+1. **Phase 1: K6 coexistence and avoiding double counting**:
    - Keep K6 and N6 in parallel with new H2S variables
    - Do NOT modify benthic_nitrogen_cycle.F90 or benthic_bacteria.F90 in Phase 1
    - This allows validation of new sulfur cycle against existing behavior
    - K6 removal is deferred to Phase 2/3
+
+   **Critical: Double counting prevention rules**:
+   - The new sulfur cycle operates **independently** from K6/N6
+   - Sulfur cycle does NOT contribute to K6 accumulation
+   - Sulfur cycle does NOT read or modify K6/N6 variables
+   - K6 continues to accumulate oxygen debt from non-sulfur sources (existing behavior)
+   - H2S accumulation represents **additional** reduced sulfur that will be validated against K6
+   - During Phase 1 testing, compare K6 accumulation with and without sulfur module enabled
+   - If validation shows H2S + K6 leads to excessive O2 demand, K6 contribution from sulfate reduction should be reduced (Phase 2 task)
 
 2. **Test incrementally**:
    - First implement pelagic sulfur_cycle.F90 alone
