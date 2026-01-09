@@ -17,10 +17,42 @@ cd fabm && python -m pip install .
 ```
 
 ### GOTM-FABM-ERSEM (1D water column)
+
+**Generic build:**
 ```bash
 mkdir build && cd build
 cmake ../gotm -DFABM_BASE=../fabm -DFABM_ERSEM_BASE=../ersem
 make install -j $(nproc)
+```
+
+**Tokyo Bay Test Case (TB-GOTM) Build:**
+```bash
+# Clean previous build and configure
+rm -rf ~/build && mkdir ~/build && cd ~/build
+
+cmake ~/Github/gotm/code \
+  -DFABM_BASE=~/Github/fabm \
+  -DFABM_ERSEM_BASE=~/Github/ersem \
+  -DCMAKE_Fortran_COMPILER=ifx \
+  -DCMAKE_INSTALL_PREFIX=~/local/fabm-ifx/gotm
+
+# Build and install (use 8 cores)
+make install -j8
+
+# The gotm executable will be at: ~/local/fabm-ifx/gotm/bin/gotm
+# Symlink already exists at: ~/Github/TB-GOTM/ersem/run/gotm
+```
+
+**Run Tokyo Bay simulation:**
+```bash
+cd ~/Github/TB-GOTM/ersem/run
+./gotm --ignore_unknown_config
+```
+
+**Plot results:**
+```bash
+conda activate xgotm
+python plot_wq_contourf.py temp salt O2_o pel_sulfur_H2S
 ```
 
 ### FABM0d (0D box model)
