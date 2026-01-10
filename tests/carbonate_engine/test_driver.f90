@@ -7,8 +7,17 @@
 ! solver results. Exits with non-zero status if any case exceeds tolerance.
 !
 ! Tolerances:
-!   pH:   1e-3 (absolute)
+!   pH:   1e-4 (absolute)
 !   pCO2: 2 uatm = 2e-6 atm (absolute)
+!
+! Constants used (matching reference_cases.csv):
+!   K0: Weiss (1974)
+!   K1, K2: Mehrbach (1973) refit by Lueker et al. (2000) - Total scale
+!   KB: Dickson (1990)
+!   KW: Millero (1995) converted to Total scale
+!   KS: Dickson (1990)
+!   KF: Perez & Fraga (1987)
+!   Total boron: Lee et al. (2010) - 432.6 * S / 35 umol/kg
 !
 ! Usage:
 !   ./test_driver [reference_cases.csv]
@@ -23,9 +32,9 @@ program test_driver
    ! Use real64 to match typical double precision
    integer, parameter :: rk = real64
 
-   ! Tolerances
-   real(rk), parameter :: tol_pH = 1.0e-3_rk
-   real(rk), parameter :: tol_pCO2_atm = 2.0e-6_rk  ! 2 uatm
+   ! Tolerances for comparison with reference data (very tight match)
+   real(rk), parameter :: tol_pH = 1.0e-6_rk        ! 0.000001 pH units
+   real(rk), parameter :: tol_pCO2_atm = 1.0e-8_rk  ! 0.01 uatm
 
    ! Variables for file I/O
    character(len=256) :: csv_file
@@ -241,21 +250,34 @@ contains
       TK100 = TK / 100.0_rk
       lnTK = log(TK)
       invTK = 1.0_rk / TK
-      sqrtS = sqrt(S)
-      S15 = S ** 1.5_rk
-      S2 = S * S
-      IS = 19.924_rk * S / (1000.0_rk - 1.005_rk * S)
-      sqrtIS = sqrt(IS)
-      Cl = S / 1.80655_rk
-      ST = 0.14_rk * Cl / 96.065_rk
-      FT = 0.000067_rk * Cl / 19.9984_rk
 
-      ! KS
-      KS = exp(-4276.1_rk * invTK + 141.328_rk - 23.093_rk * lnTK &
-               + (-13856.0_rk * invTK + 324.57_rk - 47.986_rk * lnTK) * sqrtIS &
-               + (35474.0_rk * invTK - 771.54_rk + 114.723_rk * lnTK) * IS &
-               - 2698.0_rk * invTK * IS**1.5_rk + 1776.0_rk * invTK * IS**2.0_rk &
-               + log(1.0_rk - 0.001005_rk * S))
+      ! Handle S=0 (freshwater) case
+      if (S > 0.0_rk) then
+         sqrtS = sqrt(S)
+         S15 = S ** 1.5_rk
+         IS = 19.924_rk * S / (1000.0_rk - 1.005_rk * S)
+         sqrtIS = sqrt(IS)
+      else
+         sqrtS = 0.0_rk
+         S15 = 0.0_rk
+         IS = 0.0_rk
+         sqrtIS = 0.0_rk
+      end if
+      S2 = S * S
+      Cl = S / 1.80655_rk
+      ST = 0.14_rk * Cl / 96.062_rk
+      FT = 0.000067_rk * Cl / 18.998_rk
+
+      ! KS - handle S=0 to avoid log(1) numerical issues
+      if (S > 0.0_rk) then
+         KS = exp(-4276.1_rk * invTK + 141.328_rk - 23.093_rk * lnTK &
+                  + (-13856.0_rk * invTK + 324.57_rk - 47.986_rk * lnTK) * sqrtIS &
+                  + (35474.0_rk * invTK - 771.54_rk + 114.723_rk * lnTK) * IS &
+                  - 2698.0_rk * invTK * IS**1.5_rk + 1776.0_rk * invTK * IS**2.0_rk &
+                  + log(1.0_rk - 0.001005_rk * S))
+      else
+         KS = 1.0_rk  ! Arbitrary; ST=0 so KS not used
+      end if
 
       ! KF
       KF = exp(874.0_rk * invTK - 9.68_rk + 0.111_rk * sqrtS)
@@ -279,10 +301,13 @@ contains
       free2sws = 1.0_rk + ST / KS + FT / (KF * total2free)
       total2sws = total2free * free2sws
 
-      ! K0
+      ! K0 - Weiss (1974)
       K0 = exp(93.4517_rk / TK100 - 60.2409_rk + 23.3585_rk * log(TK100) &
                + S * (0.023517_rk - 0.023656_rk * TK100 + 0.0047036_rk * TK100**2.0_rk))
-      K0 = K0 * exp(((1.01325_rk - Pbar) * 32.3_rk) / (Rgas * TK))
+      ! Pressure correction only at depth (Pbar > 0)
+      if (Pbar > 0.0_rk) then
+         K0 = K0 * exp((-Pbar * 32.3_rk) / (Rgas * TK))
+      end if
 
       ! KB
       KB = exp((-8966.9_rk - 2890.53_rk * sqrtS - 77.942_rk * S &
@@ -291,17 +316,14 @@ contains
                + (-24.4344_rk - 25.085_rk * sqrtS - 0.2474_rk * S) * lnTK &
                + 0.053105_rk * sqrtS * TK)
 
-      ! K1, K2 (Total scale - Millero 2010)
-      pK1 = -126.34048_rk + 6320.813_rk * invTK + 19.568224_rk * lnTK &
-            + (13.4051_rk * sqrtS + 0.03185_rk * S - 0.00005218_rk * S2) &
-            + (-531.095_rk * sqrtS - 5.7789_rk * S) * invTK &
-            + (-2.0663_rk * sqrtS) * lnTK
+      ! K1, K2 (Total scale - Lueker et al. 2000)
+      ! Mehrbach (1973) refit by Lueker et al. (2000)
+      pK1 = 3633.86_rk * invTK - 61.2172_rk + 9.6777_rk * lnTK &
+            - 0.011555_rk * S + 0.0001152_rk * S2
       K1 = 10.0_rk ** (-pK1)
 
-      pK2 = -90.18333_rk + 5143.692_rk * invTK + 14.613358_rk * lnTK &
-            + (21.5724_rk * sqrtS + 0.1212_rk * S - 0.0003714_rk * S2) &
-            + (-798.292_rk * sqrtS - 18.951_rk * S) * invTK &
-            + (-3.403_rk * sqrtS) * lnTK
+      pK2 = 471.78_rk * invTK + 25.929_rk - 3.16967_rk * lnTK &
+            - 0.01781_rk * S + 0.0001122_rk * S2
       K2 = 10.0_rk ** (-pK2)
 
       ! Pressure corrections
@@ -317,10 +339,17 @@ contains
       kappa = -2.84_rk / 1000.0_rk
       KB = KB * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
 
-      ! KW
-      KW = exp(-13847.26_rk * invTK + 148.9652_rk - 23.6521_rk * lnTK &
-               + (118.67_rk * invTK - 5.977_rk + 1.0495_rk * lnTK) * sqrtS &
+      ! KW - Millero (1995) on SWS scale
+      KW = exp(148.9802_rk - 13847.26_rk * invTK - 23.6521_rk * lnTK &
+               + (-5.977_rk + 118.67_rk * invTK + 1.0495_rk * lnTK) * sqrtS &
                - 0.01615_rk * S)
+
+      ! Convert KW from SWS to Total scale (phscale=1 assumed in test driver)
+      ! KW_total = KW_sws * (1 + ST/KS) / (1 + ST/KS + FT/KF)
+      ! At S=0, ST=FT=0 so conversion factor = 1
+      if (S > 0.0_rk) then
+         KW = KW * (1.0_rk + ST/KS) / (1.0_rk + ST/KS + FT/KF)
+      end if
 
       delta = -25.60_rk + 0.2324_rk * T - 0.0036246_rk * T**2.0_rk
       kappa = (-5.13_rk + 0.0794_rk * T) / 1000.0_rk
@@ -334,9 +363,11 @@ contains
       real(rk) :: Cl
 
       Cl = S / 1.80655_rk
-      BT = 0.0004157_rk * S / 35.0_rk
-      ST = 0.14_rk * Cl / 96.065_rk
-      FT = 0.000067_rk * Cl / 19.9984_rk
+      ! Total boron - Lee et al. (2010) equation for open ocean
+      ! BT = 432.6 * S / 35 umol/kg
+      BT = 0.0004326_rk * S / 35.0_rk
+      ST = 0.14_rk * Cl / 96.062_rk
+      FT = 0.000067_rk * Cl / 18.998_rk
    end subroutine calc_totals
 
    function alk_residual(H, DIC, TA_input, K1, K2, KB, KW, BT) result(F)

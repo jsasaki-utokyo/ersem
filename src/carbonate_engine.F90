@@ -50,12 +50,14 @@ contains
    ! Main solver interface: compute pH and pCO2 from DIC and TA
    !
    ! Inputs:
-   !   T         - Temperature (degC)
-   !   S         - Practical salinity (PSU)
-   !   Pbar      - Pressure (bar), 0 for surface
-   !   DIC_molkg - Dissolved inorganic carbon (mol/kg)
-   !   TA_molkg  - Total alkalinity (mol/kg)
-   !   phscale   - pH scale (1: total, 0: SWS, -1: SWS backward compat)
+   !   T              - Temperature (degC)
+   !   S              - Practical salinity (PSU)
+   !   Pbar           - Pressure (bar), 0 for surface
+   !   DIC_molkg      - Dissolved inorganic carbon (mol/kg)
+   !   TA_molkg       - Total alkalinity (mol/kg)
+   !   phscale        - pH scale (1: total, 0: SWS, -1: SWS backward compat)
+   !   opt_k_carbonic - K1/K2 formulation (1: Lueker 2000, 2: Millero 2010)
+   !   opt_total_borate - Total boron (1: Uppstrom 1974, 2: Lee 2010)
    !
    ! Outputs:
    !   pH        - pH on requested scale
@@ -67,10 +69,12 @@ contains
    !   success   - .true. if solver converged
    !-----------------------------------------------------------------------
    subroutine carbonate_engine_solve(T, S, Pbar, DIC_molkg, TA_molkg, phscale, &
+                                     opt_k_carbonic, opt_total_borate, &
                                      pH, pCO2_atm, H2CO3, HCO3, CO3, K0, success)
       real(rk), intent(in)  :: T, S, Pbar
       real(rk), intent(in)  :: DIC_molkg, TA_molkg
       integer,  intent(in)  :: phscale
+      integer,  intent(in)  :: opt_k_carbonic, opt_total_borate
       real(rk), intent(out) :: pH, pCO2_atm, H2CO3, HCO3, CO3, K0
       logical,  intent(out) :: success
 
@@ -89,12 +93,12 @@ contains
       Tmax = max(T, 0.0_rk)
 
       ! Calculate equilibrium constants (all on total pH scale at depth)
-      call calc_equilibrium_constants(Tmax, S, Pbar, phscale, &
+      call calc_equilibrium_constants(Tmax, S, Pbar, phscale, opt_k_carbonic, &
                                       K0, K1, K2, KB, KW, KS, KF, &
                                       total2sws, sws2total)
 
       ! Calculate total concentrations from salinity
-      call calc_total_concentrations(S, BT, ST, FT)
+      call calc_total_concentrations(S, opt_total_borate, BT, ST, FT)
 
       ! Solve for [H+] using Brent's method
       call solve_pH_brent(DIC_molkg, TA_molkg, K1, K2, KB, KW, BT, &
@@ -133,11 +137,12 @@ contains
    ! Calculate all equilibrium constants needed for carbonate chemistry
    ! All constants returned on total pH scale unless otherwise noted
    !-----------------------------------------------------------------------
-   subroutine calc_equilibrium_constants(T, S, Pbar, phscale, &
+   subroutine calc_equilibrium_constants(T, S, Pbar, phscale, opt_k_carbonic, &
                                          K0, K1, K2, KB, KW, KS, KF, &
                                          total2sws, sws2total)
       real(rk), intent(in)  :: T, S, Pbar
       integer,  intent(in)  :: phscale
+      integer,  intent(in)  :: opt_k_carbonic
       real(rk), intent(out) :: K0, K1, K2, KB, KW, KS, KF
       real(rk), intent(out) :: total2sws, sws2total
 
@@ -168,10 +173,10 @@ contains
       Cl = S / 1.80655_rk
 
       ! Total sulfate (mol/kg) - Morris & Riley (1966)
-      ST = 0.14_rk * Cl / 96.065_rk
+      ST = 0.14_rk * Cl / 96.062_rk
 
       ! Total fluoride (mol/kg) - Riley (1965)
-      FT = 0.000067_rk * Cl / 19.9984_rk
+      FT = 0.000067_rk * Cl / 18.998_rk
 
       !-------------------------------------------------------------------
       ! KS = [H+][SO4--]/[HSO4-] on free scale
@@ -220,9 +225,11 @@ contains
       K0 = exp(93.4517_rk / TK100 - 60.2409_rk + 23.3585_rk * log(TK100) &
                + S * (0.023517_rk - 0.023656_rk * TK100 + 0.0047036_rk * TK100**2.0_rk))
 
-      ! Pressure correction for K0 (Weiss 1974)
-      ! vbarCO2 = 32.3 cm3/mol
-      K0 = K0 * exp(((1.01325_rk - Pbar) * 32.3_rk) / (Rgas * TK))
+      ! Pressure correction for K0 only at depth (Pbar > 0)
+      ! vbarCO2 = 32.3 cm3/mol (Weiss 1974)
+      if (Pbar > 0.0_rk) then
+         K0 = K0 * exp((-Pbar * 32.3_rk) / (Rgas * TK))
+      end if
 
       !-------------------------------------------------------------------
       ! KB = [H+][BO2-]/[HBO2] on total scale
@@ -241,7 +248,7 @@ contains
 
       !-------------------------------------------------------------------
       ! K1, K2: Carbonic acid dissociation constants
-      ! Mehrbach (1973) refit by Dickson & Millero (1987) - Total scale
+      ! Select formulation based on opt_k_carbonic and phscale
       !-------------------------------------------------------------------
       if (phscale == -1) then
          ! Backward compatible: use old Mehrbach on SWS scale
@@ -251,32 +258,51 @@ contains
 
          pK2 = 1394.7_rk / TK + 4.777_rk - 0.0184_rk * S + 0.000118_rk * S2
          K2 = 10.0_rk ** (-pK2)
-      else if (phscale == 0) then
-         ! Millero (2010) on SWS scale
-         pK1 = -126.34048_rk + 6320.813_rk * invTK + 19.568224_rk * lnTK &
-               + (13.4038_rk * sqrtS + 0.03206_rk * S - 0.00005242_rk * S2) &
-               + (-530.659_rk * sqrtS - 5.8210_rk * S) * invTK &
-               + (-2.0664_rk * sqrtS) * lnTK
+      else if (opt_k_carbonic == 1) then
+         ! Lueker et al. (2000) on Total scale
+         ! Mehrbach (1973) refit by Lueker et al. (2000)
+         pK1 = 3633.86_rk * invTK - 61.2172_rk + 9.6777_rk * lnTK &
+               - 0.011555_rk * S + 0.0001152_rk * S2
          K1 = 10.0_rk ** (-pK1)
 
-         pK2 = -90.18333_rk + 5143.692_rk * invTK + 14.613358_rk * lnTK &
-               + (21.3728_rk * sqrtS + 0.1218_rk * S - 0.0003688_rk * S2) &
-               + (-788.289_rk * sqrtS - 19.189_rk * S) * invTK &
-               + (-3.374_rk * sqrtS) * lnTK
+         pK2 = 471.78_rk * invTK + 25.929_rk - 3.16967_rk * lnTK &
+               - 0.01781_rk * S + 0.0001122_rk * S2
          K2 = 10.0_rk ** (-pK2)
+
+         ! Convert to SWS scale if requested
+         if (phscale == 0) then
+            K1 = K1 * total2sws
+            K2 = K2 * total2sws
+         end if
       else
-         ! Default (phscale == 1): Millero (2010) on Total scale
-         pK1 = -126.34048_rk + 6320.813_rk * invTK + 19.568224_rk * lnTK &
-               + (13.4051_rk * sqrtS + 0.03185_rk * S - 0.00005218_rk * S2) &
-               + (-531.095_rk * sqrtS - 5.7789_rk * S) * invTK &
-               + (-2.0663_rk * sqrtS) * lnTK
-         K1 = 10.0_rk ** (-pK1)
+         ! opt_k_carbonic == 2: Millero (2010)
+         if (phscale == 0) then
+            ! Millero (2010) on SWS scale
+            pK1 = -126.34048_rk + 6320.813_rk * invTK + 19.568224_rk * lnTK &
+                  + (13.4038_rk * sqrtS + 0.03206_rk * S - 0.00005242_rk * S2) &
+                  + (-530.659_rk * sqrtS - 5.8210_rk * S) * invTK &
+                  + (-2.0664_rk * sqrtS) * lnTK
+            K1 = 10.0_rk ** (-pK1)
 
-         pK2 = -90.18333_rk + 5143.692_rk * invTK + 14.613358_rk * lnTK &
-               + (21.5724_rk * sqrtS + 0.1212_rk * S - 0.0003714_rk * S2) &
-               + (-798.292_rk * sqrtS - 18.951_rk * S) * invTK &
-               + (-3.403_rk * sqrtS) * lnTK
-         K2 = 10.0_rk ** (-pK2)
+            pK2 = -90.18333_rk + 5143.692_rk * invTK + 14.613358_rk * lnTK &
+                  + (21.3728_rk * sqrtS + 0.1218_rk * S - 0.0003688_rk * S2) &
+                  + (-788.289_rk * sqrtS - 19.189_rk * S) * invTK &
+                  + (-3.374_rk * sqrtS) * lnTK
+            K2 = 10.0_rk ** (-pK2)
+         else
+            ! Default (phscale == 1): Millero (2010) on Total scale
+            pK1 = -126.34048_rk + 6320.813_rk * invTK + 19.568224_rk * lnTK &
+                  + (13.4051_rk * sqrtS + 0.03185_rk * S - 0.00005218_rk * S2) &
+                  + (-531.095_rk * sqrtS - 5.7789_rk * S) * invTK &
+                  + (-2.0663_rk * sqrtS) * lnTK
+            K1 = 10.0_rk ** (-pK1)
+
+            pK2 = -90.18333_rk + 5143.692_rk * invTK + 14.613358_rk * lnTK &
+                  + (21.5724_rk * sqrtS + 0.1212_rk * S - 0.0003714_rk * S2) &
+                  + (-798.292_rk * sqrtS - 18.951_rk * S) * invTK &
+                  + (-3.403_rk * sqrtS) * lnTK
+            K2 = 10.0_rk ** (-pK2)
+         end if
       end if
 
       ! Pressure corrections for K1, K2, KB (Millero 1995)
@@ -296,12 +322,18 @@ contains
       KB = KB * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
 
       !-------------------------------------------------------------------
-      ! KW = [H+][OH-] on appropriate scale
-      ! Millero (1995)
+      ! KW = [H+][OH-]
+      ! Millero (1995) - this formula gives KW on SWS scale
       !-------------------------------------------------------------------
-      KW = exp(-13847.26_rk * invTK + 148.9652_rk - 23.6521_rk * lnTK &
-               + (118.67_rk * invTK - 5.977_rk + 1.0495_rk * lnTK) * sqrtS &
+      KW = exp(148.9802_rk - 13847.26_rk * invTK - 23.6521_rk * lnTK &
+               + (-5.977_rk + 118.67_rk * invTK + 1.0495_rk * lnTK) * sqrtS &
                - 0.01615_rk * S)
+
+      ! Convert KW from SWS to Total scale if needed
+      ! KW_total = KW_sws * (1 + ST/KS) / (1 + ST/KS + FT/KF)
+      if (phscale == 1) then
+         KW = KW * (1.0_rk + ST/KS) / (1.0_rk + ST/KS + FT/KF)
+      end if
 
       ! Pressure correction for KW
       delta = -25.60_rk + 0.2324_rk * T - 0.0036246_rk * T**2.0_rk
@@ -314,9 +346,12 @@ contains
    ! calc_total_concentrations
    !
    ! Calculate total boron, sulfate, and fluoride from salinity
+   !
+   ! opt_total_borate: 1 = Uppstrom (1974), 2 = Lee et al. (2010)
    !-----------------------------------------------------------------------
-   subroutine calc_total_concentrations(S, BT, ST, FT)
+   subroutine calc_total_concentrations(S, opt_total_borate, BT, ST, FT)
       real(rk), intent(in)  :: S
+      integer,  intent(in)  :: opt_total_borate
       real(rk), intent(out) :: BT, ST, FT
 
       real(rk) :: Cl
@@ -324,15 +359,20 @@ contains
       ! Chloride from salinity
       Cl = S / 1.80655_rk
 
-      ! Total boron (mol/kg) - Lee et al. (2010)
-      ! BT/S ratio = 0.0004157
-      BT = 0.0004157_rk * S / 35.0_rk
+      ! Total boron (mol/kg)
+      if (opt_total_borate == 1) then
+         ! Uppstrom (1974)
+         BT = 0.000416_rk * S / 35.0_rk
+      else
+         ! Lee et al. (2010) - default for opt_total_borate == 2
+         BT = 0.0004326_rk * S / 35.0_rk
+      end if
 
       ! Total sulfate (mol/kg) - Morris & Riley (1966)
-      ST = 0.14_rk * Cl / 96.065_rk
+      ST = 0.14_rk * Cl / 96.062_rk
 
       ! Total fluoride (mol/kg) - Riley (1965)
-      FT = 0.000067_rk * Cl / 19.9984_rk
+      FT = 0.000067_rk * Cl / 18.998_rk
 
    end subroutine calc_total_concentrations
 

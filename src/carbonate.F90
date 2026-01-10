@@ -24,6 +24,8 @@ module ersem_carbonate
 
       integer :: iswCO2X,iswtalk,iswASFLUX,phscale
       integer :: engine   ! carbonate engine (0: legacy ERSEM, 1: carbonate-engine)
+      integer :: opt_k_carbonic    ! K1/K2 formulation (1: Lueker 2000, 2: Millero 2010)
+      integer :: opt_total_borate  ! Total boron (1: Uppstrom 1974, 2: Lee 2010)
       real(rk) :: ta_slope, ta_intercept  ! TA(S) regression coefficients for iswtalk==6
    contains
       procedure :: initialize
@@ -51,6 +53,8 @@ contains
       call self%get_parameter(self%iswtalk,'iswtalk','','alkalinity formulation (1-4: from salinity and temperature, 5: dynamic alkalinity)',default=5, minimum=1, maximum=6)
       call self%get_parameter(self%phscale,'pHscale','','pH scale (1: total, 0: SWS, -1: SWS backward compatible)',default=1,minimum=-1,maximum=1)
       call self%get_parameter(self%engine,'engine','','carbonate engine (0: legacy ERSEM, 1: carbonate-engine)',default=0,minimum=0,maximum=1)
+      call self%get_parameter(self%opt_k_carbonic,'opt_k_carbonic','','K1/K2 formulation for engine=1 (1: Lueker et al. 2000, 2: Millero 2010)',default=1,minimum=1,maximum=2)
+      call self%get_parameter(self%opt_total_borate,'opt_total_borate','','Total boron for engine=1 (1: Uppstrom 1974, 2: Lee et al. 2010)',default=2,minimum=1,maximum=2)
       call self%get_parameter(self%ta_slope,'ta_slope','umol/kg/PSU','TA(S) regression slope for iswtalk=6',default=43.626_rk)
       call self%get_parameter(self%ta_intercept,'ta_intercept','umol/kg','TA(S) regression intercept for iswtalk=6',default=846.48_rk)
 
@@ -217,6 +221,7 @@ contains
          else
             ! New carbonate-engine solver (PyCO2SYS-style)
             call carbonate_engine_solve(ETW, X1X, pres*0.1_rk, Ctot, TA, self%phscale, &
+                                        self%opt_k_carbonic, self%opt_total_borate, &
                                         pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
          end if
 
@@ -301,6 +306,7 @@ contains
          else
             ! New carbonate-engine solver (PyCO2SYS-style)
             call carbonate_engine_solve(T, S, PRSS*0.1_rk, Ctot, TA, self%phscale, &
+                                        self%opt_k_carbonic, self%opt_total_borate, &
                                         pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
          end if
          if (.not.success) then
