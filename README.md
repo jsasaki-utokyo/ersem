@@ -349,6 +349,193 @@ python -m pip install .
 
 Test configurations are available in the `testcases/` directory with various YAML setups.
 
+For carbonate engine testing, see `tests/carbonate_engine/` directory which contains:
+- Reference test cases comparing Engine 0 and Engine 1 outputs
+- Validation against PyCO2SYS calculations
+- Test driver scripts
+
+## Carbonate Chemistry Engine
+
+### Overview
+
+ERSEM includes a configurable carbonate chemistry solver with two engine options:
+
+| Engine | Description | pH/pCO2 Calculation | Default Constants |
+|--------|-------------|---------------------|-------------------|
+| **0** (Legacy) | Original ERSEM solver | Follows et al. (2006) iterative | Millero (1995) K1/K2 |
+| **1** (New) | PyCO2SYS-compatible solver | Newton-Raphson iteration | Lueker et al. (2000) K1/K2 |
+
+**Engine 1** was developed to reproduce PyCO2SYS calculations and provides more accurate carbonate chemistry, particularly for estuarine applications with variable salinity.
+
+### Building with the New Engine
+
+The carbonate engine is included in the standard ERSEM build. No special build flags are required.
+
+```bash
+# Standard build includes both engines
+./install_ersem_gotm.sh
+
+# The engine is selected at runtime via fabm.yaml configuration
+```
+
+### Configuration Parameters
+
+Configure the carbonate system in your `fabm.yaml` file under the `O3` (carbonate) instance:
+
+```yaml
+instances:
+  O3:
+    model: ersem/carbonate
+    parameters:
+      # Engine selection
+      engine: 1                    # 0: Legacy ERSEM, 1: PyCO2SYS-style
+
+      # Constants for Engine 1 (ignored when engine=0)
+      opt_k_carbonic: 1            # 1: Lueker 2000, 2: Millero 2010
+      opt_total_borate: 1          # 1: Uppstrom 1974, 2: Lee 2010
+
+      # Alkalinity formulation
+      iswtalk: 5                   # 1-4: from S/T, 5: dynamic, 6: custom TA(S)
+
+      # Custom TA(S) regression (for iswtalk=6)
+      ta_slope: 43.626             # TA = ta_intercept + ta_slope × S
+      ta_intercept: 846.48         # (µmol/kg)
+
+      # pH scale
+      pHscale: 1                   # 1: total, 0: SWS, -1: SWS backward compatible
+
+      # DIC relaxation (optional, for 1D models)
+      relax_c: 0.0                 # Relaxation timescale (days), 0=off
+      c_ta_ratio: 0.0              # Target DIC/TA ratio, 0=use fixed target
+      c_relax_target: 2100.0       # Fixed DIC target (mmol/m³)
+```
+
+### Engine Parameter Reference
+
+#### `engine` - Carbonate Chemistry Solver
+
+| Value | Description | Use Case |
+|-------|-------------|----------|
+| 0 | Legacy ERSEM solver (Follows et al. 2006) | Backward compatibility, open ocean |
+| 1 | PyCO2SYS-style solver | Estuaries, validation studies |
+
+#### `opt_k_carbonic` - K1/K2 Constants (Engine 1 only)
+
+| Value | Reference | Valid Range |
+|-------|-----------|-------------|
+| 1 | Lueker et al. (2000) | S: 19-43, T: 2-35°C |
+| 2 | Millero (2010) | S: 1-50, T: 0-50°C |
+
+#### `opt_total_borate` - Total Boron (Engine 1 only)
+
+| Value | Reference | Notes |
+|-------|-----------|-------|
+| 1 | Uppstrom (1974) | PyCO2SYS default |
+| 2 | Lee et al. (2010) | Higher accuracy |
+
+#### `iswtalk` - Alkalinity Formulation
+
+| Value | Description |
+|-------|-------------|
+| 1 | Millero et al. (1998) - Atlantic |
+| 2 | Millero et al. (1998) - S < 35 |
+| 3 | Linear TA(T) - North Sea |
+| 4 | Linear TA(T) - high accuracy |
+| 5 | Dynamic alkalinity (state variable) |
+| 6 | Custom TA(S) regression |
+
+#### `pHscale` - pH Scale
+
+| Value | Description |
+|-------|-------------|
+| 1 | Total scale (recommended) |
+| 0 | Seawater scale (SWS) |
+| -1 | SWS with backward-compatible offset |
+
+### Backward Compatibility
+
+The default configuration maintains full backward compatibility:
+
+```yaml
+O3:
+  parameters:
+    engine: 0          # Legacy solver (default)
+    pHscale: -1        # SWS with backward-compatible offset
+    iswtalk: 5         # Dynamic alkalinity
+```
+
+**Key points for backward compatibility:**
+
+1. **Engine 0 is default**: Existing configurations without `engine` parameter will use the legacy solver
+
+2. **pH scale offset**: When `pHscale: -1`, the legacy pH offset (0.009) is applied for SWS scale consistency with older ERSEM versions
+
+3. **Alkalinity options**: All existing `iswtalk` options (1-5) work identically in both engines
+
+4. **No rebuild required**: Engine selection is a runtime parameter in `fabm.yaml`
+
+### Switching Between Engines
+
+To switch from legacy to new engine:
+
+```yaml
+# Before (legacy)
+O3:
+  parameters:
+    engine: 0
+    pHscale: -1
+
+# After (PyCO2SYS-compatible)
+O3:
+  parameters:
+    engine: 1
+    opt_k_carbonic: 1      # Lueker 2000
+    opt_total_borate: 1    # Uppstrom 1974
+    pHscale: 1             # Total scale
+```
+
+**Expected differences:**
+- pH values differ by ~0.01-0.02 due to different K1/K2 constants
+- pCO2 values may differ by ~5-20 µatm
+- Largest differences occur at low salinity and extreme temperatures
+
+### Validation
+
+Engine 1 has been validated against PyCO2SYS v1.8.0:
+
+| Parameter | Agreement |
+|-----------|-----------|
+| pH | < 0.001 units |
+| pCO2 | < 0.1 µatm |
+| HCO3⁻ | < 0.01 mmol/m³ |
+| CO3²⁻ | < 0.01 mmol/m³ |
+
+See `tests/carbonate_engine/reference_cases.csv` for detailed validation data.
+
+### DIC Relaxation (1D Models)
+
+For 1D water column models, DIC may drift due to lack of lateral transport. The relaxation feature nudges DIC toward a target value:
+
+```yaml
+O3:
+  parameters:
+    relax_c: 2.0           # 2-day relaxation timescale
+    c_ta_ratio: 0.88       # Target DIC = 0.88 × TA
+    # OR use fixed target:
+    # c_ta_ratio: 0.0
+    # c_relax_target: 2000.0
+```
+
+**Recommendation:** Use `c_ta_ratio` instead of `c_relax_target` to prevent carbonate singularity when salinity (and thus TA) varies.
+
+### References
+
+- Follows, M.J., et al. (2006). On the solution of the carbonate chemistry system. Ocean Modelling, 12, 290-301.
+- Lueker, T.J., et al. (2000). Ocean pCO2 calculated from dissolved inorganic carbon, alkalinity, and equations for K1 and K2. Marine Chemistry, 70, 105-119.
+- Millero, F.J. (1995). Thermodynamics of the carbon dioxide system in the oceans. Geochimica et Cosmochimica Acta, 59, 661-677.
+- Millero, F.J. (2010). Carbonate constants for estuarine waters. Marine and Freshwater Research, 61, 139-142.
+- Uppstrom, L.R. (1974). The boron/chlorinity ratio of deep-sea water. Deep Sea Research, 21, 161-162.
+
 ## Configuration
 
 Model setup through YAML files (examples in `testcases/`):

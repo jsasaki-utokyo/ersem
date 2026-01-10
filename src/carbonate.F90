@@ -27,6 +27,9 @@ module ersem_carbonate
       integer :: opt_k_carbonic    ! K1/K2 formulation (1: Lueker 2000, 2: Millero 2010)
       integer :: opt_total_borate  ! Total boron (1: Uppstrom 1974, 2: Lee 2010)
       real(rk) :: ta_slope, ta_intercept  ! TA(S) regression coefficients for iswtalk==6
+      real(rk) :: relax_c          ! DIC relaxation timescale (d), 0 = off
+      real(rk) :: c_relax_target   ! target DIC for relaxation (mmol C/m³), used when c_ta_ratio <= 0
+      real(rk) :: c_ta_ratio       ! target DIC/TA ratio for relaxation (0 = use fixed c_relax_target)
    contains
       procedure :: initialize
       procedure :: do
@@ -57,6 +60,9 @@ contains
       call self%get_parameter(self%opt_total_borate,'opt_total_borate','','Total boron for engine=1 (1: Uppstrom 1974, 2: Lee et al. 2010)',default=2,minimum=1,maximum=2)
       call self%get_parameter(self%ta_slope,'ta_slope','umol/kg/PSU','TA(S) regression slope for iswtalk=6',default=43.626_rk)
       call self%get_parameter(self%ta_intercept,'ta_intercept','umol/kg','TA(S) regression intercept for iswtalk=6',default=846.48_rk)
+      call self%get_parameter(self%relax_c,'relax_c','d','DIC relaxation timescale (0 = off)',default=0.0_rk,minimum=0.0_rk)
+      call self%get_parameter(self%c_relax_target,'c_relax_target','mmol C/m^3','target DIC for relaxation (used when c_ta_ratio <= 0)',default=2100.0_rk,minimum=0.0_rk)
+      call self%get_parameter(self%c_ta_ratio,'c_ta_ratio','-','target DIC/TA ratio for relaxation (0 = use fixed c_relax_target)',default=0.0_rk,minimum=0.0_rk,maximum=1.0_rk)
 
       call self%register_state_variable(self%id_O3c,'c','mmol C/m^3','total dissolved inorganic carbon', 2200._rk,minimum=0._rk)
       call self%add_to_aggregate_variable(standard_variables%total_carbon,self%id_O3c)
@@ -250,6 +256,19 @@ contains
 
          _SET_DIAGNOSTIC_(self%id_Om_cal,Om_cal)
          _SET_DIAGNOSTIC_(self%id_Om_arg,Om_arg)
+
+         ! DIC relaxation (nudging towards target value)
+         ! If c_ta_ratio > 0, relax towards TA * c_ta_ratio to prevent DIC/TA > 1
+         ! Otherwise, relax towards fixed c_relax_target
+         if (self%relax_c > 0.0_rk) then
+            if (self%c_ta_ratio > 0.0_rk) then
+               ! Use TA-dependent target (TA is already in mmol/m³ at this point in the code)
+               ! Need to recalculate TA in mmol/m³ for the target
+               _ADD_SOURCE_(self%id_O3c, (TA * 1.e3_rk * density * self%c_ta_ratio - O3c) / self%relax_c)
+            else
+               _ADD_SOURCE_(self%id_O3c, (self%c_relax_target - O3c) / self%relax_c)
+            end if
+         end if
       _LOOP_END_
    end subroutine
 
