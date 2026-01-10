@@ -22,6 +22,8 @@ module ersem_carbonate
       type (type_horizontal_diagnostic_variable_id) :: id_fair,id_wnd_diag
 
       integer :: iswCO2X,iswtalk,iswASFLUX,phscale
+      integer :: engine   ! carbonate engine (0: legacy ERSEM, 1: carbonate-engine)
+      real(rk) :: ta_slope, ta_intercept  ! TA(S) regression coefficients for iswtalk==6
    contains
       procedure :: initialize
       procedure :: do
@@ -47,6 +49,9 @@ contains
       call self%get_parameter(self%iswASFLUX,'iswASFLUX','','air-sea CO2 exchange (0: none, 1: Nightingale et al. 2000, 2: Wanninkhof 1992 without chemical enhancement, 3: Wanninkhof 1992 with chemical enhancement, 4: Wanninkhof and McGillis 1999, 5: Wanninkhof 1992 switching to Wanninkhof and McGillis 1999, 6: Wanninkhof 2014)',default=6,minimum=0, maximum=6)
       call self%get_parameter(self%iswtalk,'iswtalk','','alkalinity formulation (1-4: from salinity and temperature, 5: dynamic alkalinity)',default=5, minimum=1, maximum=6)
       call self%get_parameter(self%phscale,'pHscale','','pH scale (1: total, 0: SWS, -1: SWS backward compatible)',default=1,minimum=-1,maximum=1)
+      call self%get_parameter(self%engine,'engine','','carbonate engine (0: legacy ERSEM, 1: carbonate-engine)',default=0,minimum=0,maximum=1)
+      call self%get_parameter(self%ta_slope,'ta_slope','umol/kg/PSU','TA(S) regression slope for iswtalk=6',default=43.626_rk)
+      call self%get_parameter(self%ta_intercept,'ta_intercept','umol/kg','TA(S) regression intercept for iswtalk=6',default=846.48_rk)
 
       call self%register_state_variable(self%id_O3c,'c','mmol C/m^3','total dissolved inorganic carbon', 2200._rk,minimum=0._rk)
       call self%add_to_aggregate_variable(standard_variables%total_carbon,self%id_O3c)
@@ -119,10 +124,12 @@ contains
 
    end subroutine
 
-   function approximate_alkalinity(iswtalk,T,S) result(TA)
+   function approximate_alkalinity(iswtalk,T,S,ta_slope,ta_intercept) result(TA)
       integer, intent(in) :: iswtalk
       real(rk),intent(in) :: T,S
+      real(rk),intent(in),optional :: ta_slope, ta_intercept
       real(rk)            :: TA
+      real(rk)            :: slope, intercept
 
       ! NB total alkalinity must be given in umol kg-1
 
@@ -147,7 +154,18 @@ contains
             TA = 2305._rk+58.66_rk*(S-35._rk)+2.32_rk*(S-35._rk)**2-1.41_rk*(T-20._rk)+0.04_rk*(T-20._rk)**2   ! Lee et al., Geophys Res Lett, 1998
          ENDIF
       elseif (iswtalk==6) then
-         TA = 846.48_rk + 43.626 * S  ! Endo et al., Frontiers in Marine Science, 2023  
+         ! User-configurable TA(S) regression (default: Endo et al., Frontiers in Marine Science, 2023)
+         if (present(ta_slope)) then
+            slope = ta_slope
+         else
+            slope = 43.626_rk
+         end if
+         if (present(ta_intercept)) then
+            intercept = ta_intercept
+         else
+            intercept = 846.48_rk
+         end if
+         TA = intercept + slope * S
       end if
    end function
 
@@ -173,7 +191,7 @@ contains
          ! Calculate total alkalinity
          if (self%iswtalk/=5) then
             ! Alkalinity is parameterized as function of salinity and temperature.
-            TA = approximate_alkalinity(self%iswtalk,ETW,X1X)
+            TA = approximate_alkalinity(self%iswtalk,ETW,X1X,self%ta_slope,self%ta_intercept)
             ! Approximate alkalinity is still in umol kg-1 due to empirical regression
             ! therefore now need to be converted  in mmol m-3
             TA = TA * density / 1.e3_rk
@@ -247,7 +265,7 @@ contains
 
          if (self%iswtalk/=5) then
             ! Alkalinity is parameterized as function of salinity and temperature.
-            TA = approximate_alkalinity(self%iswtalk,T,S)
+            TA = approximate_alkalinity(self%iswtalk,T,S,self%ta_slope,self%ta_intercept)
             ! Approximate alkalinity is still in umol kg-1 due to empirical regression
             ! therefore now need to be converted  in mmol m-3
             TA = TA * density / 1.e3_rk
@@ -267,7 +285,7 @@ contains
 !  for surface box only calculate air-sea flux
 !..Only call after 2 days, because the derivation of instability in the
 !..
-         CALL CO2dyn(T, S, PRSS*0.1_rk,ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,k0co2,success,self%phscale)
+         CALL CO2dyn(T, S, PRSS*0.1_rk,Ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,k0co2,success,self%phscale)
          if (.not.success) then
             _GET_(self%id_pco2_in,PCO2)
             PCO2 = PCO2*1.e-6_rk
