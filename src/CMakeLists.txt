@@ -22,6 +22,7 @@ add_library(fabm_models_ersem OBJECT
             bacteria_docdyn.F90
             calcification.F90
             carbonate.F90
+            carbonate_engine.F90
             oxygen.F90
             nitrification.F90
             nitrous_oxide.F90

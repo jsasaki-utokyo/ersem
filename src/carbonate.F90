@@ -4,6 +4,7 @@ module ersem_carbonate
    use fabm_types
    use fabm_builtin_models
    use ersem_shared
+   use carbonate_engine, only: carbonate_engine_solve
 
    implicit none
 
@@ -209,7 +210,15 @@ contains
          TA = TA / 1.0e3_rk / density    ! from mmol m-3 to mol kg-1
          Ctot  = O3C / 1.e3_rk / density ! from mmol m-3 to mol kg-1
 
-         CALL CO2DYN (ETW,X1X,pres*0.1_rk,ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,k0co2,success,self%phscale)   ! NB pressure from dbar to bar
+         ! Select carbonate chemistry engine
+         if (self%engine == 0) then
+            ! Legacy ERSEM carbonate solver
+            CALL CO2DYN (ETW,X1X,pres*0.1_rk,Ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,k0co2,success,self%phscale)   ! NB pressure from dbar to bar
+         else
+            ! New carbonate-engine solver (PyCO2SYS-style)
+            call carbonate_engine_solve(ETW, X1X, pres*0.1_rk, Ctot, TA, self%phscale, &
+                                        pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+         end if
 
          if (.not.success) then
             ! Carbonate system iterative scheme did not converge.
@@ -285,7 +294,15 @@ contains
 !  for surface box only calculate air-sea flux
 !..Only call after 2 days, because the derivation of instability in the
 !..
-         CALL CO2dyn(T, S, PRSS*0.1_rk,Ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,k0co2,success,self%phscale)
+         ! Select carbonate chemistry engine
+         if (self%engine == 0) then
+            ! Legacy ERSEM carbonate solver
+            CALL CO2dyn(T, S, PRSS*0.1_rk,Ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,k0co2,success,self%phscale)
+         else
+            ! New carbonate-engine solver (PyCO2SYS-style)
+            call carbonate_engine_solve(T, S, PRSS*0.1_rk, Ctot, TA, self%phscale, &
+                                        pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+         end if
          if (.not.success) then
             _GET_(self%id_pco2_in,PCO2)
             PCO2 = PCO2*1.e-6_rk
