@@ -535,6 +535,8 @@ Layer 3 (Anoxic): D2m to d_tot
 
 **Phase 1 Simplification**: Sulfate reduction is implemented only in Layer 3, where conditions are guaranteed to be anoxic with depleted nitrate. This avoids complexity in handling the transition zone in Layer 2.
 
+**ERSEM constraint (Layer 2)**: Layer 2 exists only while NO3 penetrates (D2m > D1m). When NO3 is depleted, D2m → D1m and Layer 2 collapses, leaving no volume for Layer-2 reactions. Therefore sulfate reduction is strictly a Layer-3 process in ERSEM and should not be implemented in Layer 2.
+
 ### Transport Mechanism
 
 Use the existing `benthic_column_dissolved_matter` transport scheme:
@@ -544,6 +546,13 @@ Use the existing `benthic_column_dissolved_matter` transport scheme:
 - Pelagic-benthic exchange at sediment-water interface
 
 **Important**: H2S produced in Layer 3 diffuses through Layer 2 and Layer 1 before reaching the water column. It does NOT bypass intermediate layers. The existing transport code handles this correctly.
+
+### S0 Settling and Surface Benthic Fate (Current Implementation)
+
+- **Diffusive exchange**: Dissolved/colloidal S0 exchanges with the sediment via `benthic_column_dissolved_matter` (pelagic top boundary condition).
+- **Settling term**: The pelagic S0 settling term (`K_S0_sink` in `sulfur_cycle.F90`) is implemented as a sink in the water column; it does **not** add S0 to the benthic pools.
+- **Benthic surface S0**: In `benthic_sulfur_cycle.F90`, S0 in Layer 1 is produced locally from H2S oxidation and removed by S0 oxidation and burial. It can accumulate transiently if production exceeds removal, but there is no explicit long-term storage term.
+- **If deposition is desired**: Add an explicit bottom-exchange/source term that routes some or all of the pelagic S0 settling flux into `G2s_S0_1` (or an equivalent benthic S0 state).
 
 ### Oxygen Budget Integration
 
