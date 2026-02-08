@@ -349,12 +349,433 @@ python -m pip install .
 
 Test configurations are available in the `testcases/` directory with various YAML setups.
 
-## Configuration
+For carbonate engine testing, see `tests/carbonate_engine/` directory which contains:
+- Reference test cases comparing Engine 0 and Engine 1 outputs
+- Validation against PyCO2SYS calculations
+- Test driver scripts
 
-Model setup through YAML files (examples in `testcases/`):
-- Define state variables, parameters, and coupling
-- Different configurations for various complexity levels
-- Template: `fabm-ersem.yaml.template`
+## Carbonate Chemistry Engine
+
+### Overview
+
+ERSEM includes a configurable carbonate chemistry solver with two engine options:
+
+| Engine | Description | pH/pCO2 Calculation | Default Constants |
+|--------|-------------|---------------------|-------------------|
+| **0** (Legacy) | Original ERSEM solver | Follows et al. (2006) iterative | Millero (1995) K1/K2 |
+| **1** (New) | PyCO2SYS-compatible solver | Newton-Raphson iteration | Lueker et al. (2000) K1/K2 |
+
+**Engine 1** was developed to reproduce PyCO2SYS calculations and provides more accurate carbonate chemistry, particularly for estuarine applications with variable salinity.
+
+### Building with the New Engine
+
+The carbonate engine is included in the standard ERSEM build. No special build flags are required.
+
+```bash
+# Standard build includes both engines
+./install_ersem_gotm.sh
+
+# The engine is selected at runtime via fabm.yaml configuration
+```
+
+### Configuration Parameters
+
+Configure the carbonate system in your `fabm.yaml` file under the `O3` (carbonate) instance:
+
+```yaml
+instances:
+  O3:
+    model: ersem/carbonate
+    parameters:
+      # Engine selection
+      engine: 1                    # 0: Legacy ERSEM, 1: PyCO2SYS-style
+
+      # Constants for Engine 1 (ignored when engine=0)
+      opt_k_carbonic: 1            # 1: Lueker 2000, 2: Millero 2010
+      opt_total_borate: 1          # 1: Uppstrom 1974, 2: Lee 2010
+
+      # Alkalinity formulation
+      iswtalk: 5                   # 1-4: from S/T, 5: dynamic, 6: custom TA(S)
+
+      # Custom TA(S) regression (for iswtalk=6)
+      ta_slope: 43.626             # TA = ta_intercept + ta_slope × S
+      ta_intercept: 846.48         # (µmol/kg)
+
+      # pH scale
+      pHscale: 1                   # 1: total, 0: SWS, -1: SWS backward compatible
+
+      # DIC relaxation (optional, for 1D models)
+      relax_c: 0.0                 # Relaxation timescale (days), 0=off
+      c_ta_ratio: 0.0              # Target DIC/TA ratio, 0=use fixed target
+      c_relax_target: 2100.0       # Fixed DIC target (mmol/m³)
+```
+
+### Engine Parameter Reference
+
+#### `engine` - Carbonate Chemistry Solver
+
+| Value | Description | Use Case |
+|-------|-------------|----------|
+| 0 | Legacy ERSEM solver (Follows et al. 2006) | Backward compatibility, open ocean |
+| 1 | PyCO2SYS-style solver | Estuaries, validation studies |
+
+#### `opt_k_carbonic` - K1/K2 Constants (Engine 1 only)
+
+| Value | Reference | Valid Range |
+|-------|-----------|-------------|
+| 1 | Lueker et al. (2000) | S: 19-43, T: 2-35°C |
+| 2 | Millero (2010) | S: 1-50, T: 0-50°C |
+
+#### `opt_total_borate` - Total Boron (Engine 1 only)
+
+| Value | Reference | Notes |
+|-------|-----------|-------|
+| 1 | Uppstrom (1974) | PyCO2SYS default |
+| 2 | Lee et al. (2010) | Higher accuracy |
+
+#### `iswtalk` - Alkalinity Formulation
+
+| Value | Description |
+|-------|-------------|
+| 1 | Millero et al. (1998) - Atlantic |
+| 2 | Millero et al. (1998) - S < 35 |
+| 3 | Linear TA(T) - North Sea |
+| 4 | Linear TA(T) - high accuracy |
+| 5 | Dynamic alkalinity (state variable) |
+| 6 | Custom TA(S) regression |
+
+#### `pHscale` - pH Scale
+
+| Value | Description |
+|-------|-------------|
+| 1 | Total scale (recommended) |
+| 0 | Seawater scale (SWS) |
+| -1 | SWS with backward-compatible offset |
+
+### Backward Compatibility
+
+The default configuration maintains full backward compatibility:
+
+```yaml
+O3:
+  parameters:
+    engine: 0          # Legacy solver (default)
+    pHscale: -1        # SWS with backward-compatible offset
+    iswtalk: 5         # Dynamic alkalinity
+```
+
+**Key points for backward compatibility:**
+
+1. **Engine 0 is default**: Existing configurations without `engine` parameter will use the legacy solver
+
+2. **pH scale offset**: When `pHscale: -1`, the legacy pH offset (0.009) is applied for SWS scale consistency with older ERSEM versions
+
+3. **Alkalinity options**: All existing `iswtalk` options (1-5) work identically in both engines
+
+4. **No rebuild required**: Engine selection is a runtime parameter in `fabm.yaml`
+
+### Switching Between Engines
+
+To switch from legacy to new engine:
+
+```yaml
+# Before (legacy)
+O3:
+  parameters:
+    engine: 0
+    pHscale: -1
+
+# After (PyCO2SYS-compatible)
+O3:
+  parameters:
+    engine: 1
+    opt_k_carbonic: 1      # Lueker 2000
+    opt_total_borate: 1    # Uppstrom 1974
+    pHscale: 1             # Total scale
+```
+
+**Expected differences:**
+- pH values differ by ~0.01-0.02 due to different K1/K2 constants
+- pCO2 values may differ by ~5-20 µatm
+- Largest differences occur at low salinity and extreme temperatures
+
+### Validation
+
+Engine 1 has been validated against PyCO2SYS v1.8.0:
+
+| Parameter | Agreement |
+|-----------|-----------|
+| pH | < 0.001 units |
+| pCO2 | < 0.1 µatm |
+| HCO3⁻ | < 0.01 mmol/m³ |
+| CO3²⁻ | < 0.01 mmol/m³ |
+
+See `tests/carbonate_engine/reference_cases.csv` for detailed validation data.
+
+### DIC Relaxation (1D Models)
+
+For 1D water column models, DIC may drift due to lack of lateral transport. The relaxation feature nudges DIC toward a target value:
+
+```yaml
+O3:
+  parameters:
+    relax_c: 2.0           # 2-day relaxation timescale
+    c_ta_ratio: 0.88       # Target DIC = 0.88 × TA
+    # OR use fixed target:
+    # c_ta_ratio: 0.0
+    # c_relax_target: 2000.0
+```
+
+**Recommendation:** Use `c_ta_ratio` instead of `c_relax_target` to prevent carbonate singularity when salinity (and thus TA) varies.
+
+### References
+
+- Follows, M.J., et al. (2006). On the solution of the carbonate chemistry system. Ocean Modelling, 12, 290-301.
+- Lueker, T.J., et al. (2000). Ocean pCO2 calculated from dissolved inorganic carbon, alkalinity, and equations for K1 and K2. Marine Chemistry, 70, 105-119.
+- Millero, F.J. (1995). Thermodynamics of the carbon dioxide system in the oceans. Geochimica et Cosmochimica Acta, 59, 661-677.
+- Millero, F.J. (2010). Carbonate constants for estuarine waters. Marine and Freshwater Research, 61, 139-142.
+- Uppstrom, L.R. (1974). The boron/chlorinity ratio of deep-sea water. Deep Sea Research, 21, 161-162.
+
+## Runtime Configuration
+
+### Overview
+
+ERSEM runtime configuration is defined through `fabm.yaml`, a YAML file that specifies:
+- Which biogeochemical components to include
+- Parameter values for each component
+- Initial conditions for state variables
+- Coupling between components
+
+The same `fabm.yaml` works with all host models (GOTM, 0D, FVCOM, etc.).
+
+### fabm.yaml Structure
+
+```yaml
+check_conservation: false
+require_initialization: true
+instances:
+  # Each instance defines a biogeochemical component
+  O2:
+    long_name: oxygen
+    model: ersem/oxygen
+    parameters:
+      iswO2: 2                    # Parameter values
+    initialization:
+      o: 300.0                    # Initial oxygen (mmol O2/m³)
+
+  O3:
+    long_name: carbonate
+    model: ersem/carbonate
+    parameters:
+      engine: 1                   # Carbonate engine selection
+      iswtalk: 5                  # Alkalinity formulation
+    initialization:
+      c: 2100.0                   # Initial DIC (mmol C/m³)
+      TA: 2300.0                  # Initial TA (mmol/m³)
+
+  # Additional instances...
+```
+
+### Available Example Configurations
+
+Example configurations are in `testcases/`:
+
+| File | Description |
+|------|-------------|
+| `fabm-ersem-15.06-L4-ben-docdyn-iop.yaml` | Full model with benthos, DOC dynamics, IOP light |
+| `fabm-ersem-15.06-L4-noben-docdyn-iop.yaml` | Pelagic only (no benthos) |
+| `fabm-ersem-15.06-L4-ben-docdyn-iop-denit.yaml` | With denitrification |
+| `fabm-ersem-15.06-L4-ben-docdyn-iop-n2o.yaml` | With N2O dynamics |
+| `fabm-ersem.yaml.template` | Template for custom configurations |
+
+### Key Model Instances
+
+ERSEM uses standardized naming for biogeochemical components:
+
+#### Nutrients and Chemistry
+| Instance | Model | Description |
+|----------|-------|-------------|
+| `N1` | `ersem/pelagic_base` | Phosphate (PO4) |
+| `N3` | `ersem/pelagic_base` | Nitrate (NO3) |
+| `N4` | `ersem/pelagic_base` | Ammonium (NH4) |
+| `N5` | `ersem/pelagic_base` | Silicate (Si) |
+| `O2` | `ersem/oxygen` | Dissolved oxygen |
+| `O3` | `ersem/carbonate` | Carbonate system (DIC, TA, pH, pCO2) |
+
+#### Organic Matter
+| Instance | Model | Description |
+|----------|-------|-------------|
+| `R1` | `ersem/pelagic_base` | Labile DOM |
+| `R2` | `ersem/pelagic_base` | Semi-labile DOM |
+| `R3` | `ersem/pelagic_base` | Semi-refractory DOM |
+| `R4` | `ersem/pelagic_base` | Small POM |
+| `R6` | `ersem/pelagic_base` | Medium POM |
+| `R8` | `ersem/pelagic_base` | Large POM |
+
+#### Phytoplankton
+| Instance | Model | Description |
+|----------|-------|-------------|
+| `P1` | `ersem/primary_producer` | Diatoms |
+| `P2` | `ersem/primary_producer` | Nanophytoplankton |
+| `P3` | `ersem/primary_producer` | Picophytoplankton |
+| `P4` | `ersem/primary_producer` | Microphytoplankton |
+
+#### Zooplankton
+| Instance | Model | Description |
+|----------|-------|-------------|
+| `Z4` | `ersem/microzooplankton` | Microzooplankton |
+| `Z5` | `ersem/mesozooplankton` | Mesozooplankton |
+| `Z6` | `ersem/mesozooplankton` | Heterotrophic nanoflagellates |
+
+#### Bacteria
+| Instance | Model | Description |
+|----------|-------|-------------|
+| `B1` | `ersem/bacteria` or `ersem/bacteria_docdyn` | Pelagic bacteria |
+
+#### Light and Physics
+| Instance | Model | Description |
+|----------|-------|-------------|
+| `zenithAngle` | `ersem/zenith_angle` | Solar zenith angle calculation |
+| `light` | `ersem/light` or `ersem/light_iop` | Light attenuation |
+
+### Creating a Custom Configuration
+
+1. **Start from an example:**
+   ```bash
+   cp testcases/fabm-ersem-15.06-L4-ben-docdyn-iop.yaml fabm.yaml
+   ```
+
+2. **Modify parameters as needed:**
+   ```yaml
+   O3:
+     model: ersem/carbonate
+     parameters:
+       engine: 1              # Use new carbonate engine
+       opt_k_carbonic: 1      # Lueker 2000 constants
+       iswtalk: 6             # Custom TA(S) regression
+       ta_slope: 43.626       # For Tokyo Bay
+       ta_intercept: 846.48
+   ```
+
+3. **Adjust initial conditions:**
+   ```yaml
+   O3:
+     initialization:
+       c: 1950.0              # DIC for your region
+       TA: 2200.0             # TA for your region
+   ```
+
+### Running Simulations
+
+#### With GOTM (1D Water Column)
+
+1. **Prepare run directory:**
+   ```
+   run/
+   ├── gotm.yaml          # GOTM configuration
+   ├── fabm.yaml          # ERSEM configuration
+   ├── output.yaml        # Output configuration
+   └── input/             # Forcing data (meteo, initial profiles, etc.)
+   ```
+
+2. **Run simulation:**
+   ```bash
+   # Ensure gotm is in PATH
+   export PATH=~/local/fabm-ifx/gotm/bin:$PATH
+
+   cd run/
+   gotm
+   ```
+
+3. **Output:**
+   - NetCDF file specified in `output.yaml`
+   - Contains all ERSEM state variables and diagnostics
+
+#### With FABM0D (Box Model)
+
+1. **Prepare run directory:**
+   ```
+   run/
+   ├── fabm0d.yaml        # 0D driver configuration
+   ├── fabm.yaml          # ERSEM configuration
+   └── input.yaml         # Environmental forcing
+   ```
+
+2. **Run simulation:**
+   ```bash
+   export PATH=~/local/fabm-ifx/0d/bin:$PATH
+
+   cd run/
+   fabm0d
+   ```
+
+#### With FVCOM (3D)
+
+1. **Configuration files:**
+   ```
+   case/
+   ├── CASENAME_run.nml   # FVCOM namelist (includes NML_FABM section)
+   ├── fabm.yaml          # ERSEM configuration
+   └── ...                # Other FVCOM inputs
+   ```
+
+2. **FVCOM namelist settings:**
+   ```fortran
+   &NML_FABM
+     FABM_MODEL = T
+     FABM_YAML = 'fabm.yaml'
+     NC_FABM = 'fabm_output.nc'
+     FABM_DIAG_OUT = T
+   /
+   ```
+
+3. **Run:**
+   ```bash
+   mpirun -np N fvcom --casename=CASENAME
+   ```
+
+### Parameter Tuning Tips
+
+1. **Start with default parameters** from example configurations
+
+2. **Validate against observations:**
+   - Compare model output with field data
+   - Adjust key parameters iteratively
+
+3. **Key parameters for coastal/estuarine applications:**
+   ```yaml
+   O3:
+     parameters:
+       engine: 1              # PyCO2SYS-compatible
+       iswtalk: 6             # Custom TA(S) for your region
+       ta_slope: ...          # From local regression
+       ta_intercept: ...
+   ```
+
+4. **For 1D models with DIC drift:**
+   ```yaml
+   O3:
+     parameters:
+       relax_c: 2.0           # DIC relaxation timescale (days)
+       c_ta_ratio: 0.88       # Target DIC/TA ratio
+   ```
+
+### Output Variables
+
+ERSEM outputs include:
+
+| Variable | Description | Units |
+|----------|-------------|-------|
+| `O2_o` | Dissolved oxygen | mmol O2/m³ |
+| `O3_c` | DIC | mmol C/m³ |
+| `O3_TA` | Total alkalinity | mmol/m³ |
+| `O3_pH` | pH | - |
+| `O3_pCO2` | pCO2 | µatm |
+| `N1_p` | Phosphate | mmol P/m³ |
+| `N3_n` | Nitrate | mmol N/m³ |
+| `P1_c`, `P2_c`, ... | Phytoplankton carbon | mg C/m³ |
+
+See output NetCDF files for complete list of available variables.
 
 ## Documentation
 

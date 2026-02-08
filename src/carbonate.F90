@@ -4,6 +4,7 @@ module ersem_carbonate
    use fabm_types
    use fabm_builtin_models
    use ersem_shared
+   use carbonate_engine, only: carbonate_engine_solve
 
    implicit none
 
@@ -13,15 +14,22 @@ module ersem_carbonate
 !     Variable identifiers
       type (type_state_variable_id)     :: id_O3c,id_TA,id_bioalk
       type (type_dependency_id)         :: id_ETW, id_X1X, id_dens, id_pres
-      type (type_dependency_id)         :: id_Carb_in,id_BiCarb_in,id_CarbA_in,id_pH_in,id_pco2_in
+      type (type_dependency_id)         :: id_Carb_in,id_BiCarb_in,id_CarbA_in,id_pH_in,id_pco2_in, id_Hplus_in
       type (type_horizontal_dependency_id) :: id_wnd,id_PCO2A
 
-      type (type_diagnostic_variable_id) :: id_ph,id_pco2,id_CarbA, id_BiCarb, id_Carb, id_TA_diag
+      type (type_diagnostic_variable_id) :: id_ph,id_pco2,id_CarbA, id_BiCarb, id_Carb, id_TA_diag, id_Hplus
       type (type_diagnostic_variable_id) :: id_Om_cal,id_Om_arg
 
       type (type_horizontal_diagnostic_variable_id) :: id_fair,id_wnd_diag
 
       integer :: iswCO2X,iswtalk,iswASFLUX,phscale
+      integer :: engine   ! carbonate engine (0: legacy ERSEM, 1: carbonate-engine)
+      integer :: opt_k_carbonic    ! K1/K2 formulation (1: Lueker 2000, 2: Millero 2010)
+      integer :: opt_total_borate  ! Total boron (1: Uppstrom 1974, 2: Lee 2010)
+      real(rk) :: ta_slope, ta_intercept  ! TA(S) regression coefficients for iswtalk==6
+      real(rk) :: relax_c          ! DIC relaxation timescale (d), 0 = off
+      real(rk) :: c_relax_target   ! target DIC for relaxation (mmol C/m³), used when c_ta_ratio <= 0
+      real(rk) :: c_ta_ratio       ! target DIC/TA ratio for relaxation (0 = use fixed c_relax_target)
    contains
       procedure :: initialize
       procedure :: do
@@ -47,6 +55,14 @@ contains
       call self%get_parameter(self%iswASFLUX,'iswASFLUX','','air-sea CO2 exchange (0: none, 1: Nightingale et al. 2000, 2: Wanninkhof 1992 without chemical enhancement, 3: Wanninkhof 1992 with chemical enhancement, 4: Wanninkhof and McGillis 1999, 5: Wanninkhof 1992 switching to Wanninkhof and McGillis 1999, 6: Wanninkhof 2014)',default=6,minimum=0, maximum=6)
       call self%get_parameter(self%iswtalk,'iswtalk','','alkalinity formulation (1-4: from salinity and temperature, 5: dynamic alkalinity)',default=5, minimum=1, maximum=6)
       call self%get_parameter(self%phscale,'pHscale','','pH scale (1: total, 0: SWS, -1: SWS backward compatible)',default=1,minimum=-1,maximum=1)
+      call self%get_parameter(self%engine,'engine','','carbonate engine (0: legacy ERSEM, 1: carbonate-engine)',default=0,minimum=0,maximum=1)
+      call self%get_parameter(self%opt_k_carbonic,'opt_k_carbonic','','K1/K2 formulation for engine=1 (1: Lueker et al. 2000, 2: Millero 2010)',default=1,minimum=1,maximum=2)
+      call self%get_parameter(self%opt_total_borate,'opt_total_borate','','Total boron for engine=1 (1: Uppstrom 1974, 2: Lee et al. 2010)',default=2,minimum=1,maximum=2)
+      call self%get_parameter(self%ta_slope,'ta_slope','umol/kg/PSU','TA(S) regression slope for iswtalk=6',default=43.626_rk)
+      call self%get_parameter(self%ta_intercept,'ta_intercept','umol/kg','TA(S) regression intercept for iswtalk=6',default=846.48_rk)
+      call self%get_parameter(self%relax_c,'relax_c','d','DIC relaxation timescale (0 = off)',default=0.0_rk,minimum=0.0_rk)
+      call self%get_parameter(self%c_relax_target,'c_relax_target','mmol C/m^3','target DIC for relaxation (used when c_ta_ratio <= 0)',default=2100.0_rk,minimum=0.0_rk)
+      call self%get_parameter(self%c_ta_ratio,'c_ta_ratio','-','target DIC/TA ratio for relaxation (0 = use fixed c_relax_target)',default=0.0_rk,minimum=0.0_rk,maximum=1.0_rk)
 
       call self%register_state_variable(self%id_O3c,'c','mmol C/m^3','total dissolved inorganic carbon', 2200._rk,minimum=0._rk)
       call self%add_to_aggregate_variable(standard_variables%total_carbon,self%id_O3c)
@@ -87,7 +103,7 @@ contains
          call self%register_diagnostic_variable(self%id_CarbA, 'CarbA', 'mmol/m^3','carbonic acid concentration',missing_value=0._rk)
          call self%register_diagnostic_variable(self%id_BiCarb,'BiCarb','mmol/m^3','bicarbonate concentration',missing_value=0._rk)
          call self%register_diagnostic_variable(self%id_Carb,  'Carb',  'mmol/m^3','carbonate concentration',standard_variable=standard_variables%mole_concentration_of_carbonate_expressed_as_carbon,missing_value=0._rk)
-
+         call self%register_diagnostic_variable(self%id_Hplus, 'Hplus', 'mmol/m^3','hydrogen ions concentration',missing_value=0._rk)
          call self%register_diagnostic_variable(self%id_Om_cal,'Om_cal','-','calcite saturation',missing_value=4._rk)
          call self%register_diagnostic_variable(self%id_Om_arg,'Om_arg','-','aragonite saturation',missing_value=3._rk)
       end if
@@ -108,6 +124,7 @@ contains
          call self%register_dependency(self%id_CarbA_in,'CarbA','mmol/m^3','previous carbonic acid concentration')
          call self%register_dependency(self%id_BiCarb_in,'BiCarb','mmol/m^3','previous bicarbonate concentration')
          call self%register_dependency(self%id_pH_in,'pH','-','previous pH')
+         call self%register_dependency(self%id_Hplus_in,'Hplus','mmol/m^3','previous hydrogen ions concentration')
       end if
 
       if (self%iswASFLUX>=1) then
@@ -119,10 +136,12 @@ contains
 
    end subroutine
 
-   function approximate_alkalinity(iswtalk,T,S) result(TA)
+   function approximate_alkalinity(iswtalk,T,S,ta_slope,ta_intercept) result(TA)
       integer, intent(in) :: iswtalk
       real(rk),intent(in) :: T,S
+      real(rk),intent(in),optional :: ta_slope, ta_intercept
       real(rk)            :: TA
+      real(rk)            :: slope, intercept
 
       ! NB total alkalinity must be given in umol kg-1
 
@@ -147,7 +166,18 @@ contains
             TA = 2305._rk+58.66_rk*(S-35._rk)+2.32_rk*(S-35._rk)**2-1.41_rk*(T-20._rk)+0.04_rk*(T-20._rk)**2   ! Lee et al., Geophys Res Lett, 1998
          ENDIF
       elseif (iswtalk==6) then
-         TA = 846.48_rk + 43.626 * S  ! Endo et al., Frontiers in Marine Science, 2023  
+         ! User-configurable TA(S) regression (default: Endo et al., Frontiers in Marine Science, 2023)
+         if (present(ta_slope)) then
+            slope = ta_slope
+         else
+            slope = 43.626_rk
+         end if
+         if (present(ta_intercept)) then
+            intercept = ta_intercept
+         else
+            intercept = 846.48_rk
+         end if
+         TA = intercept + slope * S
       end if
    end function
 
@@ -157,7 +187,7 @@ contains
 
       real(rk) :: O3c,ETW,X1X,density,pres
       real(rk) :: TA,bioalk,Ctot
-      real(rk) :: pH,PCO2,H2CO3,HCO3,CO3,k0co2
+      real(rk) :: pH,PCO2,H2CO3,HCO3,CO3,k0co2,Hplus
       real(rk) :: Om_cal,Om_arg
       logical  :: success
 
@@ -173,7 +203,7 @@ contains
          ! Calculate total alkalinity
          if (self%iswtalk/=5) then
             ! Alkalinity is parameterized as function of salinity and temperature.
-            TA = approximate_alkalinity(self%iswtalk,ETW,X1X)
+            TA = approximate_alkalinity(self%iswtalk,ETW,X1X,self%ta_slope,self%ta_intercept)
             ! Approximate alkalinity is still in umol kg-1 due to empirical regression
             ! therefore now need to be converted  in mmol m-3
             TA = TA * density / 1.e3_rk
@@ -191,7 +221,16 @@ contains
          TA = TA / 1.0e3_rk / density    ! from mmol m-3 to mol kg-1
          Ctot  = O3C / 1.e3_rk / density ! from mmol m-3 to mol kg-1
 
-         CALL CO2DYN (ETW,X1X,pres*0.1_rk,ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,k0co2,success,self%phscale)   ! NB pressure from dbar to bar
+         ! Select carbonate chemistry engine
+         if (self%engine == 0) then
+            ! Legacy ERSEM carbonate solver
+            CALL CO2DYN (ETW,X1X,pres*0.1_rk,Ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,Hplus,k0co2,success,self%phscale)   ! NB pressure from dbar to bar
+         else
+            ! New carbonate-engine solver (PyCO2SYS-style)
+            call carbonate_engine_solve(ETW, X1X, pres*0.1_rk, Ctot, TA, self%phscale, &
+                                        self%opt_k_carbonic, self%opt_total_borate, &
+                                        pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+         end if
 
          if (.not.success) then
             ! Carbonate system iterative scheme did not converge.
@@ -202,22 +241,38 @@ contains
             _GET_(self%id_Carb_in,CO3)
             _GET_(self%id_pCO2_in,pCO2)
             _GET_(self%id_pH_in,pH)
+            _GET_(self%id_Hplus_in,Hplus)
             CO3 = CO3/1.e3_rk/density  ! from mmol/m3 to mol/kg
             HCO3 = HCO3/1.e3_rk/density  ! from mmol/m3 to mol/kg
             H2CO3 = H2CO3/1.e3_rk/density  ! from mmol/m3 to mol/kg
             pCO2 = pCO2/1.e6_rk  ! from uatm to atm
+            Hplus= Hplus/1.e3_rk/density ! from mmol/m3 to mol/kg
          endif
          _SET_DIAGNOSTIC_(self%id_ph,pH)
          _SET_DIAGNOSTIC_(self%id_pco2,PCO2*1.e6_rk)
          _SET_DIAGNOSTIC_(self%id_CarbA, H2CO3*1.e3_rk*density)
          _SET_DIAGNOSTIC_(self%id_Bicarb,HCO3*1.e3_rk*density)
          _SET_DIAGNOSTIC_(self%id_Carb,  CO3*1.e3_rk*density)
+         _SET_DIAGNOSTIC_(self%id_Hplus, Hplus*1.e3_rk*density)
 
          ! Call carbonate saturation state subroutine
          CALL CaCO3_Saturation (ETW, X1X, pres*1.e4_rk, CO3, Om_cal, Om_arg)  ! NB pressure from dbar to Pa
 
          _SET_DIAGNOSTIC_(self%id_Om_cal,Om_cal)
          _SET_DIAGNOSTIC_(self%id_Om_arg,Om_arg)
+
+         ! DIC relaxation (nudging towards target value)
+         ! If c_ta_ratio > 0, relax towards TA * c_ta_ratio to prevent DIC/TA > 1
+         ! Otherwise, relax towards fixed c_relax_target
+         if (self%relax_c > 0.0_rk) then
+            if (self%c_ta_ratio > 0.0_rk) then
+               ! Use TA-dependent target (TA is already in mmol/m³ at this point in the code)
+               ! Need to recalculate TA in mmol/m³ for the target
+               _ADD_SOURCE_(self%id_O3c, (TA * 1.e3_rk * density * self%c_ta_ratio - O3c) / self%relax_c)
+            else
+               _ADD_SOURCE_(self%id_O3c, (self%c_relax_target - O3c) / self%relax_c)
+            end if
+         end if
       _LOOP_END_
    end subroutine
 
@@ -229,7 +284,7 @@ contains
       real(rk) :: wnd,PCO2A
       real(rk) :: sc,fwind,UPTAKE,FAIRCO2
 
-      real(rk) :: ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,k0co2
+      real(rk) :: ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,Hplus,k0co2
       logical  :: success
 
       if (self%iswASFLUX<=0) return
@@ -247,7 +302,7 @@ contains
 
          if (self%iswtalk/=5) then
             ! Alkalinity is parameterized as function of salinity and temperature.
-            TA = approximate_alkalinity(self%iswtalk,T,S)
+            TA = approximate_alkalinity(self%iswtalk,T,S,self%ta_slope,self%ta_intercept)
             ! Approximate alkalinity is still in umol kg-1 due to empirical regression
             ! therefore now need to be converted  in mmol m-3
             TA = TA * density / 1.e3_rk
@@ -267,7 +322,16 @@ contains
 !  for surface box only calculate air-sea flux
 !..Only call after 2 days, because the derivation of instability in the
 !..
-         CALL CO2dyn(T, S, PRSS*0.1_rk,ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,k0co2,success,self%phscale)
+         ! Select carbonate chemistry engine
+         if (self%engine == 0) then
+            ! Legacy ERSEM carbonate solver
+            CALL CO2dyn(T, S, PRSS*0.1_rk,Ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,Hplus,k0co2,success,self%phscale)
+         else
+            ! New carbonate-engine solver (PyCO2SYS-style)
+            call carbonate_engine_solve(T, S, PRSS*0.1_rk, Ctot, TA, self%phscale, &
+                                        self%opt_k_carbonic, self%opt_total_borate, &
+                                        pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+         end if
          if (.not.success) then
             _GET_(self%id_pco2_in,PCO2)
             PCO2 = PCO2*1.e-6_rk
@@ -326,13 +390,13 @@ contains
 !\\
 !\\
 ! !INTERFACE:
-      SUBROUTINE CO2dyn ( T, S, PRSS,ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,k0co2,success,hscale)
+      SUBROUTINE CO2dyn ( T, S, PRSS,ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,Hplus,k0co2,success,hscale)
 !
 ! !LOCAL VARIABLES:
 !     ! TODO - SORT THESE!
       real(rk),intent(in) :: T, S, PRSS   ! NB PRSS is pressure in bar
       real(rk),intent(inout) :: ctot,TA
-      real(rk),intent(out) :: pH,PCO2,H2CO3,HCO3,CO3,k0co2
+      real(rk),intent(out) :: pH,PCO2,H2CO3,HCO3,CO3,Hplus,k0co2
       logical, intent(out) :: success
       integer, intent(in)  :: hscale
 
@@ -365,9 +429,10 @@ contains
       H2CO3 = 0._rk
       HCO3 = 0._rk
       CO3 = 0._rk
+      Hplus = 0._rk
 
       CALL CO2SET(PRSS,Tmax,S,k0co2,k1co2,k2co2,kb,hscale)
-      CALL CO2CLC(k0co2,k1co2,k2co2,kb,ICALC,BORON,BTOT,ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,success)
+      CALL CO2CLC(k0co2,k1co2,k2co2,kb,ICALC,BORON,BTOT,ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,Hplus,success)
 
       END SUBROUTINE CO2DYN
 !
@@ -566,19 +631,19 @@ contains
 !\\
 !\\
 ! !INTERFACE:
-      SUBROUTINE CO2CLC(k0co2,k1co2,k2co2,kb,ICALC,BORON,BTOT,ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,success)
+      SUBROUTINE CO2CLC(k0co2,k1co2,k2co2,kb,ICALC,BORON,BTOT,ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,AHplus,success)
 !
 ! !USES:
 !
 ! !LOCAL VARIABLES:
       real(rk),intent(in)    :: k0co2,k1co2,k2co2,kb
-      real(rk),intent(inout) :: ctot,TA,pH,PCO2,H2CO3,HCO3,CO3
+      real(rk),intent(inout) :: ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,AHPLUS
       logical,intent(out)    :: success
       INTEGER ICALC, KARL, LQ
 !put counter in to check duration in convergence loop
       INTEGER                :: COUNTER,C_CHECK,C_SW
       real(rk)              :: ALKC, ALKB,BTOT
-      real(rk)              :: AKR,AHPLUS
+      real(rk)              :: AKR
       real(rk)              :: PROD,tol1,tol2,tol3,tol4,steg,fak
       real(rk)              :: STEGBY,Y,X,W,X1,Y1,X2,Y2,FACTOR,TERM,Z
       LOGICAL               :: BORON,DONE
