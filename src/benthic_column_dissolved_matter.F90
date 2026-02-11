@@ -393,7 +393,12 @@ contains
          ! the concentration at their bottom interface, c_bot, and their depth-integrated concentration, c_int_per_layer_eq(ilayer)
          do ilayer=1,nlayers
             call compute_equilibrium_profile(diff(ilayer),c_top,sms_per_layer(ilayer),sum(sms_per_layer(ilayer+1:)),Dm(ilayer)-d_top,c_bot,c_int_per_layer_eq(ilayer))
-          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_conc_eq(ilayer),c_int_per_layer_eq(ilayer)/(Dm(ilayer)-d_top))
+            ! Guard against zero layer thickness (Dm(ilayer)-d_top=0 produces 0/0=NaN)  jsasaki 2026-02-11
+            if (Dm(ilayer)-d_top > 0.0_rk) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_conc_eq(ilayer),c_int_per_layer_eq(ilayer)/(Dm(ilayer)-d_top))
+            else
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_conc_eq(ilayer),0.0_rk)
+            end if
             d_top = Dm(ilayer)
             c_top = c_bot
          end do
@@ -428,7 +433,12 @@ contains
             c_top = c_bot
          end do
          norm_res_int = poro*sum(self%ads*residual_per_layer)
-         P_res_int = (c_int-c_int_eq)/norm_res_int*Dm(nlayers)
+         ! Guard against zero norm_res_int (produces NaN from 0/0)  jsasaki 2026-02-11
+         if (abs(norm_res_int) > 0.0_rk) then
+            P_res_int = (c_int-c_int_eq)/norm_res_int*Dm(nlayers)
+         else
+            P_res_int = 0.0_rk
+         end if
          _SET_BOTTOM_EXCHANGE_(info%id_pel,sms+P_res_int) ! Equilibrium flux = depth-integrated production sms + residual flux P_res_int
          _SET_HORIZONTAL_DIAGNOSTIC_(info%id_pbf,sms+P_res_int)
          _SET_BOTTOM_ODE_(info%id_int,-P_res_int-sms)
@@ -436,7 +446,12 @@ contains
          ! Save final estimates of mean pore water concentration per layer.
          d_top = 0
          do ilayer=1,nlayers
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_conc_tot(ilayer),(P_res_int/Dm(nlayers)*residual_per_layer(ilayer)+c_int_per_layer_eq(ilayer))/(Dm(ilayer)-d_top))
+            ! Guard against zero layer thickness (Dm(ilayer)-d_top=0 produces NaN)  jsasaki 2026-02-11
+            if (Dm(ilayer)-d_top > 0.0_rk) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_conc_tot(ilayer),(P_res_int/Dm(nlayers)*residual_per_layer(ilayer)+c_int_per_layer_eq(ilayer))/(Dm(ilayer)-d_top))
+            else
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_conc_tot(ilayer),0.0_rk)
+            end if
             d_top = Dm(ilayer)
          end do
 
@@ -507,8 +522,14 @@ contains
       ! problems 1 and 2), we define the combined constants $a_D2 = a D^2$ and $b_D = b D$. This avoids
       ! division by 0 when computing $a$ while $D$ tends to zero.
       ! ----------------------------------------------------------------------------------------------------
-      a_D2 = -P/sigma/2*D
-      b_D = (P+P_deep)/sigma*D
+      ! Guard against zero diffusivity: no diffusion means flat profile at surface concentration  jsasaki 2026-02-11
+      if (sigma > 0.0_rk) then
+         a_D2 = -P/sigma/2*D
+         b_D = (P+P_deep)/sigma*D
+      else
+         a_D2 = 0.0_rk
+         b_D = 0.0_rk
+      end if
       c = C0
       C_bot = a_D2 + b_D + c
       C_int = (a_D2/3 + b_D/2 + c)*D
@@ -593,8 +614,14 @@ contains
          call compute_equilibrium_profile(sigma,c0,P,P_deep,D,c_bot,c_int)
       else
          D = -2*sigma*C0/(P+2*P_deep)
-         a_D2 = -P/sigma/2*D
-         b_D = (P+P_deep)/sigma*D
+         ! Guard against zero diffusivity  jsasaki 2026-02-11
+         if (sigma > 0.0_rk) then
+            a_D2 = -P/sigma/2*D
+            b_D = (P+P_deep)/sigma*D
+         else
+            a_D2 = 0.0_rk
+            b_D = 0.0_rk
+         end if
          c = C0
          C_int = (a_D2/3 + b_D/2 + c)*D
       end if
@@ -629,7 +656,12 @@ contains
                ! Compute pore water concentration in upper layers (above self%last_layer), in matter/m3
                ! Note that concentration in last layer is 1/3 of that of the top layers,
                ! due to the fact that it has a quadratic profile decreasing from the top concentration to zero.
-               pwconc = c_int/(poro*(sum(self%ads(:self%last_layer-1)*d(:self%last_layer-1)) + self%ads(self%last_layer)*d(self%last_layer)/3))
+               ! Guard against zero denominator (zero porosity or layer thicknesses)  jsasaki 2026-02-11
+               if (poro*(sum(self%ads(:self%last_layer-1)*d(:self%last_layer-1)) + self%ads(self%last_layer)*d(self%last_layer)/3) > 0.0_rk) then
+                  pwconc = c_int/(poro*(sum(self%ads(:self%last_layer-1)*d(:self%last_layer-1)) + self%ads(self%last_layer)*d(self%last_layer)/3))
+               else
+                  pwconc = 0.0_rk
+               end if
 
                ! Top layers: homogeneous pore water concentration.
                do ilayer=1,self%last_layer-1
@@ -653,7 +685,12 @@ contains
                ! Vertically homogeneous in all layers.
 
                ! Compute pore water concentration in matter/m3.
-               pwconc = c_int/sum(poro*self%ads*d)
+               ! Guard against zero denominator (zero porosity or layer thicknesses)  jsasaki 2026-02-11
+               if (sum(poro*self%ads*d) > 0.0_rk) then
+                  pwconc = c_int/sum(poro*self%ads*d)
+               else
+                  pwconc = 0.0_rk
+               end if
                _SET_HORIZONTAL_DIAGNOSTIC_(self%constituents(iconstituent)%id_conc,pwconc)
 
                do ilayer=1,nlayers

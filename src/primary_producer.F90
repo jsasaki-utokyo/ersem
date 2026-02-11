@@ -538,7 +538,9 @@ contains
          fNIPIn = MIN(rumn, runn + misn)
 
          ! Partitioning over NH4 and NO3 uptake
-         IF (fNIPIn .gt. 0._rk) THEN
+         ! Guard: rumn > 0 check prevents 0/0 NaN when nitrogen is depleted  jsasaki 2026-02-11
+         ! (also prevents speculative division-by-zero from compiler vectorization)
+         IF (fNIPIn .gt. 0._rk .and. rumn .gt. 0._rk) THEN
             fN3PIn = fNIPIn * rumn3 / rumn
             fN4PIn = fNIPIn * rumn4 / rumn
          ELSE

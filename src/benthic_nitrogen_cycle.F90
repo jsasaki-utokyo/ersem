@@ -113,7 +113,12 @@ contains
 
          ! Average nitrate concentration in first (oxygenated) sediment layer
          ! (mmol/m3 - per sediment volume, not pore water volume, as porosity is not considered!)
-         MU_m = max(0.0_rk,K3nP)/D1m
+         ! Guard against D1m=0 (zero oxic layer thickness): 0/0 produces NaN (IEEE floating invalid)  jsasaki 2026-02-11
+         if (D1m > 0.0_rk) then
+            MU_m = max(0.0_rk,K3nP)/D1m
+         else
+            MU_m = 0.0_rk
+         end if
 
          ! Limitation factor for temperature (Q_10)
          eT = self%q10nit**((ETW-10._rk)/10._rk)
@@ -149,7 +154,12 @@ contains
 
          ! Average nitrate concentration in second (denitrification) layer
          ! (mmol/m3 - per sediment volume, not pore water volume, as porosity is not considered!)
-         MU_m2 = K3n2/layer2_thickness
+         ! Guard against layer2_thickness=0: 0/0 produces NaN (IEEE floating invalid)  jsasaki 2026-02-11
+         if (layer2_thickness > 0.0_rk) then
+            MU_m2 = K3n2/layer2_thickness
+         else
+            MU_m2 = 0.0_rk
+         end if
 
          ! Denitrification is a Michaelis-Menten function of nitrate availability
          eN2 = MU_m2/(MU_m2+self%hM3G4)
