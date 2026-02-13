@@ -67,6 +67,8 @@ module ersem_primary_producer
       real(rk) :: R1R2,uB1c_O2,urB1_O2
       real(rk) :: qflc,qfRc,qurf
       integer :: Limnut
+      integer :: iswTemp
+      real(rk) :: Tmin, Topt, Tmax
       logical :: use_Si, calcify, docdyn, cenh
 
    contains
@@ -104,6 +106,11 @@ contains
       ! to present parameters to the user for configuration (e.g., through a GUI)
       call self%get_parameter(self%sum,   'sum',  '1/d',        'maximum specific productivity at reference temperature')
       call self%get_parameter(self%q10,   'q10',  '-',          'Q_10 temperature coefficient')
+      call self%get_parameter(self%iswTemp,'iswTemp','',          'temperature response (1: Q10 with high-T suppression, 2: CTMI cardinal temperature model)', &
+                              default=1,minimum=1,maximum=2)
+      call self%get_parameter(self%Tmin,  'Tmin', 'degrees_Celsius','minimum temperature for growth (CTMI only)',default=0.0_rk)
+      call self%get_parameter(self%Topt,  'Topt', 'degrees_Celsius','optimal temperature for growth (CTMI only)',default=20.0_rk)
+      call self%get_parameter(self%Tmax,  'Tmax', 'degrees_Celsius','maximum temperature for growth (CTMI only)',default=35.0_rk)
       call self%get_parameter(self%srs,   'srs',  '1/d',        'specific rest respiration at reference temperature')
       call self%get_parameter(self%pu_ea, 'pu_ea','-',          'excreted fraction of primary production')
       call self%get_parameter(self%pu_ra, 'pu_ra','-',          'respired fraction of primary production')
@@ -353,7 +360,21 @@ contains
          end if
 
          ! Temperature response
-         et = max(0.0_rk,self%q10**((ETW-10._rk)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
+         if (self%iswTemp == 1) then
+            ! Original Q10 formulation with high-temperature suppression
+            et = max(0.0_rk,self%q10**((ETW-10._rk)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
+         else
+            ! CTMI (Cardinal Temperature Model with Inflection)
+            ! Rosso et al. (1993), Bernard & Remond (2012)
+            ! f(Topt) = 1.0 by construction; f(Tmin) = f(Tmax) = 0.0
+            if (ETW <= self%Tmin .or. ETW >= self%Tmax) then
+               et = 0.0_rk
+            else
+               et = (ETW - self%Tmax) * (ETW - self%Tmin)**2 &
+                  / ((self%Topt - self%Tmin) * ((self%Topt - self%Tmin) * (ETW - self%Topt) &
+                  - (self%Topt - self%Tmax) * (self%Topt + self%Tmin - 2.0_rk * ETW)))
+            end if
+         end if
 
          ! Production...........................................................
 
