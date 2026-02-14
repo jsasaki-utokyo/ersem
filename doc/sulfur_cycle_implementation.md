@@ -19,7 +19,7 @@ Currently, ERSEM handles this process implicitly through "oxygen debt" (K6), but
    - **Phase 1**: Keep K6 in parallel with new H2S for backward compatibility
    - **Phase 2**: Deprecate K6, make H2S the primary mechanism
    - **Phase 3**: Remove K6 completely after validation
-2. **Sulfur cycle only** - no iron-sulfur interactions (FeS, FeS2) in Phase 1
+2. **Simplified iron-sulfur**: FeS precipitation as first-order H2S sink (implicit Fe); full Fe-S coupling deferred to Phase 3
 3. **Explicit sulfur species** in both water column and sediments: SO4^2-, H2S, S0
 4. **Minimal implementation first** (Phase 1), with expansion possible in later phases
 5. **Sulfate (SO4) treatment**: While SO4 is nearly conservative in seawater (~28 mM), it is explicitly tracked in the model to maintain mass balance. Changes due to sulfate reduction are small relative to the background concentration but are computed for completeness
@@ -94,6 +94,8 @@ R_H2S_NO3_ox = K_H2S_NO3_ox * H2S_2 * f_NO3
 ! ODEs
 dH2S_2/dt = -R_H2S_NO3_ox  ! H2S consumed
 dNO3_2/dt = -0.4 * R_H2S_NO3_ox  ! NO3 consumed (stoichiometry)
+dS0_2/dt  = R_H2S_NO3_ox   ! S0 produced (1:1 with H2S)
+dG4n/dt   = 0.4 * R_H2S_NO3_ox  ! N2 produced (0.4 mol N per mol H2S)
 ```
 
 **Parameters**:
@@ -110,7 +112,9 @@ ben_sulfur:
     K_NO3_half: 10.0      # half-saturation NO3 (mmol/m^3)
   coupling:
     H2S_2: K_H2S/per_layer/h2  # H2S in layer 2
-    NO3_2: K4/per_layer/n2     # NO3 in layer 2 (ammonium pool has NO3 in layer 2)
+    S0_2: K_S0/per_layer/e2    # S0 in layer 2 (product of H2S-NO3 reaction)
+    NO3_2: K3/per_layer/n2     # NO3 in layer 2
+    G4n: ben_nit/G4n           # dinitrogen gas (N2 product)
 ```
 
 **Note**: This mechanism is now implemented as part of Phase 1, not Phase 2 as originally planned. It was found to be essential for correct winter behavior.
@@ -489,8 +493,10 @@ ben_sulfur:
 **Mathematical formulation**:
 ```
 f_barrier = 1 - exp(-K_barrier * D1m * f_O2_pel)
-R_barrier_ox = K_barrier_rate * H2S_pel * f_barrier
+R_barrier_ox = K_barrier_rate * H2S_pel * f_barrier * h_bottom
 ```
+Where `h_bottom` is the bottom cell thickness (m), converting the volumetric rate
+(mmol/m³/d) to an areal flux (mmol/m²/d) for `_SET_BOTTOM_EXCHANGE_`.
 
 Where:
 - `K_barrier` controls how effective the oxic layer is at blocking H2S
