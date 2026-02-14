@@ -69,6 +69,8 @@ module ersem_primary_producer
       integer :: Limnut
       integer :: iswTemp
       real(rk) :: Tmin, Topt, Tmax
+      integer :: iswNutUptake
+      real(rk) :: KsN, KsP
       logical :: use_Si, calcify, docdyn, cenh
 
    contains
@@ -111,6 +113,10 @@ contains
       call self%get_parameter(self%Tmin,  'Tmin', 'degrees_Celsius','minimum temperature for growth (CTMI only)',default=0.0_rk)
       call self%get_parameter(self%Topt,  'Topt', 'degrees_Celsius','optimal temperature for growth (CTMI only)',default=20.0_rk)
       call self%get_parameter(self%Tmax,  'Tmax', 'degrees_Celsius','maximum temperature for growth (CTMI only)',default=35.0_rk)
+      call self%get_parameter(self%iswNutUptake,'iswNutUptake','', &
+                              'nutrient uptake (1: linear affinity, 2: Michaelis-Menten saturation)',default=1,minimum=1,maximum=2)
+      call self%get_parameter(self%KsN,  'KsN', 'mmol N/m^3','half-saturation for DIN uptake (iswNutUptake=2 only)',default=1.0_rk)
+      call self%get_parameter(self%KsP,  'KsP', 'mmol P/m^3','half-saturation for phosphate uptake (iswNutUptake=2 only)',default=0.5_rk)
       call self%get_parameter(self%srs,   'srs',  '1/d',        'specific rest respiration at reference temperature')
       call self%get_parameter(self%pu_ea, 'pu_ea','-',          'excreted fraction of primary production')
       call self%get_parameter(self%pu_ra, 'pu_ra','-',          'respired fraction of primary production')
@@ -269,7 +275,7 @@ contains
 
       real(rk) :: sdo,sum,sug,seo,sea,sra,sun,run,sPIRP
       real(rk) :: runp,misp,rump
-      real(rk) :: runn,misn,rumn,rumn3,rumn4
+      real(rk) :: runn,misn,rumn,rumn3,rumn4,DIN_total
       real(rk) :: et,pe_RP
       real(rk) :: rho,Chl_inc,Chl_loss
       real(rk) :: ChlCpp
@@ -509,7 +515,13 @@ contains
 
          ! Net phosphorus uptake
          ! Maximum achievable uptake (mmol P m-3 d-1)
-         rump = self%qurp * N1pP * c
+         if (self%iswNutUptake == 1) then
+            ! Linear affinity (original ERSEM)
+            rump = self%qurp * N1pP * c
+         else
+            ! Michaelis-Menten saturation: Vmax = qurp * KsP, Ks = KsP
+            rump = self%qurp * self%KsP * N1pP / (self%KsP + N1pP) * c
+         end if
  
          !Regulation term relaxing internal quota towards maximum quota (using nutrient luxury uptake)  (mmol P m-3 d-1)
          misp = self%snplux*(self%xqp * qpRPIcX*cP - pP)
@@ -539,12 +551,18 @@ contains
          fPIRDn = sdo * nP - fPIRPn
 
          ! Net nitrogen uptake
-
-         ! maximum acheivable uptake of nitrate  (mmol N m-3 d-1)
-         rumn3 = self%qun3 * N3nP * c
-
-         ! Maximum achievable uptake of ammonium (mmol N m-3 d-1)
-         rumn4 = self%qun4 * N4nP * c
+         if (self%iswNutUptake == 1) then
+            ! Linear affinity (original ERSEM)
+            rumn3 = self%qun3 * N3nP * c
+            rumn4 = self%qun4 * N4nP * c
+         else
+            ! Michaelis-Menten saturation on total DIN
+            ! Vmax_NO3 = qun3 * KsN, Vmax_NH4 = qun4 * KsN
+            ! Partitioning by concentration × species-specific affinity
+            DIN_total = N3nP + N4nP
+            rumn3 = self%qun3 * self%KsN * N3nP / (self%KsN + DIN_total) * c
+            rumn4 = self%qun4 * self%KsN * N4nP / (self%KsN + DIN_total) * c
+         end if
 
          !Total maximum achievable uptake of nitrogen (mmol N m-3 d-1)
          rumn = rumn3 + rumn4
