@@ -114,7 +114,7 @@
       benTA: zero_hz                                       # benthic alkalinity in layer 1
       benTA2: zero_hz                                      # benthic alkalinity in layer 2
       # Remineralization rate from H2 bacteria (anaerobic)
-      remin_rate: H2/fH2G2Oc                               # link to H2 bacteria respiration rate
+      remin_rate: H2/fHG3c                                 # H2 bacteria respiration rate (mg C/m^2/d)
 
 #-----------------------------------------------------------------------
 # NOTES:

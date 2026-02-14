@@ -221,8 +221,9 @@ contains
       end if
 
       ! Organic matter remineralization rate from H2 bacteria
-      ! This should be coupled to the H2 bacteria respiration output
-      call self%register_dependency(self%id_remin_rate, 'remin_rate', 'mmol C/m^2/d', &
+      ! This should be coupled to H2/fHG3c (benthic_bacteria respiration diagnostic).
+      ! fHG3c is in mg C/m^2/d; conversion to mmol C via CMass is done in do_bottom.
+      call self%register_dependency(self%id_remin_rate, 'remin_rate', 'mg C/m^2/d', &
            'anaerobic remineralization rate in layer 3')
 
       ! Diagnostic variables
@@ -310,7 +311,8 @@ contains
          ! ============================================================
          ! H2S production is proportional to anaerobic OM remineralization
          ! Stoichiometry: 53 SO4 per 106 C -> 0.5 mol S per mol C
-         R_sulfate_red = self%K_H2S_prod * remin_rate
+         ! remin_rate is in mg C/m^2/d (from H2/fHG3c); convert to mmol C via CMass
+         R_sulfate_red = self%K_H2S_prod * remin_rate / CMass
 
          ! ============================================================
          ! LAYER 1: H2S and S0 oxidation (limited by O2 availability)

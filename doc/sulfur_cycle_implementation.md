@@ -901,7 +901,8 @@ contains
       call self%register_dependency(self%id_Dtot, depth_of_sediment_column)
 
       ! Organic matter remineralization rate (link to H2 bacteria)
-      call self%register_dependency(self%id_remin_rate, 'remin_rate', 'mmol C/m^2/d', &
+      ! fHG3c is in mg C/m^2/d; conversion to mmol C via CMass is done in do_bottom.
+      call self%register_dependency(self%id_remin_rate, 'remin_rate', 'mg C/m^2/d', &
            'organic matter remineralization rate in layer 3')
 
       ! Diagnostic variables (domain=domain_bottom required for benthic diagnostics)
@@ -971,8 +972,9 @@ contains
 
          ! R1: Sulfate reduction in Layer 3 (always active - Layer 3 is anoxic)
          ! Rate proportional to organic matter remineralization by H2 bacteria
+         ! remin_rate is in mg C/m^2/d (from H2/fHG3c); convert to mmol C via CMass
          R_sulfate_red = self%K_SO4_rd * SO4_conc_3 / (SO4_conc_3 + self%K_SO4_half) &
-                       * remin_rate * self%stoich_S_C
+                       * remin_rate / CMass * self%stoich_S_C
 
          ! R2: H2S oxidation in layer 1
          ! Convert depth-integrated O2 to concentration for rate calculation
@@ -1177,7 +1179,7 @@ ben_sulfur:
     D2m: ben_col/D2m
     Dtot: ben_col/Dtot
     # Organic matter remineralization (link to H2 bacteria)
-    remin_rate: H2/respiration_rate
+    remin_rate: H2/fHG3c                    # H2 bacteria respiration (mg C/m^2/d)
 ```
 
 ## Testing Strategy
