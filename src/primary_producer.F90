@@ -71,6 +71,7 @@ module ersem_primary_producer
       real(rk) :: Tmin, Topt, Tmax
       integer :: iswNutUptake
       real(rk) :: KsN, KsP
+      real(rk) :: ctmi_a, ctmi_b   ! precomputed polynomial CTMI coefficients
       logical :: use_Si, calcify, docdyn, cenh
 
    contains
@@ -113,10 +114,25 @@ contains
       call self%get_parameter(self%Tmin,  'Tmin', 'degrees_Celsius','minimum temperature for growth (CTMI only)',default=0.0_rk)
       call self%get_parameter(self%Topt,  'Topt', 'degrees_Celsius','optimal temperature for growth (CTMI only)',default=20.0_rk)
       call self%get_parameter(self%Tmax,  'Tmax', 'degrees_Celsius','maximum temperature for growth (CTMI only)',default=35.0_rk)
+      ! Validate CTMI cardinal temperature ordering and precompute polynomial coefficients
+      if (self%iswTemp == 2) then
+         if (self%Tmin >= self%Topt) &
+            call self%fatal_error('initialize', 'CTMI requires Tmin < Topt')
+         if (self%Topt >= self%Tmax) &
+            call self%fatal_error('initialize', 'CTMI requires Topt < Tmax')
+         block
+            real(rk) :: a, b, ab2
+            a = self%Topt - self%Tmin
+            b = self%Topt - self%Tmax
+            ab2 = (a * b)**2
+            self%ctmi_a = -(a + b) / ab2
+            self%ctmi_b = (a * b + (a + b) * self%Topt) / ab2
+         end block
+      end if
       call self%get_parameter(self%iswNutUptake,'iswNutUptake','', &
                               'nutrient uptake (1: linear affinity, 2: Michaelis-Menten saturation)',default=1,minimum=1,maximum=2)
-      call self%get_parameter(self%KsN,  'KsN', 'mmol N/m^3','half-saturation for DIN uptake (iswNutUptake=2 only)',default=1.0_rk)
-      call self%get_parameter(self%KsP,  'KsP', 'mmol P/m^3','half-saturation for phosphate uptake (iswNutUptake=2 only)',default=0.5_rk)
+      call self%get_parameter(self%KsN,  'KsN', 'mmol N/m^3','half-saturation for DIN uptake (iswNutUptake=2 only)',default=1.0_rk,minimum=1.0e-6_rk)
+      call self%get_parameter(self%KsP,  'KsP', 'mmol P/m^3','half-saturation for phosphate uptake (iswNutUptake=2 only)',default=0.5_rk,minimum=1.0e-6_rk)
       call self%get_parameter(self%srs,   'srs',  '1/d',        'specific rest respiration at reference temperature')
       call self%get_parameter(self%pu_ea, 'pu_ea','-',          'excreted fraction of primary production')
       call self%get_parameter(self%pu_ra, 'pu_ra','-',          'respired fraction of primary production')
@@ -370,15 +386,15 @@ contains
             ! Original Q10 formulation with high-temperature suppression
             et = max(0.0_rk,self%q10**((ETW-10._rk)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
          else
-            ! CTMI (Cardinal Temperature Model with Inflection)
-            ! Rosso et al. (1993), Bernard & Remond (2012)
-            ! f(Topt) = 1.0 by construction; f(Tmin) = f(Tmax) = 0.0
+            ! Polynomial CTMI (Cardinal Temperature Model with Inflection)
+            ! Singularity-free cubic satisfying f(Tmin)=0, f(Tmax)=0,
+            ! f(Topt)=1, f'(Topt)=0. Coefficients precomputed in initialize.
             if (ETW <= self%Tmin .or. ETW >= self%Tmax) then
                et = 0.0_rk
             else
-               et = (ETW - self%Tmax) * (ETW - self%Tmin)**2 &
-                  / ((self%Topt - self%Tmin) * ((self%Topt - self%Tmin) * (ETW - self%Topt) &
-                  - (self%Topt - self%Tmax) * (self%Topt + self%Tmin - 2.0_rk * ETW)))
+               et = (ETW - self%Tmin) * (ETW - self%Tmax) &
+                  * (self%ctmi_a * ETW + self%ctmi_b)
+               et = max(0.0_rk, min(1.0_rk, et))
             end if
          end if
 

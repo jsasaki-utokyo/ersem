@@ -55,22 +55,30 @@ TB-GOTM最適化研究（ERSEM_GOTM_opt_v3、1200トライアル）では、P1-P
 
 ### CTMI の数式
 
-CTMI（Rosso et al. 1993; Bernard & Remond 2012により微細藻類で検証）は、生物学的に明確な意味を持つ3パラメータによる単峰型の水温応答を提供する:
+CTMIの多項式形式を採用している。原型のRosso et al. (1993) 有理関数は
+Topt < (Tmin+Tmax)/2 のとき [Tmin, Tmax] 内に特異点を持つため、
+同じ4条件 (f(Tmin)=0, f(Tmax)=0, f(Topt)=1, f'(Topt)=0) を満たす
+3次多項式に置換した。
 
 ```
 f(T) = 0                                              (T <= Tmin or T >= Tmax の場合)
 
-f(T) = (T - Tmax)(T - Tmin)^2
-       ----------------------------------------------------------
-       (Topt - Tmin) * [(Topt - Tmin)(T - Topt) - (Topt - Tmax)(Topt + Tmin - 2T)]
+f(T) = (T - Tmin)(T - Tmax)(ctmi_a * T + ctmi_b)       (Tmin < T < Tmax の場合)
 
-                                                       (Tmin < T < Tmax の場合)
+ここで:
+  a = Topt - Tmin
+  b = Topt - Tmax
+  ctmi_a = -(a + b) / (a * b)^2
+  ctmi_b = (a * b + (a + b) * Topt) / (a * b)^2
 ```
+
+係数 ctmi_a, ctmi_b は初期化時に事前計算される。
+実行時に安全クランプ max(0, min(1, f)) を適用する。
 
 **特性:**
 - f(Topt) = 1.0（構造上厳密）
 - f(Tmin) = f(Tmax) = 0.0
-- 非対称の釣鐘型: Topt以上での減少がTopt以下より急峻（生物学的に妥当）
+- 単峰型3次多項式、全ての有効なパラメータ (Tmin < Topt < Tmax) で特異点なし
 - 全3パラメータが直接的な生物学的意味を持つ:
   - **Tmin**: 増殖可能な最低水温 (degC)
   - **Topt**: 増殖速度が最大となる最適水温 (degC)
@@ -134,21 +142,22 @@ call self%get_parameter(self%Tmax, 'Tmax', 'degrees_Celsius', &
      'maximum temperature for growth (CTMI only)', default=35.0_rk)
 ```
 
-**水温応答**（356行目を置換）:
+**水温応答**（`do` サブルーチン内）:
 ```fortran
 ! Temperature response
 if (self%iswTemp == 1) then
    ! Original Q10 formulation with high-temperature suppression
    et = max(0.0_rk, self%q10**((ETW-10._rk)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
 else
-   ! CTMI (Cardinal Temperature Model with Inflection)
-   ! Rosso et al. (1993), Bernard & Remond (2012)
+   ! Polynomial CTMI (Cardinal Temperature Model with Inflection)
+   ! Singularity-free cubic: f(Tmin)=0, f(Tmax)=0, f(Topt)=1, f'(Topt)=0
+   ! Coefficients ctmi_a, ctmi_b precomputed in initialize.
    if (ETW <= self%Tmin .or. ETW >= self%Tmax) then
       et = 0.0_rk
    else
-      et = (ETW - self%Tmax) * (ETW - self%Tmin)**2 &
-         / ((self%Topt - self%Tmin) * ((self%Topt - self%Tmin) * (ETW - self%Topt) &
-         - (self%Topt - self%Tmax) * (self%Topt + self%Tmin - 2.0_rk * ETW)))
+      et = (ETW - self%Tmin) * (ETW - self%Tmax) &
+         * (self%ctmi_a * ETW + self%ctmi_b)
+      et = max(0.0_rk, min(1.0_rk, et))
    end if
 end if
 ```
@@ -204,13 +213,13 @@ end if
 
 | 水温 | P1（珪藻） | P2（ナノ） | P3（ピコ） | P4（渦鞭毛藻） |
 |------|-----------|-----------|-----------|---------------|
-| 5 degC | 0.29 | 0.02 | 0 | 0 |
-| 10 degC | 0.70 | 0.28 | 0.03 | 0 |
-| 15 degC | **1.00** | 0.59 | 0.19 | 0.15 |
-| 20 degC | 0.82 | **1.00** | 0.49 | 0.50 |
-| 25 degC | 0.24 | 0.66 | **1.00** | **1.00** |
-| 28 degC | 0.03 | 0.23 | 0.72 | 0.72 |
-| 30 degC | 0 | 0.04 | 0.37 | 0.37 |
+| 5 degC | 0.42 | 0 | 0 | 0 |
+| 10 degC | 0.86 | 0.53 | 0.11 | 0 |
+| 15 degC | **1.00** | 0.88 | 0.48 | 0.44 |
+| 20 degC | 0.88 | **1.00** | 0.84 | 0.83 |
+| 25 degC | 0.53 | 0.86 | **1.00** | **1.00** |
+| 28 degC | 0.23 | 0.64 | 0.93 | 0.92 |
+| 30 degC | 0 | 0.42 | 0.78 | 0.78 |
 
 これにより望ましい遷移が実現される: 冬春（5-15 degC）に珪藻が優占、春（20 degC）にナノ植物プランクトンがピーク、夏（25-30 degC）にピコ/渦鞭毛藻が優占。
 

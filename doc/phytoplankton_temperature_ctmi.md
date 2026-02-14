@@ -55,22 +55,32 @@ In the TB-GOTM optimization study (ERSEM_GOTM_opt_v3, 1200 trials), surface DO c
 
 ### The CTMI Formula
 
-The Cardinal Temperature Model with Inflection (Rosso et al. 1993; validated for microalgae by Bernard & Remond 2012) provides a unimodal temperature response with three biologically meaningful parameters:
+The implementation uses a polynomial form of the Cardinal Temperature Model with Inflection,
+satisfying the same four defining conditions as the original Rosso et al. (1993) formulation:
+f(Tmin)=0, f(Tmax)=0, f(Topt)=1, f'(Topt)=0.
+
+The original Rosso rational form (cubic/linear) has a singularity when Topt < (Tmin+Tmax)/2,
+which occurs for cold-adapted species like diatoms. The polynomial form eliminates this issue.
 
 ```
 f(T) = 0                                              if T <= Tmin or T >= Tmax
 
-f(T) = (T - Tmax)(T - Tmin)^2
-       ----------------------------------------------------------
-       (Topt - Tmin) * [(Topt - Tmin)(T - Topt) - (Topt - Tmax)(Topt + Tmin - 2T)]
+f(T) = (T - Tmin)(T - Tmax)(ctmi_a * T + ctmi_b)      if Tmin < T < Tmax
 
-                                                       if Tmin < T < Tmax
+where:
+  a = Topt - Tmin
+  b = Topt - Tmax
+  ctmi_a = -(a + b) / (a * b)^2
+  ctmi_b = (a * b + (a + b) * Topt) / (a * b)^2
 ```
+
+The coefficients ctmi_a and ctmi_b are precomputed from Tmin, Topt, Tmax during initialization.
+A safety clamp max(0, min(1, f)) is applied at runtime.
 
 **Properties:**
 - f(Topt) = 1.0 exactly (by construction)
 - f(Tmin) = f(Tmax) = 0.0
-- Asymmetric bell shape: steeper decline above Topt than below (biologically realistic)
+- Unimodal cubic polynomial, singularity-free for all valid Tmin < Topt < Tmax
 - All three parameters have direct biological meaning:
   - **Tmin**: minimum temperature for growth (degC)
   - **Topt**: temperature at which growth rate is maximum (degC)
@@ -134,21 +144,22 @@ call self%get_parameter(self%Tmax, 'Tmax', 'degrees_Celsius', &
      'maximum temperature for growth (CTMI only)', default=35.0_rk)
 ```
 
-**Temperature response** (replace line 356):
+**Temperature response** (in `do` subroutine):
 ```fortran
 ! Temperature response
 if (self%iswTemp == 1) then
    ! Original Q10 formulation with high-temperature suppression
    et = max(0.0_rk, self%q10**((ETW-10._rk)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
 else
-   ! CTMI (Cardinal Temperature Model with Inflection)
-   ! Rosso et al. (1993), Bernard & Remond (2012)
+   ! Polynomial CTMI (Cardinal Temperature Model with Inflection)
+   ! Singularity-free cubic: f(Tmin)=0, f(Tmax)=0, f(Topt)=1, f'(Topt)=0
+   ! Coefficients ctmi_a, ctmi_b precomputed in initialize.
    if (ETW <= self%Tmin .or. ETW >= self%Tmax) then
       et = 0.0_rk
    else
-      et = (ETW - self%Tmax) * (ETW - self%Tmin)**2 &
-         / ((self%Topt - self%Tmin) * ((self%Topt - self%Tmin) * (ETW - self%Topt) &
-         - (self%Topt - self%Tmax) * (self%Topt + self%Tmin - 2.0_rk * ETW)))
+      et = (ETW - self%Tmin) * (ETW - self%Tmax) &
+         * (self%ctmi_a * ETW + self%ctmi_b)
+      et = max(0.0_rk, min(1.0_rk, et))
    end if
 end if
 ```
@@ -204,13 +215,13 @@ With the proposed CTMI parameters:
 
 | Temperature | P1 (diatoms) | P2 (nano) | P3 (pico) | P4 (dino) |
 |------------|-------------|-----------|-----------|-----------|
-| 5 degC | 0.29 | 0.02 | 0 | 0 |
-| 10 degC | 0.70 | 0.28 | 0.03 | 0 |
-| 15 degC | **1.00** | 0.59 | 0.19 | 0.15 |
-| 20 degC | 0.82 | **1.00** | 0.49 | 0.50 |
-| 25 degC | 0.24 | 0.66 | **1.00** | **1.00** |
-| 28 degC | 0.03 | 0.23 | 0.72 | 0.72 |
-| 30 degC | 0 | 0.04 | 0.37 | 0.37 |
+| 5 degC | 0.42 | 0 | 0 | 0 |
+| 10 degC | 0.86 | 0.53 | 0.11 | 0 |
+| 15 degC | **1.00** | 0.88 | 0.48 | 0.44 |
+| 20 degC | 0.88 | **1.00** | 0.84 | 0.83 |
+| 25 degC | 0.53 | 0.86 | **1.00** | **1.00** |
+| 28 degC | 0.23 | 0.64 | 0.93 | 0.92 |
+| 30 degC | 0 | 0.42 | 0.78 | 0.78 |
 
 This produces the desired succession: diatoms dominate in winter-spring (5-15 degC), nanophytoplankton peak in spring (20 degC), and pico/dinoflagellates dominate in summer (25-30 degC).
 
