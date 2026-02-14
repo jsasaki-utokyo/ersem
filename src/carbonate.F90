@@ -230,6 +230,7 @@ contains
             call carbonate_engine_solve(ETW, X1X, pres*0.1_rk, Ctot, TA, self%phscale, &
                                         self%opt_k_carbonic, self%opt_total_borate, &
                                         pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+            Hplus = 10.0_rk**(-pH)
          end if
 
          if (.not.success) then
