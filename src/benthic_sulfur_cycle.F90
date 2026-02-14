@@ -61,13 +61,22 @@ module ersem_benthic_sulfur_cycle
       ! State variable dependencies (layer-specific via benthic_column_dissolved_matter)
       type(type_bottom_state_variable_id) :: id_H2S_1, id_H2S_2, id_H2S_3
       type(type_bottom_state_variable_id) :: id_S0_1
+      type(type_bottom_state_variable_id) :: id_S0_2   ! S0 in Layer 2 (H2S-NO3 product)
       type(type_bottom_state_variable_id) :: id_G2o  ! Oxygen in Layer 1
       type(type_bottom_state_variable_id) :: id_NO3_2  ! NO3 in Layer 2 for H2S-NO3 oxidation
+      type(type_bottom_state_variable_id) :: id_G4n    ! Dinitrogen gas (N2 product)
 
       ! Pelagic H2S at bottom for oxic barrier mechanism
       type(type_state_variable_id) :: id_H2S_pel
       type(type_state_variable_id) :: id_S0_pel
       type(type_state_variable_id) :: id_O2_pel
+
+      ! Bottom cell thickness for pelagic exchange dimension conversion
+      type(type_dependency_id) :: id_h_bottom
+
+      ! Alkalinity coupling
+      type(type_bottom_state_variable_id) :: id_benTA   ! Alkalinity in Layer 1
+      type(type_bottom_state_variable_id) :: id_benTA2  ! Alkalinity in Layer 2
 
       ! Layer depth dependencies
       type(type_horizontal_dependency_id) :: id_D1m, id_D2m, id_Dtot
@@ -171,6 +180,8 @@ contains
            'hydrogen sulfide in layer 3')
       call self%register_state_dependency(self%id_S0_1, 'S0_1', 'mmol S/m^2', &
            'elemental sulfur in layer 1')
+      call self%register_state_dependency(self%id_S0_2, 'S0_2', 'mmol S/m^2', &
+           'elemental sulfur in layer 2')
 
       ! Oxygen in Layer 1 for oxidation reactions
       call self%register_state_dependency(self%id_G2o, 'G2o', 'mmol O_2/m^2', &
@@ -179,6 +190,10 @@ contains
       ! NO3 in Layer 2 for H2S-NO3 oxidation (chemolithotrophic denitrification)
       call self%register_state_dependency(self%id_NO3_2, 'NO3_2', 'mmol N/m^2', &
            'nitrate in layer 2')
+
+      ! Dinitrogen gas - couples to benthic_nitrogen_cycle's G4n
+      call self%register_state_dependency(self%id_G4n, 'G4n', 'mmol N/m^2', &
+           'dinitrogen gas')
 
       ! Pelagic variables at bottom for oxic barrier mechanism
       call self%register_state_dependency(self%id_H2S_pel, 'H2S_pel', 'mmol S/m^3', &
@@ -192,6 +207,18 @@ contains
       call self%register_dependency(self%id_D1m, depth_of_bottom_interface_of_layer_1)
       call self%register_dependency(self%id_D2m, depth_of_bottom_interface_of_layer_2)
       call self%register_dependency(self%id_Dtot, depth_of_sediment_column)
+
+      ! Bottom cell thickness for converting volumetric rates to areal fluxes
+      call self%register_dependency(self%id_h_bottom, standard_variables%cell_thickness)
+
+      ! Alkalinity coupling for sulfur redox reactions
+      ! Following benthic_nitrogen_cycle.F90 pattern
+      if (.not.legacy_ersem_compatibility) then
+         call self%register_state_dependency(self%id_benTA, 'benTA', 'mEq/m^2', &
+              'benthic alkalinity in aerobic layer')
+         call self%register_state_dependency(self%id_benTA2, 'benTA2', 'mEq/m^2', &
+              'benthic alkalinity in anaerobic layer')
+      end if
 
       ! Organic matter remineralization rate from H2 bacteria
       ! This should be coupled to the H2 bacteria respiration output
@@ -235,7 +262,7 @@ contains
 
       real(rk) :: H2S_1, H2S_2, H2S_3, S0_1, G2o, NO3_2
       real(rk) :: H2S_pel, S0_pel, O2_pel
-      real(rk) :: D1m, D2m, remin_rate
+      real(rk) :: D1m, D2m, remin_rate, h_bottom
       real(rk) :: O2_conc_1, NO3_conc_2, f_O2, f_O2_pel, f_NO3
       real(rk) :: R_sulfate_red, R_H2S_ox_1, R_H2S_NO3_ox, R_S0_ox_1, R_S0_burial
       real(rk) :: f_barrier, R_barrier_ox
@@ -262,6 +289,9 @@ contains
 
          ! Get remineralization rate from H2 bacteria
          _GET_HORIZONTAL_(self%id_remin_rate, remin_rate)
+
+         ! Get bottom cell thickness for pelagic exchange conversion (m)
+         _GET_(self%id_h_bottom, h_bottom)
 
          ! Ensure non-negative
          H2S_1 = max(0.0_rk, H2S_1)
@@ -363,7 +393,7 @@ contains
 
          ! H2S oxidation rate by barrier (removes H2S from bottom water)
          ! This is proportional to H2S concentration and barrier strength
-         R_barrier_ox = self%K_barrier_rate * H2S_pel * f_barrier
+         R_barrier_ox = self%K_barrier_rate * H2S_pel * f_barrier * h_bottom
 
          ! ============================================================
          ! FeS PRECIPITATION (IRON SULFIDE BURIAL)
@@ -396,7 +426,7 @@ contains
 
          ! FeS precipitation (scavenging) in pelagic bottom water
          ! Removes H2S through reaction with particulate Fe or settling FeS
-         R_FeS_pel = self%K_FeS_pel * H2S_pel
+         R_FeS_pel = self%K_FeS_pel * H2S_pel * h_bottom
 
          ! ============================================================
          ! Set ODEs
@@ -408,12 +438,26 @@ contains
          !          NO3 consumption by H2S oxidation (stoichiometry: 0.4 mol NO3 per mol H2S)
          _SET_BOTTOM_ODE_(self%id_H2S_2, -R_H2S_NO3_ox - R_FeS_2)
          _SET_BOTTOM_ODE_(self%id_NO3_2, -0.4_rk * R_H2S_NO3_ox)
+         _SET_BOTTOM_ODE_(self%id_S0_2,   R_H2S_NO3_ox)           ! S0 produced 1:1 with H2S consumed
+         _SET_BOTTOM_ODE_(self%id_G4n,    0.4_rk * R_H2S_NO3_ox)  ! N2: 0.2 mol N2 (= 0.4 mol N) per mol H2S
+
+         ! Alkalinity: NO3 consumption increases TA by +1 per mol NO3
+         ! = +0.4 per mol H2S oxidized
+         if (.not.legacy_ersem_compatibility) &
+            _SET_BOTTOM_ODE_(self%id_benTA2, 0.4_rk * R_H2S_NO3_ox)
 
          ! Layer 1: H2S consumption by oxidation and FeS precipitation
          !          S0 production from H2S oxidation, loss from oxidation and burial
          _SET_BOTTOM_ODE_(self%id_H2S_1, -R_H2S_ox_1 - R_FeS_1)
          _SET_BOTTOM_ODE_(self%id_S0_1,   R_H2S_ox_1 - R_S0_ox_1 - R_S0_burial)
          _SET_BOTTOM_ODE_(self%id_G2o,   -0.5_rk * R_H2S_ox_1 - 1.5_rk * R_S0_ox_1)
+
+         ! Alkalinity: S0 + 1.5 O2 + H2O -> SO4^2- + 2H+ => -2 TA per mol S0
+         if (.not.legacy_ersem_compatibility) &
+            _SET_BOTTOM_ODE_(self%id_benTA, -2.0_rk * R_S0_ox_1)
+
+         ! TODO: Layer 3 sulfate reduction produces +2 TA per mol H2S
+         ! but benTA3 is not available in the current ERSEM benthic model
 
          ! Pelagic: H2S removal by oxic barrier oxidation and FeS scavenging
          ! Barrier oxidation produces S0, FeS scavenging is irreversible removal

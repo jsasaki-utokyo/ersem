@@ -95,11 +95,24 @@
     coupling:
       # Layer-specific H2S (created by benthic_column_dissolved_matter)
       H2S_1: G2_H2S/per_layer/h1                           # H2S in layer 1
+      H2S_2: G2_H2S/per_layer/h2                           # H2S in layer 2
       H2S_3: G2_H2S/per_layer/h3                           # H2S in layer 3
       # Layer-specific S0
       S0_1: G2_S0/per_layer/e1                             # S0 in layer 1
+      S0_2: G2_S0/per_layer/e2                             # S0 in layer 2 (H2S-NO3 product)
       # Oxygen in layer 1
       G2o: G2_O2/per_layer/o1                              # oxygen in layer 1
+      # Nitrate in layer 2 (for H2S-NO3 oxidation)
+      NO3_2: K3/per_layer/n2                               # nitrate in layer 2
+      # Dinitrogen gas (product of H2S-NO3 denitrification)
+      G4n: ben_nit/G4n                                     # dinitrogen gas
+      # Pelagic variables at bottom (for oxic barrier mechanism)
+      H2S_pel: N8_H2S/h                                    # pelagic H2S
+      S0_pel: N8_S0/e                                      # pelagic S0
+      O2_pel: O2/o                                         # pelagic oxygen
+      # Alkalinity (only active when legacy_ersem_compatibility = false)
+      benTA: zero_hz                                       # benthic alkalinity in layer 1
+      benTA2: zero_hz                                      # benthic alkalinity in layer 2
       # Remineralization rate from H2 bacteria (anaerobic)
       remin_rate: H2/fH2G2Oc                               # link to H2 bacteria respiration rate
 
