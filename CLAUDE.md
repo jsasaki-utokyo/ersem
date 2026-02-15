@@ -139,3 +139,10 @@ Model setup via YAML files (examples in `testcases/`):
 - Build docs: `cd docs && pip install -r requirements.txt && make html`
 - Online: https://ersem.readthedocs.io/
 - Reference: Butenschön et al. (2016), GMD, doi:10.5194/gmd-9-1293-2016
+
+## Language
+
+- **Chat (conversation)**: Always respond in Japanese (日本語で応答すること)
+- **Documentation files** (README.md, etc.): English
+- **Code comments**: English
+- **Commit messages**: English
