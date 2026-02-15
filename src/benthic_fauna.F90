@@ -232,6 +232,7 @@ contains
       integer  :: ifood,istate
       real(rk) :: fBTYc,nfBTYc,fYG3c,p_an
       real(rk) :: excess_c,excess_n,excess_p
+      real(rk) :: f_O2_resp  ! Monod O2 limitation factor for respiration (jsasaki 2026-02-15)
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -367,8 +368,17 @@ contains
       _SET_HORIZONTAL_DIAGNOSTIC_(self%id_biotur, self%ptur * fBTYc)
       _SET_HORIZONTAL_DIAGNOSTIC_(self%id_bioirr, self%pirr * fBTYc)
 
+      ! Monod-type oxygen limitation for respiration (jsasaki 2026-02-15)
+      ! Benthic macrofauna are obligate aerobes: aerobic respiration requires O2.
+      ! Without this factor, basal respiration consumes O2 unconditionally,
+      ! which can drive O2 concentration negative even under anoxic conditions.
+      ! Uses existing hO2 parameter as half-saturation constant.
+      ! Reference: benthic_sulfur_cycle.F90 Monod implementation.
+      f_O2_resp = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
+
       ! Respiration fluxes = basal respiration (proportional to biomass)+ activity respiration (proportional to carbon assimilation)
-      fYG3c = self%sr * cP * eT + self%pur * nfBTYc
+      ! Limited by O2 availability via Monod factor (jsasaki 2026-02-15)
+      fYG3c = (self%sr * cP * eT + self%pur * nfBTYc) * f_O2_resp
 
       ! Store carbon flux resulting from respiration for later use (note: respiration does not affect nitrogen, phosphorus).
       ! Also account for its production of benthic CO2 and consumption of benthic oxygen.

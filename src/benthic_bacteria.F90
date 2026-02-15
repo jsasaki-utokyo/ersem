@@ -26,6 +26,7 @@ module ersem_benthic_bacteria
       type (type_bottom_state_variable_id) :: id_Q1c,id_Q1n,id_Q1p
       type (type_bottom_state_variable_id) :: id_Q6c,id_Q6n,id_Q6p
       type (type_bottom_state_variable_id) :: id_G2o,id_G3c,id_benTA
+      type (type_state_variable_id)        :: id_O2o  ! pelagic oxygen for respiration Monod (jsasaki 2026-02-15)
       type (type_food), allocatable :: food(:)
       type (type_horizontal_diagnostic_variable_id) :: id_fHG3c
       type (type_horizontal_diagnostic_variable_id) :: id_fHKIn,id_fHK1p
@@ -35,6 +36,7 @@ module ersem_benthic_bacteria
       integer  :: nfood
       real(rk) :: qnc,qpc
       real(rk) :: dd
+      real(rk) :: hO2               ! Monod half-saturation for O2 limitation of respiration (jsasaki 2026-02-15)
       real(rk) :: pur,sr
       real(rk) :: pdQ1
       real(rk) :: sd
@@ -101,11 +103,17 @@ contains
       call self%get_parameter(self%sr,   'sr',   '1/d', 'specific rest respiration')
       call self%get_parameter(self%pdQ1, 'pdQ1', '-',   'fraction of dying matter that is dissolved')
       call self%get_parameter(self%sd,   'sd',   '1/d', 'specific maximum mortality related to oxygen limitation')
+      ! Monod half-saturation for O2 limitation of aerobic respiration (jsasaki 2026-02-15)
+      ! Default 15.625 mmol O2/m^3 = 0.5 mg/L (bacteria are more tolerant than macrofauna)
+      call self%get_parameter(self%hO2,  'hO2',  'mmol O2/m^3', &
+         'Michaelis-Menten constant for oxygen limitation of respiration',default=15.625_rk)
 
       ! Dependencies on state variables of external modules.
       call self%register_state_dependency(self%id_K4n,'K4n','mmol N/m^2','ammonium')
       call self%register_state_dependency(self%id_K1p,'K1p','mmol N/m^2','phosphate')
       call self%register_state_dependency(self%id_G2o,'G2o','mmol O_2/m^2','oxygen')
+      ! Pelagic oxygen for Monod respiration limitation (jsasaki 2026-02-15)
+      call self%register_state_dependency(self%id_O2o,'O2o','mmol O_2/m^3','pelagic oxygen')
       call self%register_state_dependency(self%id_G3c,'G3c','mmol C/m^2','dissolved inorganic carbon')
       if (.not.legacy_ersem_compatibility) call self%register_state_dependency(self%id_benTA,'benTA','mEq/m^2','benthic alkalinity')
       call self%register_state_dependency(self%id_Q1c,'Q1c','mmol C/m^2','dissolved organic carbon')
@@ -149,6 +157,7 @@ contains
       real(rk),dimension(self%nfood) :: Qc,Qn,Qp,sfQ,fQc,fQn,fQp
       real(rk) :: fQIHc
       real(rk) :: fK1Hp,fHG3c,fK4Hn,sfHQ1,sfHQI,sfHQ6
+      real(rk) :: O2o, f_O2_resp  ! Monod O2 limitation for respiration (jsasaki 2026-02-15)
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -206,9 +215,17 @@ contains
          fK1Hp = fQIHc * self%qpc
          if (fK1Hp>0) fK1Hp = fK1Hp * K1a/(K1a+fK1Hp)
 
+         ! Monod-type oxygen limitation for aerobic respiration (jsasaki 2026-02-15)
+         ! Aerobic bacteria (H1) require O2 for respiration. Without this factor,
+         ! basal respiration consumes O2 unconditionally, driving it negative.
+         ! Uses pelagic O2 concentration with Monod kinetics.
+         _GET_(self%id_O2o, O2o)
+         f_O2_resp = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
+
          ! Respiration (reduction in bacterial carbon and dissolved oxygen, increase in
          ! dissolved inorganic carbon, ammonium, phosphate)
-         fHG3c = self%pur * fQIHc + self%sr * HcP * eT
+         ! Limited by O2 availability via Monod factor (jsasaki 2026-02-15)
+         fHG3c = (self%pur * fQIHc + self%sr * HcP * eT) * f_O2_resp
          _SET_BOTTOM_ODE_(self%id_G2o,-fHG3c/CMass)  ! oxygen or reduction equivalent
          _SET_BOTTOM_ODE_(self%id_G3c, fHG3c/CMass)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHG3c,fHG3c)
