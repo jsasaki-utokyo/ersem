@@ -13,7 +13,7 @@ module ersem_pelagic_base
    private
 
    type,extends(type_particle_model),public :: type_ersem_pelagic_base
-      type (type_state_variable_id)                 :: id_c,id_n,id_p,id_f,id_s,id_chl,id_h
+      type (type_state_variable_id)                 :: id_c,id_n,id_p,id_f,id_s,id_chl,id_h,id_e
       type (type_horizontal_dependency_id)          :: id_bedstress,id_wdepth
       type (type_dependency_id)                     :: id_dens
       type (type_horizontal_diagnostic_variable_id) :: id_w_bot
@@ -143,6 +143,7 @@ contains
           endif
       endif
       if (index(composition,'h')/=0) call self%add_constituent('h',0.0_rk)
+      if (index(composition,'e')/=0) call self%add_constituent('e',0.0_rk)
 
    end subroutine
 
@@ -210,6 +211,8 @@ contains
          call register(self%id_chl,'Chl','mg','chlorophyll a',total_chlorophyll)
       case ('h')
          call register(self%id_h,'h','mmol','reduction equivalent',total_h)
+      case ('e')
+         call register(self%id_e,'e','mmol','elemental sulfur',total_e)
       case default
          call self%fatal_error('add_constituent','Unknown constituent "'//trim(name)//'".')
       end select

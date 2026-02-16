@@ -17,13 +17,15 @@
 ! Key simplification: Layer 3 is by definition anoxic in ERSEM's 3-layer
 ! model, so no electron acceptor cascade check is needed.
 !
-! H2S-NO3 Oxidation (Layer 2 - Denitrification Zone):
+! H2S-NO3 Oxidation (Layer 2 - Suboxic Zone):
 !   H2S diffusing from Layer 3 through Layer 2 is oxidized by nitrate
-!   through chemolithotrophic sulfur oxidation coupled to denitrification:
-!     5 H2S + 2 NO3- -> 5 S0 + N2 + 4 H2O (partial oxidation to S0)
+!   through chemolithotrophic sulfur oxidation coupled to nitrate reduction.
+!   The nitrogen product is partitioned by f_DNRA (0-1):
+!     Denitrification: 5 H2S + 2 NO3- -> 5 S0 + N2 + 4 H2O
+!     DNRA:            4 H2S + NO3- + 2H+ -> 4 S0 + NH4+ + 3 H2O
+!     Mixed:           r_NO3 = 2/(5+3*f_DNRA) mol NO3 per mol H2S
 !   This prevents H2S from reaching Layer 1 and the pelagic when
-!   a thick denitrification zone exists (as in winter).
-!   The presence of NO3 in Layer 2 indicates that H2S cannot coexist.
+!   a thick suboxic zone exists (as in winter).
 !
 ! FeS Precipitation (Iron Sulfide Burial):
 !   Free sulfide is buffered by reactive iron, forming FeS which is buried.
@@ -65,6 +67,7 @@ module ersem_benthic_sulfur_cycle
       type(type_bottom_state_variable_id) :: id_G2o  ! Oxygen in Layer 1
       type(type_bottom_state_variable_id) :: id_NO3_2  ! NO3 in Layer 2 for H2S-NO3 oxidation
       type(type_bottom_state_variable_id) :: id_G4n    ! Dinitrogen gas (N2 product)
+      type(type_bottom_state_variable_id) :: id_K4n2   ! Ammonium in Layer 2 (DNRA product)
 
       ! Pelagic H2S at bottom for oxic barrier mechanism
       type(type_state_variable_id) :: id_H2S_pel
@@ -77,6 +80,7 @@ module ersem_benthic_sulfur_cycle
       ! Alkalinity coupling
       type(type_bottom_state_variable_id) :: id_benTA   ! Alkalinity in Layer 1
       type(type_bottom_state_variable_id) :: id_benTA2  ! Alkalinity in Layer 2
+      type(type_bottom_state_variable_id) :: id_benTA3  ! Alkalinity in Layer 3
 
       ! Layer depth dependencies
       type(type_horizontal_dependency_id) :: id_D1m, id_D2m, id_Dtot
@@ -107,6 +111,7 @@ module ersem_benthic_sulfur_cycle
       real(rk) :: K_barrier_rate ! Rate at which barrier oxidizes H2S (1/d)
       real(rk) :: K_FeS_ben      ! FeS precipitation rate in benthic layers (1/d)
       real(rk) :: K_FeS_pel      ! FeS precipitation rate in pelagic (1/d)
+      real(rk) :: f_DNRA         ! Fraction of H2S-NO3 N going to NH4 (0-1)
 
    contains
       procedure :: initialize
@@ -144,6 +149,13 @@ contains
            'H2S oxidation rate by NO3 in Layer 2', default=50.0_rk)
       call self%get_parameter(self%K_NO3_half, 'K_NO3_half', 'mmol/m^3', &
            'half-saturation NO3 for H2S-NO3 oxidation', default=10.0_rk)
+
+      ! DNRA (Dissimilatory Nitrate Reduction to Ammonium) parameter
+      ! Fraction of nitrogen from H2S-NO3 oxidation going to NH4 instead of N2.
+      ! Default 0.0 preserves current behavior (all N to N2).
+      call self%get_parameter(self%f_DNRA, 'f_DNRA', '-', &
+           'fraction of H2S-NO3 nitrogen routed to NH4 (DNRA)', default=0.0_rk, &
+           minimum=0.0_rk, maximum=1.0_rk)
 
       ! Oxic barrier parameters
       ! K_barrier: controls how effective the oxic layer is at blocking H2S
@@ -195,6 +207,10 @@ contains
       call self%register_state_dependency(self%id_G4n, 'G4n', 'mmol N/m^2', &
            'dinitrogen gas')
 
+      ! Ammonium in Layer 2 for DNRA pathway
+      call self%register_state_dependency(self%id_K4n2, 'K4n2', 'mmol N/m^2', &
+           'ammonium in layer 2')
+
       ! Pelagic variables at bottom for oxic barrier mechanism
       call self%register_state_dependency(self%id_H2S_pel, 'H2S_pel', 'mmol S/m^3', &
            'pelagic hydrogen sulfide')
@@ -218,6 +234,8 @@ contains
               'benthic alkalinity in aerobic layer')
          call self%register_state_dependency(self%id_benTA2, 'benTA2', 'mEq/m^2', &
               'benthic alkalinity in anaerobic layer')
+         call self%register_state_dependency(self%id_benTA3, 'benTA3', 'mEq/m^2', &
+              'benthic alkalinity in layer 3')
       end if
 
       ! Organic matter remineralization rate from H2 bacteria
@@ -266,6 +284,7 @@ contains
       real(rk) :: D1m, D2m, remin_rate, h_bottom
       real(rk) :: O2_conc_1, NO3_conc_2, f_O2, f_O2_pel, f_NO3
       real(rk) :: R_sulfate_red, R_H2S_ox_1, R_H2S_NO3_ox, R_S0_ox_1, R_S0_burial
+      real(rk) :: r_no3, r_ta
       real(rk) :: f_barrier, R_barrier_ox
       real(rk) :: R_FeS_1, R_FeS_2, R_FeS_3, R_FeS_ben, R_FeS_pel
 
@@ -336,17 +355,16 @@ contains
          R_S0_burial = self%K_S0_burial * S0_1
 
          ! ============================================================
-         ! LAYER 2: H2S oxidation by NO3 (chemolithotrophic denitrification)
+         ! LAYER 2: H2S oxidation by NO3 (chemolithotrophic nitrate reduction)
          ! ============================================================
          ! H2S diffusing from Layer 3 through Layer 2 is oxidized by nitrate.
          ! This is the key mechanism that prevents H2S from reaching Layer 1
-         ! (and the pelagic) when a thick denitrification zone exists.
+         ! (and the pelagic) when a thick suboxic zone exists.
          !
-         ! Reaction: 5 H2S + 2 NO3- -> 5 S0 + N2 + 4 H2O
-         ! Stoichiometry: 0.4 mol NO3 consumed per mol H2S oxidized
+         ! N product is partitioned by f_DNRA between N2 and NH4.
+         ! r_NO3 = 2/(5+3*f_DNRA) adjusts for the different electron demands.
          !
-         ! The presence of NO3 in Layer 2 indicates an active denitrification
-         ! zone where H2S cannot coexist - any H2S passing through is oxidized.
+         ! The presence of NO3 in Layer 2 indicates H2S cannot coexist.
          !
          ! Convert depth-integrated NO3 to concentration
          ! Layer 2 thickness = D2m - D1m
@@ -437,16 +455,26 @@ contains
          _SET_BOTTOM_ODE_(self%id_H2S_3, R_sulfate_red - R_FeS_3)
 
          ! Layer 2: H2S consumption by NO3 oxidation and FeS precipitation
-         !          NO3 consumption by H2S oxidation (stoichiometry: 0.4 mol NO3 per mol H2S)
-         _SET_BOTTOM_ODE_(self%id_H2S_2, -R_H2S_NO3_ox - R_FeS_2)
-         _SET_BOTTOM_ODE_(self%id_NO3_2, -0.4_rk * R_H2S_NO3_ox)
-         _SET_BOTTOM_ODE_(self%id_S0_2,   R_H2S_NO3_ox)           ! S0 produced 1:1 with H2S consumed
-         _SET_BOTTOM_ODE_(self%id_G4n,    0.4_rk * R_H2S_NO3_ox)  ! N2: 0.2 mol N2 (= 0.4 mol N) per mol H2S
+         ! Electron-balanced stoichiometry for H2S-NO3 coupling:
+         !   H2S -> S0 + 2e- (2 electrons per H2S)
+         !   Denitrification: NO3 + 5e- -> 0.5 N2 (5 e-/mol NO3)
+         !   DNRA:            NO3 + 8e- -> NH4     (8 e-/mol NO3)
+         !   Mixed: (5+3*f_DNRA) e-/mol NO3 -> r_NO3 = 2/(5+3*f_DNRA)
+         r_no3 = 2.0_rk / (5.0_rk + 3.0_rk * self%f_DNRA)
 
-         ! Alkalinity: NO3 consumption increases TA by +1 per mol NO3
-         ! = +0.4 per mol H2S oxidized
+         _SET_BOTTOM_ODE_(self%id_H2S_2, -R_H2S_NO3_ox - R_FeS_2)
+         _SET_BOTTOM_ODE_(self%id_NO3_2, -r_no3 * R_H2S_NO3_ox)
+         _SET_BOTTOM_ODE_(self%id_S0_2,   R_H2S_NO3_ox)           ! S0 produced 1:1 with H2S consumed
+
+         ! Partition N between N2 (denitrification) and NH4 (DNRA)
+         _SET_BOTTOM_ODE_(self%id_G4n,  (1.0_rk - self%f_DNRA) * r_no3 * R_H2S_NO3_ox)
+         _SET_BOTTOM_ODE_(self%id_K4n2, self%f_DNRA * r_no3 * R_H2S_NO3_ox)
+
+         ! Alkalinity: denitrification +1 TA/mol NO3, DNRA +2 TA/mol NO3
+         ! r_TA = (1+f_DNRA) * r_NO3 = 2*(1+f_DNRA)/(5+3*f_DNRA)
+         r_ta = (1.0_rk + self%f_DNRA) * r_no3
          if (.not.legacy_ersem_compatibility) &
-            _SET_BOTTOM_ODE_(self%id_benTA2, 0.4_rk * R_H2S_NO3_ox)
+            _SET_BOTTOM_ODE_(self%id_benTA2, r_ta * R_H2S_NO3_ox)
 
          ! Layer 1: H2S consumption by oxidation and FeS precipitation
          !          S0 production from H2S oxidation, loss from oxidation and burial
@@ -458,8 +486,10 @@ contains
          if (.not.legacy_ersem_compatibility) &
             _SET_BOTTOM_ODE_(self%id_benTA, -2.0_rk * R_S0_ox_1)
 
-         ! TODO: Layer 3 sulfate reduction produces +2 TA per mol H2S
-         ! but benTA3 is not available in the current ERSEM benthic model
+         ! Layer 3: sulfate reduction produces +2 TA per mol H2S
+         ! SO4^2- + 2C_org -> H2S + 2HCO3- (net +2 mEq per mol H2S)
+         if (.not.legacy_ersem_compatibility) &
+            _SET_BOTTOM_ODE_(self%id_benTA3, 2.0_rk * R_sulfate_red)
 
          ! Pelagic: H2S removal by oxic barrier oxidation and FeS scavenging
          ! Barrier oxidation produces S0, FeS scavenging is irreversible removal

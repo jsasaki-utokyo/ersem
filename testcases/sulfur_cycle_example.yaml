@@ -92,6 +92,7 @@
       K_H2S_ox: 0.5                                        # H2S oxidation rate constant (1/d)
       K_S0_ox: 0.02                                        # S0 oxidation rate constant (1/d)
       K_O2_half: 1.0                                       # half-saturation O2 for oxidation (mmol/m^3)
+      f_DNRA: 0.0                                          # fraction of H2S-NO3 N going to NH4 (0=all N2, 1=all NH4)
     coupling:
       # Layer-specific H2S (created by benthic_column_dissolved_matter)
       H2S_1: G2_H2S/per_layer/h1                           # H2S in layer 1
@@ -106,6 +107,7 @@
       NO3_2: K3/per_layer/n2                               # nitrate in layer 2
       # Dinitrogen gas (product of H2S-NO3 denitrification)
       G4n: ben_nit/G4n                                     # dinitrogen gas
+      K4n2: K4/per_layer/n2                                # ammonium in layer 2 (DNRA product)
       # Pelagic variables at bottom (for oxic barrier mechanism)
       H2S_pel: N8_H2S/h                                    # pelagic H2S
       S0_pel: N8_S0/e                                      # pelagic S0
@@ -113,6 +115,7 @@
       # Alkalinity (only active when legacy_ersem_compatibility = false)
       benTA: zero_hz                                       # benthic alkalinity in layer 1
       benTA2: zero_hz                                      # benthic alkalinity in layer 2
+      benTA3: zero_hz                                      # benthic alkalinity in layer 3
       # Remineralization rate from H2 bacteria (anaerobic)
       remin_rate: H2/fHG3c                                 # H2 bacteria respiration rate (mg C/m^2/d)
 
