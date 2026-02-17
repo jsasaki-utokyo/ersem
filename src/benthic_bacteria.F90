@@ -220,7 +220,11 @@ contains
          ! basal respiration consumes O2 unconditionally, driving it negative.
          ! Uses pelagic O2 concentration with Monod kinetics.
          _GET_(self%id_O2o, O2o)
-         f_O2_resp = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
+         if (self%hO2 > 0.0_rk) then
+            f_O2_resp = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
+         else
+            f_O2_resp = 1.0_rk  ! hO2=0 means no Monod limitation
+         end if
 
          ! Respiration (reduction in bacterial carbon and dissolved oxygen, increase in
          ! dissolved inorganic carbon, ammonium, phosphate)

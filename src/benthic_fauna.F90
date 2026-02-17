@@ -374,7 +374,11 @@ contains
       ! which can drive O2 concentration negative even under anoxic conditions.
       ! Uses existing hO2 parameter as half-saturation constant.
       ! Reference: benthic_sulfur_cycle.F90 Monod implementation.
-      f_O2_resp = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
+      if (self%hO2 > 0.0_rk) then
+         f_O2_resp = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
+      else
+         f_O2_resp = 1.0_rk  ! hO2=0 means no Monod limitation
+      end if
 
       ! Respiration fluxes = basal respiration (proportional to biomass)+ activity respiration (proportional to carbon assimilation)
       ! Limited by O2 availability via Monod factor (jsasaki 2026-02-15)
