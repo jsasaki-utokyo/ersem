@@ -16,11 +16,8 @@ column dissolved matter module.
 | `src/oxygen.F90` | Added `minimum=0` to O2 state variable registration |
 | `src/benthic_column_dissolved_matter.F90` | Changed O2 constituent from `nonnegative=legacy_ersem_compatibility` (.false.) to `nonnegative=.true.` |
 
-A corresponding change to the host model configuration is also recommended:
-
-| File | Change |
-|------|--------|
-| `gotm.yaml` | Changed `ode_method: fe` (Forward Euler) to `ode_method: emp2` (Extended Modified Patankar 2nd order) |
+No change to the host model ODE solver is required (see "ODE Solver Compatibility"
+section below). The source code fixes alone are sufficient for Forward Euler.
 
 ## Bug Description
 
@@ -157,17 +154,70 @@ This:
 - Disables `c_int_deep` (no longer tracks negative mass below zero isocline)
 - Prevents the equilibrium profile amplification mechanism entirely
 
-### Fix 3: Switch ODE solver from Forward Euler to EMP2 (`gotm.yaml`)
+### Note on `fabm.yaml`
+
+After Fix 2, the benthic O2 constituent no longer registers `c_int_deep`, so the
+`o_deep` initialization key in `fabm.yaml` must be removed:
 
 ```yaml
-# AFTER (fixed)
-ode_method: emp2  # Extended Modified Patankar, 2nd order
+# BEFORE (causes "setting not recognized" error after fix)
+G2:
+  initialization:
+    o: 0.015
+    o_deep: 0       # ← remove this line
+
+# AFTER
+G2:
+  initialization:
+    o: 0.015
 ```
 
-The EMP2 solver:
-- Guarantees non-negativity of all state variables by construction
-- Is 2nd-order accurate (vs 1st-order for Forward Euler)
-- Prevents numerical undershoot/overshoot that triggers the amplification cascade
+## ODE Solver Compatibility
+
+### EMP2 is incompatible with ERSEM
+
+Testing revealed that the Extended Modified Patankar (EMP2) ODE solver **does not
+work with ERSEM**. When `ode_method: emp2` is used in GOTM, all state variables
+remain at their initial values throughout the simulation (O2 stayed at 265 mmol/m3,
+Chl-a at 4.1 mg/m3, with zero temporal variation).
+
+This occurs because EMP2 requires a production-destruction decomposition (PPDD) of
+the source terms. ERSEM's biogeochemical source terms are not structured to provide
+this decomposition correctly, causing the solver to effectively zero out all rates.
+
+### Forward Euler works correctly with source code fixes
+
+Testing with Forward Euler (`ode_method: fe`) and the two source code fixes
+(Fix 1 + Fix 2) confirmed:
+
+| Metric | Before fix | After fix (FE) |
+|--------|-----------|----------------|
+| O2 min | -2158 mmol/m3 | **0.00 mmol/m3** |
+| O2 max | +4542 mmol/m3 | **471 mmol/m3** |
+| Negative O2 cells | many | **0** (0.0000%) |
+| O2 > 500 mmol/m3 | many | **0** (0.0000%) |
+| G2_o_pb_flux range | -2513 to +10577 | **-619 to -0.08** |
+| Bottom O2 (Jul) | -903 to +4542 | **0.00 to 16.8** |
+| Bottom O2 (Sep) | oscillating | **0.00 to 2.6** |
+
+The fixes eliminate all negative O2 values and all anomalous positive spikes.
+Bottom-layer anoxia (O2 = 0) is correctly maintained during summer stratification
+without triggering the benthic exchange instability.
+
+### Implications for FVCOM and other host models
+
+This is important for applications using ERSEM with host models other than GOTM
+(e.g., FVCOM), which may not offer Modified Patankar solvers. **The source code
+fixes (Fix 1 + Fix 2) alone are sufficient** — no special ODE solver is needed.
+
+The key mechanisms that ensure stability with Forward Euler:
+
+1. **`minimum=0`** (Fix 1): GOTM's `repair_state` clips O2 to [0, ∞) and enables
+   positivity constraints in the diffusion solver. In FVCOM, an equivalent clipping
+   mechanism should be applied.
+2. **`nonnegative=.true.`** (Fix 2): Eliminates the `c_int_deep` state variable
+   and activates the Patankar trick within the benthic module itself, preventing
+   the equilibrium profile amplification regardless of the host model's ODE solver.
 
 ## Impact
 
