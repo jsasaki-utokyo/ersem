@@ -400,9 +400,14 @@ contains
 
          ! Production...........................................................
 
-         ! Gross photosynthetic activity (1/d), limited by availability of silicate and iron,
-         ! but not nitrogen and phosphorus.
-         sum = self%sum*et*iNs*iNf
+         ! Gross photosynthetic activity (1/d), limited by availability of silicate, iron,
+         ! AND internal nutrient quota (iNI). Original ERSEM has no N-P limitation on GPP
+         ! (overflow metabolism). Adding iNI prevents O2 production under nutrient depletion.
+         ! v29: Use geometric mean (4th root) of limitation factors instead of their product.
+         ! The multiplicative model (et*iNs*iNf*iNI) becomes overly restrictive when multiple
+         ! factors are simultaneously limiting. The geometric mean preserves the constraint
+         ! direction while reducing the compounding penalty.
+         sum = self%sum * (et*iNs*iNf*iNI)**0.25_rk
 
          if (parEIR>zeroX) then
             sum = sum * (1._rk-exp(-self%alpha*parEIR*ChlCpp/sum)) * exp(-self%beta*parEIR*ChlCpp/sum)
