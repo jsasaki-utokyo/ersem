@@ -33,6 +33,7 @@ module ersem_model_library
    use ersem_zenith_angle
    use ersem_sulfur_cycle
    use ersem_benthic_sulfur_cycle
+   use ersem_nutrient_relaxation
 
    implicit none
 
@@ -89,6 +90,7 @@ contains
          case ('zenith_angle');                            allocate(type_ersem_zenith_angle::model)
          case ('sulfur_cycle');                            allocate(type_ersem_sulfur_cycle::model)
          case ('benthic_sulfur_cycle');                    allocate(type_ersem_benthic_sulfur_cycle::model)
+         case ('nutrient_relaxation');                     allocate(type_ersem_nutrient_relaxation::model)
          ! Add new models here
          case default
             call self%type_base_model_factory%create(name,model)

@@ -40,6 +40,7 @@ add_library(fabm_models_ersem OBJECT
             zenith_angle.F90
             sulfur_cycle.F90
             benthic_sulfur_cycle.F90
+            nutrient_relaxation.F90
            )
 
 target_link_libraries(fabm_models_ersem PRIVATE fabm_base)
