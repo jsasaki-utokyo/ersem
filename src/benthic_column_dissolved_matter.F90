@@ -124,7 +124,7 @@ contains
          case ('s')
             call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'s','mmol/m^2','silicate',standard_variables%total_silicate,c0)
          case ('o')
-            call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'o','mmol/m^2','oxygen', nonnegative=legacy_ersem_compatibility)
+            call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'o','mmol/m^2','oxygen', nonnegative=.true.)
          case ('a')
             call initialize_constituent(self,self%constituents(iconstituent),profile,profile%constituents(iconstituent),'a','mEq/m^2','alkalinity')
          case ('h')

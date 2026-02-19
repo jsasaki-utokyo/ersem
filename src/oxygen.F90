@@ -4,12 +4,11 @@ module ersem_oxygen
 ! Computes oxygen saturation, apparent oxygen utilization and handles
 ! exchange of oxygen across the water surface.
 
-! Note: negative oxygen concentrations are permitted.
-! These reflect an oygen debt (e.g., presence of H2S)
-! In this case, oxygen saturation will be zero (not negative!),
-! while apparent oxygen utilization will still be the difference
-! between saturation concentration and [negative] oxygen concentration.
-! Thus, the oxygen debt is included as part of utilization.
+! Note: oxygen concentrations are constrained to be non-negative (minimum=0).
+! When sulfate reduction is modeled explicitly (e.g., via pel_sulfur),
+! oxygen debt should be tracked via H2S rather than negative O2.
+! Oxygen saturation is clamped to zero when O2=0,
+! while apparent oxygen utilization equals the full saturation concentration.
 
    use fabm_types
    use ersem_shared
@@ -49,7 +48,7 @@ contains
       call self%get_parameter(self%iswO2X,'iswO2','','saturation formulation (1: legacy ERSEM, 2: Weiss 1970)',minimum=1,maximum=2)
       call self%get_parameter(self%iswASFLUX,'iswASFLUX','','air-sea O2 exchange (0: none, 1: Nightingale et al. 2000, 2: Wanninkhof 1992 without chemical enhancement, 3: Wanninkhof 1992 with chemical enhancement, 4: Wanninkhof and McGillis 1999, 5: Wanninkhof 1992 switching to Wanninkhof and McGillis 1999, 6: Wanninkhof 2014)',default=6)
 
-      call self%register_state_variable(self%id_O2o,'o','mmol O_2/m^3','oxygen',300._rk)
+      call self%register_state_variable(self%id_O2o,'o','mmol O_2/m^3','oxygen',300._rk,minimum=0._rk)
 
       call self%register_diagnostic_variable(self%id_eO2mO2,'eO2mO2','1','relative saturation', &
          standard_variable=standard_variables%fractional_saturation_of_oxygen)
