@@ -278,7 +278,7 @@ contains
       real(rk) :: c, p, n, Chl
       real(rk) :: cP,pP,nP,sP,ChlP
       real(rk) :: N5s,N1pP,N3nP,N4nP
-      real(rk) :: iNn,iNp,iNs,iNf,iNI
+      real(rk) :: iNn,iNp,iNs,iNf,iNI,iNut
       real(rk) :: qpc,qnc
 
       real(rk) :: srs
@@ -400,14 +400,13 @@ contains
 
          ! Production...........................................................
 
-         ! Gross photosynthetic activity (1/d), limited by availability of silicate, iron,
-         ! AND internal nutrient quota (iNI). Original ERSEM has no N-P limitation on GPP
-         ! (overflow metabolism). Adding iNI prevents O2 production under nutrient depletion.
-         ! v29: Use geometric mean (4th root) of limitation factors instead of their product.
-         ! The multiplicative model (et*iNs*iNf*iNI) becomes overly restrictive when multiple
-         ! factors are simultaneously limiting. The geometric mean preserves the constraint
-         ! direction while reducing the compounding penalty.
-         sum = self%sum * (et*iNs*iNf*iNI)**0.25_rk
+         ! Gross photosynthetic activity (1/d).
+         ! Multiplicative model: growth = mumax * f(T) * sqrt(nutrient * iron)
+         ! where nutrient = Liebig minimum of N-P colimitation (iNI) and silicate (iNs).
+         ! Temperature enters as a direct multiplier on metabolic rate.
+         ! Light limitation is applied via the PI curve below.
+         iNut = MIN(iNI, iNs)
+         sum = self%sum * et * sqrt(iNut * iNf)
 
          if (parEIR>zeroX) then
             sum = sum * (1._rk-exp(-self%alpha*parEIR*ChlCpp/sum)) * exp(-self%beta*parEIR*ChlCpp/sum)
