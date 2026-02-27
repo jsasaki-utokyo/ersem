@@ -401,12 +401,12 @@ contains
          ! Production...........................................................
 
          ! Gross photosynthetic activity (1/d).
-         ! Multiplicative model: growth = mumax * f(T) * sqrt(nutrient * iron)
+         ! Multiplicative model: growth = mumax * f(T) * nutrient * iron
          ! where nutrient = Liebig minimum of N-P colimitation (iNI) and silicate (iNs).
          ! Temperature enters as a direct multiplier on metabolic rate.
          ! Light limitation is applied via the PI curve below.
          iNut = MIN(iNI, iNs)
-         sum = self%sum * et * sqrt(iNut * iNf)
+         sum = self%sum * et * iNut * iNf
 
          if (parEIR>zeroX) then
             sum = sum * (1._rk-exp(-self%alpha*parEIR*ChlCpp/sum)) * exp(-self%beta*parEIR*ChlCpp/sum)
