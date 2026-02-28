@@ -12,6 +12,7 @@
 !   5. opt_k_carbonic=14 (Millero 2010) vs PyCO2SYS
 !   6. Pressure correction (Pbar > 0) vs PyCO2SYS
 !   7. convert_pH_scale round-trip consistency
+!   8. engine=0 phscale x opt_pH_scale regression (carbonate.F90 logic)
 !
 ! CSV format (9 columns):
 !   T, S, DIC, TA, pH_total, pH_sws, pH_free, pH_nbs, pCO2_atm
@@ -119,6 +120,15 @@ program test_driver
    write(output_unit, '(A)') ''
    write(output_unit, '(A)') '--- convert_pH_scale round-trip ---'
    call run_convert_pH_tests(n_pass, n_fail)
+   n_total_pass = n_total_pass + n_pass
+   n_total_fail = n_total_fail + n_fail
+
+   ! ---------------------------------------------------------------
+   ! Test 8: engine=0 pH_total/pH_selected logic (carbonate.F90)
+   ! ---------------------------------------------------------------
+   write(output_unit, '(A)') ''
+   write(output_unit, '(A)') '--- engine=0 phscale x opt_pH_scale ---'
+   call run_engine0_scale_tests(n_pass, n_fail)
    n_total_pass = n_total_pass + n_pass
    n_total_fail = n_total_fail + n_fail
 
@@ -681,5 +691,144 @@ contains
          n_pass, ' pass'
 
    end subroutine run_convert_pH_tests
+
+   !-----------------------------------------------------------------------
+   ! engine=0 phscale x opt_pH_scale regression test
+   !
+   ! Simulates carbonate.F90 do-routine logic for engine=0:
+   !   pH_total is derived from CO2DYN output (scale = phscale)
+   !   pH_selected is derived from pH_total via convert_pH_scale
+   !
+   ! Verifies that pH_total is always correct total-scale pH regardless
+   ! of the phscale/opt_pH_scale combination.
+   !-----------------------------------------------------------------------
+   subroutine run_engine0_scale_tests(n_pass, n_fail)
+      integer, intent(out) :: n_pass, n_fail
+
+      real(rk), parameter :: T = 25.0_rk, S = 35.0_rk, Pbar = 0.0_rk
+      real(rk), parameter :: DIC = 0.002100_rk, TA = 0.002300_rk
+      integer, parameter :: opt_tb = 2  ! Lee 2010
+
+      real(rk) :: pH_ref_total, pH_ref_sws
+      real(rk) :: pCO2, H2CO3, HCO3, CO3, K0
+      logical  :: success
+
+      ! Variables mirroring carbonate.F90 logic
+      real(rk) :: pH_co2dyn     ! simulated CO2DYN output
+      real(rk) :: pH_total      ! standard variable (must be total)
+      real(rk) :: pH_selected   ! selected-scale diagnostic
+      real(rk) :: err
+
+      integer :: phscale, opt_pH_scale
+      character(len=60) :: label
+
+      n_pass = 0; n_fail = 0
+
+      ! Get reference values: true total and SWS pH
+      call carbonate_engine_solve(T, S, Pbar, DIC, TA, &
+           1, 10, opt_tb, .false., &
+           pH_ref_total, pCO2, H2CO3, HCO3, CO3, K0, success)
+      call carbonate_engine_solve(T, S, Pbar, DIC, TA, &
+           2, 10, opt_tb, .false., &
+           pH_ref_sws, pCO2, H2CO3, HCO3, CO3, K0, success)
+
+      ! ---- Case 1: Consistent, phscale=1 opt_pH_scale=1 ----
+      ! CO2DYN returns Total. pH_total = pH. No pH_selected.
+      phscale = 1; opt_pH_scale = 1
+      label = 'phscale=1, opt_pH_scale=1 (consistent)'
+      pH_co2dyn = pH_ref_total  ! CO2DYN with phscale=1 returns Total
+
+      ! carbonate.F90 logic:
+      if (phscale == 1) then
+         pH_total = pH_co2dyn
+      else
+         call convert_pH_scale(T, S, Pbar, pH_co2dyn, &
+              2, 1, opt_tb, pH_total)
+      end if
+
+      err = abs(pH_total - pH_ref_total)
+      if (err < 1.0e-10_rk) then
+         n_pass = n_pass + 1
+         write(output_unit, '(A,A,A)') 'E0 ', trim(label), ': PASS'
+      else
+         n_fail = n_fail + 1
+         write(output_unit, '(A,A,A,ES10.3)') &
+            'E0 ', trim(label), ': FAIL err=', err
+      end if
+
+      ! ---- Case 2: Consistent, phscale=0 opt_pH_scale=2 ----
+      ! CO2DYN returns SWS. Convert SWS->Total for pH_total.
+      phscale = 0; opt_pH_scale = 2
+      label = 'phscale=0, opt_pH_scale=2 (consistent)'
+      pH_co2dyn = pH_ref_sws  ! CO2DYN with phscale=0 returns SWS
+
+      if (phscale == 1) then
+         pH_total = pH_co2dyn
+      else
+         call convert_pH_scale(T, S, Pbar, pH_co2dyn, &
+              2, 1, opt_tb, pH_total)
+      end if
+
+      err = abs(pH_total - pH_ref_total)
+      if (err < 1.0e-4_rk) then
+         n_pass = n_pass + 1
+         write(output_unit, '(A,A,A)') 'E0 ', trim(label), ': PASS'
+      else
+         n_fail = n_fail + 1
+         write(output_unit, '(A,A,A,ES10.3)') &
+            'E0 ', trim(label), ': FAIL err=', err
+      end if
+
+      ! ---- Case 3: Inconsistent, phscale=1 opt_pH_scale=3 (Free) ----
+      ! CO2DYN returns Total (phscale=1). opt_pH_scale=3 only affects
+      ! pH_selected diagnostic. pH_total must still be correct Total.
+      phscale = 1; opt_pH_scale = 3
+      label = 'phscale=1, opt_pH_scale=3 (inconsistent)'
+      pH_co2dyn = pH_ref_total  ! CO2DYN with phscale=1 returns Total
+
+      ! carbonate.F90 logic: check phscale (not opt_pH_scale!)
+      if (phscale == 1) then
+         pH_total = pH_co2dyn
+      else
+         call convert_pH_scale(T, S, Pbar, pH_co2dyn, &
+              2, 1, opt_tb, pH_total)
+      end if
+
+      ! pH_selected: convert Total -> Free
+      call convert_pH_scale(T, S, Pbar, pH_total, &
+           1, opt_pH_scale, opt_tb, pH_selected)
+
+      err = abs(pH_total - pH_ref_total)
+      if (err < 1.0e-10_rk) then
+         n_pass = n_pass + 1
+         write(output_unit, '(A,A,A)') 'E0 ', trim(label), &
+            ': PASS (pH_total correct)'
+      else
+         n_fail = n_fail + 1
+         write(output_unit, '(A,A,A,ES10.3)') &
+            'E0 ', trim(label), ': FAIL pH_total err=', err
+      end if
+
+      ! Verify pH_selected is actually on Free scale
+      ! Free pH > Total pH for seawater (less H+ counted on free)
+      if (pH_selected > pH_total .and. &
+          abs(pH_selected - pH_total) > 0.05_rk .and. &
+          abs(pH_selected - pH_total) < 0.15_rk) then
+         n_pass = n_pass + 1
+         write(output_unit, '(A,F8.4,A,F8.4,A)') &
+            'E0 pH_selected(Free)=', pH_selected, &
+            ' vs pH_total=', pH_total, ': PASS'
+      else
+         n_fail = n_fail + 1
+         write(output_unit, '(A,F8.4,A,F8.4,A)') &
+            'E0 pH_selected(Free)=', pH_selected, &
+            ' vs pH_total=', pH_total, ': FAIL'
+      end if
+
+      write(output_unit, '(A,I4,A,I4,A,I4)') &
+         'engine=0 scale tests: ', n_pass + n_fail, ' total, ', &
+         n_pass, ' pass, ', n_fail, ' fail'
+
+   end subroutine run_engine0_scale_tests
 
 end program test_driver

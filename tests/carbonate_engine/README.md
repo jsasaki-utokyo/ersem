@@ -53,6 +53,7 @@ The test driver validates seven categories:
 5. **Millero 2010 (opt_k_carbonic=14)**: 5 cases against PyCO2SYS reference with alternative K1K2 formulation
 6. **Pressure correction (Pbar > 0)**: 5 cases at 10–500 bar against PyCO2SYS reference
 7. **convert_pH_scale round-trip**: 4 cases verifying pH scale conversion accuracy
+8. **engine=0 phscale x opt_pH_scale**: 4 cases testing carbonate.F90 pH_total/pH_selected logic for consistent and inconsistent parameter combinations
 
 ### Exit Codes
 
