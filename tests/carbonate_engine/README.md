@@ -44,7 +44,7 @@ gfortran -O2 -o test_driver \
 
 ### Test Coverage
 
-The test driver validates seven categories:
+The test driver validates eight categories:
 
 1. **4-scale CSV comparison**: 22 cases × 4 pH scales (Total, SWS, Free, NBS) against PyCO2SYS reference CSV
 2. **Cross-scale consistency**: 5 cases verifying pH ordering (NBS > Free > Total > SWS) and pCO2 invariance across scales
