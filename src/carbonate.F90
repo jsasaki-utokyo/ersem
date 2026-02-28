@@ -308,8 +308,10 @@ contains
          if (self%engine == 0) then
             ! Legacy ERSEM carbonate solver
             CALL CO2DYN (ETW,X1X,pres*0.1_rk,Ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,Hplus,k0co2,success,self%phscale)   ! NB pressure from dbar to bar
-            ! Convert to total scale for standard variable coupling
-            if (self%opt_pH_scale == 1) then
+            ! Convert to total scale for standard variable coupling.
+            ! CO2DYN output scale is determined by phscale (not opt_pH_scale):
+            !   phscale=1 -> Total, phscale=0/-1 -> SWS
+            if (self%phscale == 1) then
                pH_total = pH
             else
                ! phscale=0/-1: CO2DYN returns SWS pH -> convert to total
