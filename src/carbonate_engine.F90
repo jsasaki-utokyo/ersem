@@ -18,7 +18,7 @@
 !   KB: Dickson (1990) via Millero (1995), Total scale
 !   KW: Millero (1995), SWS scale
 !   KS: Dickson (1990), Free scale
-!   KF: Perez & Fraga (1987), Free scale (after conversion)
+!   KF: Perez & Fraga (1987), Free scale (native)
 !   Total boron: Uppstrom (1974) or Lee et al. (2010)
 !   fH: Takahashi-Williams-Benson (1982) for NBS scale
 !
@@ -150,7 +150,7 @@ contains
    !
    ! Native scales:
    !   KS  - Free (Dickson 1990)
-   !   KF  - Free (Perez & Fraga 1987, computed on Total then converted)
+   !   KF  - Free (Perez & Fraga 1987, native free scale)
    !   KB  - Total (Dickson 1990 via Millero 1995)
    !   KW  - SWS (Millero 1995)
    !   K1,K2 (opt=10) - Total (Lueker 2000)
@@ -170,7 +170,7 @@ contains
       real(rk) :: TK, TK100, lnTK, invTK
       real(rk) :: sqrtS, S15, S2
       real(rk) :: IS, sqrtIS
-      real(rk) :: KS, KS_surface, KF_free
+      real(rk) :: KS, KF_free
       real(rk) :: delta, kappa
       real(rk) :: free2total, free2sws, fH
       real(rk) :: pK1, pK2
@@ -201,21 +201,17 @@ contains
                - 2698.0_rk * invTK * IS**1.5_rk + 1776.0_rk * invTK * IS**2.0_rk &
                + log(1.0_rk - 0.001005_rk * S))
 
-      ! Save surface KS for KF total->free conversion
-      KS_surface = KS
-
       ! Pressure correction for KS (on free scale)
       delta = -18.03_rk + 0.0466_rk * T + 0.000316_rk * T**2.0_rk
       kappa = -4.53_rk + 0.00009_rk * T
       KS = KS * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
 
       !-------------------------------------------------------------------
-      ! KF = [H+][F-]/[HF]
-      ! Perez & Fraga (1987) - computed on total scale, convert to free
-      ! using surface KS (before pressure correction)
+      ! KF = [H+][F-]/[HF] on free scale
+      ! Perez & Fraga (1987) - directly on free scale
+      ! (PyCO2SYS kHF_FREE_PF87: no total->free conversion needed)
       !-------------------------------------------------------------------
       KF_free = exp(874.0_rk * invTK - 9.68_rk + 0.111_rk * sqrtS)
-      KF_free = KF_free / (1.0_rk + ST / KS_surface)
 
       ! Pressure correction for KF (on free scale)
       delta = -9.78_rk - 0.009_rk * T - 0.000942_rk * T**2.0_rk
@@ -397,10 +393,10 @@ contains
          K = K * free2sws
       case (3)  ! Stay Free
          ! no-op
-      case (4)  ! Free -> NBS: K_NBS = K_free * fH
-         ! NBS scale uses activity: a_H = fH * H_free
-         ! So K_NBS/K_free = H_NBS/H_free = fH
-         K = K * fH
+      case (4)  ! Free -> NBS: K_NBS = K_free * free2sws * fH
+         ! NBS via SWS: H_NBS = fH * H_SWS = fH * free2sws * H_free
+         ! So K_NBS = K_free * free2sws * fH
+         K = K * free2sws * fH
       end select
 
    end subroutine convert_K

@@ -5,10 +5,13 @@
 ! Calls the actual carbonate_engine_solve subroutine.
 !
 ! Tests:
-!   1. opt_pH_scale=1 (Total): PyCO2SYS reference CSV
+!   1. All 4 pH scales vs PyCO2SYS reference CSV (9-column format)
 !   2. Cross-scale consistency: Total vs SWS vs Free vs NBS
 !   3. legacy_mode=.true.: backward-compat (convergence + range)
 !   4. Sub-zero temperature (polar waters)
+!
+! CSV format (9 columns):
+!   T, S, DIC, TA, pH_total, pH_sws, pH_free, pH_nbs, pCO2_atm
 !
 ! Usage:
 !   ./test_driver [reference_cases.csv]
@@ -54,11 +57,11 @@ program test_driver
    n_total_fail = 0
 
    ! ---------------------------------------------------------------
-   ! Test 1: opt_pH_scale=1 (Total), Lueker 2000, Lee 2010 boron
+   ! Test 1: All 4 pH scales vs PyCO2SYS reference (Lueker 2000)
    ! ---------------------------------------------------------------
-   write(output_unit, '(A)') '--- Total scale (opt_pH_scale=1), Lueker 2000 ---'
-   call run_csv_tests(csv_file, 1, 10, 2, .false., &
-                      tol_pH_tight, tol_pCO2_tight, n_pass, n_fail)
+   write(output_unit, '(A)') '--- 4-scale PyCO2SYS reference comparison ---'
+   call run_csv_tests_4scale(csv_file, 10, 2, &
+                             tol_pH_tight, tol_pCO2_tight, n_pass, n_fail)
    n_total_pass = n_total_pass + n_pass
    n_total_fail = n_total_fail + n_fail
 
@@ -112,25 +115,31 @@ program test_driver
 contains
 
    !-----------------------------------------------------------------------
-   ! Run CSV-based tests against PyCO2SYS reference values
+   ! Run CSV-based tests against PyCO2SYS reference values (all 4 scales)
+   ! CSV format: T, S, DIC, TA, pH_total, pH_sws, pH_free, pH_nbs, pCO2
    !-----------------------------------------------------------------------
-   subroutine run_csv_tests(csv_file, opt_pH_scale, opt_k_carbonic, &
-                            opt_total_borate, legacy_mode, &
-                            tol_pH_val, tol_pCO2_val, n_pass, n_fail)
+   subroutine run_csv_tests_4scale(csv_file, opt_k_carbonic, &
+                                   opt_total_borate, &
+                                   tol_pH_val, tol_pCO2_val, n_pass, n_fail)
       character(len=*), intent(in) :: csv_file
-      integer, intent(in)  :: opt_pH_scale, opt_k_carbonic, opt_total_borate
-      logical, intent(in)  :: legacy_mode
+      integer, intent(in)  :: opt_k_carbonic, opt_total_borate
       real(rk), intent(in) :: tol_pH_val, tol_pCO2_val
       integer, intent(out) :: n_pass, n_fail
 
       character(len=1024) :: line
-      integer :: unit_num, ios, n_cases
+      character(len=8) :: scale_name(4)
+      integer :: unit_num, ios, n_cases, iscale
       real(rk) :: T, S, DIC_molkg, TA_molkg
-      real(rk) :: expected_pH, expected_pCO2_atm
+      real(rk) :: exp_pH(4), exp_pCO2_atm
       real(rk) :: calc_pH, calc_pCO2_atm
       real(rk) :: calc_H2CO3, calc_HCO3, calc_CO3, calc_K0
       real(rk) :: err_pH, err_pCO2
-      logical :: success
+      logical :: success, case_ok
+
+      scale_name(1) = 'Total'
+      scale_name(2) = 'SWS'
+      scale_name(3) = 'Free'
+      scale_name(4) = 'NBS'
 
       open(newunit=unit_num, file=trim(csv_file), status='old', &
            action='read', iostat=ios)
@@ -147,51 +156,65 @@ contains
          if (ios /= 0) exit
          if (len_trim(line) == 0 .or. line(1:1) == '#') cycle
 
+         ! Read 9-column CSV
          read(line, *, iostat=ios) T, S, DIC_molkg, TA_molkg, &
-                                   expected_pH, expected_pCO2_atm
+                                   exp_pH(1), exp_pH(2), exp_pH(3), &
+                                   exp_pH(4), exp_pCO2_atm
          if (ios /= 0) cycle
 
          n_cases = n_cases + 1
+         case_ok = .true.
 
-         call carbonate_engine_solve(T, S, 0.0_rk, DIC_molkg, TA_molkg, &
-                                     opt_pH_scale, opt_k_carbonic, &
-                                     opt_total_borate, legacy_mode, &
-                                     calc_pH, calc_pCO2_atm, &
-                                     calc_H2CO3, calc_HCO3, &
-                                     calc_CO3, calc_K0, success)
+         ! Test each of the 4 pH scales
+         do iscale = 1, 4
+            call carbonate_engine_solve(T, S, 0.0_rk, &
+                 DIC_molkg, TA_molkg, iscale, opt_k_carbonic, &
+                 opt_total_borate, .false., &
+                 calc_pH, calc_pCO2_atm, &
+                 calc_H2CO3, calc_HCO3, calc_CO3, calc_K0, success)
 
-         err_pH = abs(calc_pH - expected_pH)
-         err_pCO2 = abs(calc_pCO2_atm - expected_pCO2_atm)
+            if (.not. success) then
+               case_ok = .false.
+               write(output_unit, '(A,I3,A,A,A)') &
+                  'Case ', n_cases, ' ', trim(scale_name(iscale)), &
+                  ': FAIL - No convergence'
+               cycle
+            end if
 
-         if (.not. success) then
-            n_fail = n_fail + 1
-            write(output_unit, '(A,I4,A)') &
-               'Case ', n_cases, ': FAIL - No convergence'
-         else if (err_pH > tol_pH_val .or. err_pCO2 > tol_pCO2_val) then
-            n_fail = n_fail + 1
-            write(output_unit, '(A,I4,A)') 'Case ', n_cases, ': FAIL'
-            write(output_unit, '(A,F8.2,A,F8.3,A,ES12.5,A,ES12.5)') &
-               '  T=', T, ' S=', S, ' DIC=', DIC_molkg, ' TA=', TA_molkg
-            write(output_unit, '(A,F12.8,A,F12.8,A,ES10.3)') &
-               '  pH: exp=', expected_pH, ' calc=', calc_pH, &
-               ' err=', err_pH
-            write(output_unit, '(A,ES12.5,A,ES12.5,A,ES10.3)') &
-               '  pCO2: exp=', expected_pCO2_atm, &
-               ' calc=', calc_pCO2_atm, ' err=', err_pCO2
-         else
+            err_pH = abs(calc_pH - exp_pH(iscale))
+            err_pCO2 = abs(calc_pCO2_atm - exp_pCO2_atm)
+
+            if (err_pH > tol_pH_val .or. err_pCO2 > tol_pCO2_val) then
+               case_ok = .false.
+               write(output_unit, '(A,I3,A,A,A)') &
+                  'Case ', n_cases, ' ', &
+                  trim(scale_name(iscale)), ': FAIL'
+               write(output_unit, '(A,F8.2,A,F8.3)') &
+                  '  T=', T, ' S=', S
+               write(output_unit, '(A,F12.8,A,F12.8,A,ES10.3)') &
+                  '  pH: exp=', exp_pH(iscale), &
+                  ' calc=', calc_pH, ' err=', err_pH
+               write(output_unit, '(A,ES12.5,A,ES12.5,A,ES10.3)') &
+                  '  pCO2: exp=', exp_pCO2_atm, &
+                  ' calc=', calc_pCO2_atm, ' err=', err_pCO2
+            end if
+         end do
+
+         if (case_ok) then
             n_pass = n_pass + 1
-            write(output_unit, '(A,I4,A,F12.8,A,ES12.5,A)') &
-               'Case ', n_cases, ': PASS (pH=', calc_pH, &
-               ', pCO2=', calc_pCO2_atm, ')'
+            write(output_unit, '(A,I3,A)') &
+               'Case ', n_cases, ': PASS (all 4 scales)'
+         else
+            n_fail = n_fail + 1
          end if
       end do
 
       close(unit_num)
       write(output_unit, '(A,I4,A,I4,A,I4)') &
-         'CSV tests: ', n_cases, ' total, ', n_pass, ' pass, ', &
-         n_fail, ' fail'
+         '4-scale CSV tests: ', n_cases, ' total, ', n_pass, &
+         ' pass, ', n_fail, ' fail'
 
-   end subroutine run_csv_tests
+   end subroutine run_csv_tests_4scale
 
    !-----------------------------------------------------------------------
    ! Cross-scale consistency tests:

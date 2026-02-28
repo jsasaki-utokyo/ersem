@@ -74,8 +74,12 @@ contains
          ! Explicitly set via opt_pH_scale YAML parameter
          self%opt_pH_scale = opt_pH_scale_yaml
          self%legacy_mode = .false.
+      else if (opt_pH_scale_yaml == 0) then
+         call self%fatal_error('initialize', &
+            'opt_pH_scale=0 is invalid. Use 1 (Total), 2 (SWS),' &
+            // ' 3 (Free), 4 (NBS), or -1 (auto from pHscale).')
       else
-         ! Auto-resolve from legacy pHscale parameter
+         ! opt_pH_scale_yaml == -1: auto-resolve from legacy pHscale
          select case (self%phscale)
          case (1)
             self%opt_pH_scale = 1
@@ -108,11 +112,13 @@ contains
                'opt_k_carbonic_pyco2 must be 0 (auto), 10 (Lueker 2000),' &
                // ' or 14 (Millero 2010)')
          end if
-         ! Check for contradiction with opt_k_carbonic
+         ! opt_k_carbonic_pyco2 takes priority over opt_k_carbonic.
+         ! Log a message if they map to different formulations (the user
+         ! may have left opt_k_carbonic at its default while explicitly
+         ! setting opt_k_carbonic_pyco2, which is the expected usage).
          if (self%opt_k_carbonic_pyco2 /= k_mapped) then
-            call self%fatal_error('initialize', &
-               'opt_k_carbonic and opt_k_carbonic_pyco2 are contradictory.' &
-               // ' Remove one or set them consistently.')
+            call self%log_message('opt_k_carbonic_pyco2 overrides' &
+               // ' opt_k_carbonic; using PyCO2SYS numbering.')
          end if
          self%opt_k_carbonic_resolved = self%opt_k_carbonic_pyco2
       else
