@@ -16,8 +16,8 @@ Usage:
 Output:
     reference_cases.csv - CSV file with test cases and expected results
 
-PyCO2SYS settings used (to match carbonate_engine with opt_k_carbonic=1):
-    - K1K2: 4 (Lueker et al. 2000, total pH scale)
+PyCO2SYS settings used (to match carbonate_engine with opt_k_carbonic=10):
+    - K1K2: 10 (Lueker et al. 2000, total pH scale)
     - KSO4: 1 (Dickson 1990)
     - KF: 2 (Perez & Fraga 1987)
     - Total boron: 2 (Lee et al. 2010)
@@ -75,9 +75,9 @@ TEST_CASES = [
     (-1.0, 35.0, 0.002100, 0.002300),
 ]
 
-# PyCO2SYS settings to match carbonate_engine with opt_k_carbonic=1
+# PyCO2SYS settings to match carbonate_engine (opt_k_carbonic=10 in PyCO2SYS)
 PYCO2_KWARGS = {
-    'opt_k_carbonic': 4,       # Lueker et al. 2000 (Total scale)
+    'opt_k_carbonic': 10,      # Lueker et al. 2000 (Total scale)
     'opt_k_bisulfate': 1,      # Dickson 1990
     'opt_k_fluoride': 2,       # Perez & Fraga 1987
     'opt_total_borate': 2,     # Lee et al. 2010

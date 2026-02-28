@@ -26,6 +26,11 @@ module ersem_carbonate
       integer :: engine   ! carbonate engine (0: legacy ERSEM, 1: carbonate-engine)
       integer :: opt_k_carbonic    ! K1/K2 formulation (1: Lueker 2000, 2: Millero 2010)
       integer :: opt_total_borate  ! Total boron (1: Uppstrom 1974, 2: Lee 2010)
+      ! Resolved parameters for carbonate-engine (engine=1)
+      integer :: opt_pH_scale          ! resolved pH scale (1-4)
+      logical :: legacy_mode           ! .true. for backward-compat CO2DYN behavior
+      integer :: opt_k_carbonic_pyco2  ! PyCO2SYS K1/K2 numbering (0=unset)
+      integer :: opt_k_carbonic_resolved ! resolved K1/K2 for engine
       real(rk) :: ta_slope, ta_intercept  ! TA(S) regression coefficients for iswtalk==6
       real(rk) :: relax_c          ! DIC relaxation timescale (d), 0 = off
       real(rk) :: c_relax_target   ! target DIC for relaxation (mmol C/m³), used when c_ta_ratio <= 0
@@ -58,6 +63,40 @@ contains
       call self%get_parameter(self%engine,'engine','','carbonate engine (0: legacy ERSEM, 1: carbonate-engine)',default=0,minimum=0,maximum=1)
       call self%get_parameter(self%opt_k_carbonic,'opt_k_carbonic','','K1/K2 formulation for engine=1 (1: Lueker et al. 2000, 2: Millero 2010)',default=1,minimum=1,maximum=2)
       call self%get_parameter(self%opt_total_borate,'opt_total_borate','','Total boron for engine=1 (1: Uppstrom 1974, 2: Lee et al. 2010)',default=2,minimum=1,maximum=2)
+      call self%get_parameter(self%opt_k_carbonic_pyco2,'opt_k_carbonic_pyco2','','K1/K2 PyCO2SYS numbering for engine=1 (0: auto from opt_k_carbonic, 10: Lueker 2000, 14: Millero 2010)',default=0,minimum=0,maximum=99)
+
+      ! Resolve opt_pH_scale and legacy_mode from pHscale
+      ! opt_pH_scale: 1=Total, 2=SWS, 3=Free, 4=NBS
+      select case (self%phscale)
+      case (1)
+         self%opt_pH_scale = 1
+         self%legacy_mode = .false.
+      case (0)
+         self%opt_pH_scale = 2
+         self%legacy_mode = .false.
+      case (-1)
+         self%opt_pH_scale = 2
+         self%legacy_mode = .true.
+      case default
+         self%opt_pH_scale = 1
+         self%legacy_mode = .false.
+      end select
+
+      ! Resolve opt_k_carbonic_resolved for engine=1
+      if (self%opt_k_carbonic_pyco2 > 0) then
+         ! PyCO2SYS numbering takes priority
+         self%opt_k_carbonic_resolved = self%opt_k_carbonic_pyco2
+      else
+         ! Map from legacy numbering
+         select case (self%opt_k_carbonic)
+         case (1)
+            self%opt_k_carbonic_resolved = 10  ! Lueker 2000
+         case (2)
+            self%opt_k_carbonic_resolved = 14  ! Millero 2010
+         case default
+            self%opt_k_carbonic_resolved = 10
+         end select
+      end if
       call self%get_parameter(self%ta_slope,'ta_slope','umol/kg/PSU','TA(S) regression slope for iswtalk=6',default=43.626_rk)
       call self%get_parameter(self%ta_intercept,'ta_intercept','umol/kg','TA(S) regression intercept for iswtalk=6',default=846.48_rk)
       call self%get_parameter(self%relax_c,'relax_c','d','DIC relaxation timescale (0 = off)',default=0.0_rk,minimum=0.0_rk)
@@ -92,13 +131,18 @@ contains
       end if
 
       if (self%iswCO2X==1) then
-         if (self%phscale==1) then
-             call self%register_diagnostic_variable(self%id_ph,'pH',    '-',       'pH on total scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
-         elseif (self%phscale==0) then
-             call self%register_diagnostic_variable(self%id_ph,'pH',    '-',       'pH on seawater scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
-         elseif (self%phscale==-1) then
-             call self%register_diagnostic_variable(self%id_ph,'pH',    '-',       'pH on seawater scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
-         end if
+         select case (self%opt_pH_scale)
+         case (1)
+            call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on total scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
+         case (2)
+            call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on seawater scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
+         case (3)
+            call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on free scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
+         case (4)
+            call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on NBS scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
+         case default
+            call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on total scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
+         end select
          call self%register_diagnostic_variable(self%id_pco2,  'pCO2',  '1e-6',    'partial pressure of CO2',missing_value=0._rk)
          call self%register_diagnostic_variable(self%id_CarbA, 'CarbA', 'mmol/m^3','carbonic acid concentration',missing_value=0._rk)
          call self%register_diagnostic_variable(self%id_BiCarb,'BiCarb','mmol/m^3','bicarbonate concentration',missing_value=0._rk)
@@ -227,8 +271,9 @@ contains
             CALL CO2DYN (ETW,X1X,pres*0.1_rk,Ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,Hplus,k0co2,success,self%phscale)   ! NB pressure from dbar to bar
          else
             ! New carbonate-engine solver (PyCO2SYS-style)
-            call carbonate_engine_solve(ETW, X1X, pres*0.1_rk, Ctot, TA, self%phscale, &
-                                        self%opt_k_carbonic, self%opt_total_borate, &
+            call carbonate_engine_solve(ETW, X1X, pres*0.1_rk, Ctot, TA, &
+                                        self%opt_pH_scale, self%opt_k_carbonic_resolved, &
+                                        self%opt_total_borate, self%legacy_mode, &
                                         pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
             Hplus = 10.0_rk**(-pH)
          end if
@@ -329,8 +374,9 @@ contains
             CALL CO2dyn(T, S, PRSS*0.1_rk,Ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,Hplus,k0co2,success,self%phscale)
          else
             ! New carbonate-engine solver (PyCO2SYS-style)
-            call carbonate_engine_solve(T, S, PRSS*0.1_rk, Ctot, TA, self%phscale, &
-                                        self%opt_k_carbonic, self%opt_total_borate, &
+            call carbonate_engine_solve(T, S, PRSS*0.1_rk, Ctot, TA, &
+                                        self%opt_pH_scale, self%opt_k_carbonic_resolved, &
+                                        self%opt_total_borate, self%legacy_mode, &
                                         pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
          end if
          if (.not.success) then

@@ -18,6 +18,7 @@ module ersem_benthic_carbonate
       type (type_horizontal_diagnostic_variable_id) :: id_ph,id_pco2,id_CarbA, id_BiCarb, id_Carb, id_Hplus
       type (type_horizontal_diagnostic_variable_id) :: id_Om_cal,id_Om_arg
       integer :: phscale
+      integer :: opt_pH_scale  ! resolved pH scale (1-4) for diagnostics
 
    contains
       procedure :: initialize
@@ -32,15 +33,29 @@ contains
       integer,                      intent(in)            :: configunit
 
       call self%get_parameter(self%phscale,'pHscale','','pH scale (0: SWS, 1: total)',default=1,minimum=-1,maximum=1)
+
+      ! Resolve opt_pH_scale from phscale for diagnostic labels
+      select case (self%phscale)
+      case (1);    self%opt_pH_scale = 1
+      case (0);    self%opt_pH_scale = 2
+      case (-1);   self%opt_pH_scale = 2
+      case default; self%opt_pH_scale = 1
+      end select
+
       call self%register_horizontal_dependency(self%id_G3c,'G3c','mmol C/m^2','carbon dioxide')
       call self%register_horizontal_dependency(self%id_benTA,'benTA','mmol eq/m^2','benthic alkalinity')
-      if (self%phscale==1) then
-             call self%register_diagnostic_variable(self%id_ph, 'pH', '-', 'pH on total scale',missing_value=0._rk,domain=domain_bottom,source=source_do_bottom)
-      elseif (self%phscale==0) then
-             call self%register_diagnostic_variable(self%id_ph, 'pH', '-', 'pH on seawater scale',missing_value=0._rk,domain=domain_bottom,source=source_do_bottom)
-      elseif (self%phscale==-1) then
-             call self%register_diagnostic_variable(self%id_ph, 'pH', '-', 'pH on seawater scale',missing_value=0._rk,domain=domain_bottom,source=source_do_bottom)
-      end if
+      select case (self%opt_pH_scale)
+      case (1)
+         call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on total scale',missing_value=0._rk,domain=domain_bottom,source=source_do_bottom)
+      case (2)
+         call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on seawater scale',missing_value=0._rk,domain=domain_bottom,source=source_do_bottom)
+      case (3)
+         call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on free scale',missing_value=0._rk,domain=domain_bottom,source=source_do_bottom)
+      case (4)
+         call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on NBS scale',missing_value=0._rk,domain=domain_bottom,source=source_do_bottom)
+      case default
+         call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on total scale',missing_value=0._rk,domain=domain_bottom,source=source_do_bottom)
+      end select
       call self%register_diagnostic_variable(self%id_pco2,  'pCO2',  '1e-6',    'partial pressure of CO2',source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_CarbA, 'CarbA', 'mmol/m^3','carbonic acid concentration',source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_BiCarb,'BiCarb','mmol/m^3','bicarbonate concentration',source=source_do_bottom)
