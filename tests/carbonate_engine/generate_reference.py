@@ -16,15 +16,14 @@ Usage:
 Output:
     reference_cases.csv - CSV file with test cases and expected results
 
-PyCO2SYS settings used (to match carbonate_engine implementation):
-    - K1K2: 10 (Millero 2010, total pH scale)
+PyCO2SYS settings used (to match carbonate_engine with opt_k_carbonic=1):
+    - K1K2: 4 (Lueker et al. 2000, total pH scale)
     - KSO4: 1 (Dickson 1990)
     - KF: 2 (Perez & Fraga 1987)
     - Total boron: 2 (Lee et al. 2010)
     - pH scale: 1 (Total)
 """
 
-import csv
 import sys
 
 try:
@@ -63,11 +62,22 @@ TEST_CASES = [
     (20.0, 25.0, 0.001800, 0.002000),
     (25.0, 28.0, 0.001900, 0.002100),
     (15.0, 30.0, 0.002000, 0.002150),
+
+    # Low salinity cases for estuarine conditions
+    (20.0, 5.0, 0.002000, 0.002200),
+    (20.0, 10.0, 0.002000, 0.002200),
+    (20.0, 15.0, 0.002000, 0.002200),
+    (25.0, 10.0, 0.002000, 0.002200),
+    (15.0, 10.0, 0.002000, 0.002200),
+
+    # Sub-zero temperature (polar waters)
+    (-1.5, 34.0, 0.002200, 0.002350),
+    (-1.0, 35.0, 0.002100, 0.002300),
 ]
 
-# PyCO2SYS settings to match carbonate_engine
+# PyCO2SYS settings to match carbonate_engine with opt_k_carbonic=1
 PYCO2_KWARGS = {
-    'opt_k_carbonic': 10,      # Millero 2010 (Total scale)
+    'opt_k_carbonic': 4,       # Lueker et al. 2000 (Total scale)
     'opt_k_bisulfate': 1,      # Dickson 1990
     'opt_k_fluoride': 2,       # Perez & Fraga 1987
     'opt_total_borate': 2,     # Lee et al. 2010
@@ -116,18 +126,26 @@ def generate_reference_cases(output_file='reference_cases.csv'):
             'pCO2_atm': pCO2_atm,
         })
 
-        print(f"T={T:5.1f}C, S={S:5.1f}, DIC={DIC_molkg:.6f}, TA={TA_molkg:.6f} -> pH={pH_total:.4f}, pCO2={pCO2_atm:.4e} atm")
+        print(f"T={T:5.1f}C, S={S:5.1f}, DIC={DIC_molkg:.6f}, "
+              f"TA={TA_molkg:.6f} -> pH={pH_total:.6f}, "
+              f"pCO2={pCO2_atm:.6e} atm")
 
     # Write to CSV
     with open(output_file, 'w', newline='') as f:
         f.write("# Reference test cases for carbonate_engine\n")
-        f.write("# Generated using PyCO2SYS with: K1K2=10 (Millero 2010), KSO4=1 (Dickson 1990), KF=2 (Perez & Fraga 1987)\n")
-        f.write("# Total pH scale, surface pressure (0 bar gauge)\n")
-        f.write("# Columns: T(degC), S(PSU), DIC(mol/kg), TA(mol/kg), pH_total, pCO2(atm)\n")
-        f.write("# Note: pCO2 values are in atm (not uatm)\n")
+        f.write("# Uses: K0 Weiss 1974, K1/K2 Lueker 2000, KB Dickson 1990, "
+                "KW Millero 1995,\n")
+        f.write("#       KS Dickson 1990, KF Perez & Fraga 1987, "
+                "BT Lee 2010 (432.6*S/35)\n")
+        f.write("# Note: Lueker 2000 K1/K2 valid for S=19-43. "
+                "Low-S cases are extrapolations.\n")
+        f.write("# Columns: T(degC), S(PSU), DIC(mol/kg), TA(mol/kg), "
+                "pH_total, fCO2(atm)\n")
 
         for r in results:
-            f.write(f"{r['T']},{r['S']},{r['DIC_molkg']:.6f},{r['TA_molkg']:.6f},{r['pH_total']:.3f},{r['pCO2_atm']:.3e}\n")
+            f.write(f"{r['T']},{r['S']},{r['DIC_molkg']:.6f},"
+                    f"{r['TA_molkg']:.6f},{r['pH_total']:.10f},"
+                    f"{r['pCO2_atm']:.10e}\n")
 
     print()
     print(f"Wrote {len(results)} test cases to {output_file}")
@@ -153,12 +171,12 @@ def verify_format(csv_file='reference_cases.csv'):
                 continue
 
             try:
-                T = float(parts[0])
-                S = float(parts[1])
-                DIC = float(parts[2])
-                TA = float(parts[3])
-                pH = float(parts[4])
-                pCO2 = float(parts[5])
+                float(parts[0])
+                float(parts[1])
+                float(parts[2])
+                float(parts[3])
+                float(parts[4])
+                float(parts[5])
                 count += 1
             except ValueError as e:
                 print(f"ERROR: Failed to parse line: {line}")

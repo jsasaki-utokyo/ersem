@@ -86,11 +86,20 @@ contains
       real(rk) :: BT, ST, FT
 
       ! Solver variables
-      real(rk) :: H_solution, pH_total
+      real(rk) :: H_solution
       real(rk) :: Tmax
+      logical  :: include_OH_H
 
-      ! Ensure temperature is non-negative for stability
-      Tmax = max(T, 0.0_rk)
+      ! Temperature floor: allow sub-zero for PyCO2SYS compatibility,
+      ! but match legacy CO2DYN behavior for backward-compat mode
+      if (phscale == -1) then
+         Tmax = max(T, 0.0_rk)
+      else
+         Tmax = max(T, -2.0_rk)
+      end if
+
+      ! Legacy mode omits OH-H from alkalinity (matching CO2CLC)
+      include_OH_H = (phscale /= -1)
 
       ! Calculate equilibrium constants (all on total pH scale at depth)
       call calc_equilibrium_constants(Tmax, S, Pbar, phscale, opt_k_carbonic, &
@@ -102,7 +111,7 @@ contains
 
       ! Solve for [H+] using Brent's method
       call solve_pH_brent(DIC_molkg, TA_molkg, K1, K2, KB, KW, BT, &
-                          H_solution, success)
+                          H_solution, success, include_OH_H)
 
       if (.not. success) then
          pH = 0.0_rk
@@ -113,17 +122,9 @@ contains
          return
       end if
 
-      ! Calculate pH on requested scale
-      pH_total = -log10(H_solution)
-
-      if (phscale == 1) then
-         ! Total scale requested
-         pH = pH_total
-      else
-         ! SWS scale requested (phscale == 0 or -1)
-         ! Convert from total to SWS: [H+]_SWS = [H+]_total * total2sws
-         pH = -log10(H_solution * total2sws)
-      end if
+      ! H_solution is already on the requested scale because equilibrium
+      ! constants were set to the matching scale before solving
+      pH = -log10(H_solution)
 
       ! Calculate carbonate species from [H+] and DIC
       call calc_carbonate_species(DIC_molkg, H_solution, K0, K1, K2, &
@@ -217,6 +218,7 @@ contains
       ! Update conversion factors at depth
       free2sws = 1.0_rk + ST / KS + FT / (KF * total2free)
       total2sws = total2free * free2sws
+      sws2total = 1.0_rk / total2sws
 
       !-------------------------------------------------------------------
       ! K0 = [CO2*]/pCO2 (mol/kg/atm)
@@ -384,11 +386,13 @@ contains
    !
    ! TA_model = [HCO3-] + 2[CO3--] + [B(OH)4-] + [OH-] - [H+]
    !-----------------------------------------------------------------------
-   function alkalinity_residual(H, DIC, TA_input, K1, K2, KB, KW, BT) result(F)
+   function alkalinity_residual(H, DIC, TA_input, K1, K2, KB, KW, BT, &
+                                include_OH_H) result(F)
       real(rk), intent(in) :: H, DIC, TA_input, K1, K2, KB, KW, BT
+      logical,  intent(in) :: include_OH_H
       real(rk) :: F
 
-      real(rk) :: denom, HCO3, CO3, BOH4, OH
+      real(rk) :: denom, HCO3, CO3, BOH4
       real(rk) :: TA_model
 
       ! Carbonate species from DIC and [H+]
@@ -399,11 +403,11 @@ contains
       ! Borate alkalinity
       BOH4 = BT * KB / (KB + H)
 
-      ! Hydroxide
-      OH = KW / H
-
-      ! Total alkalinity (simplified, ignoring minor species)
-      TA_model = HCO3 + 2.0_rk * CO3 + BOH4 + OH - H
+      ! Total alkalinity
+      TA_model = HCO3 + 2.0_rk * CO3 + BOH4
+      if (include_OH_H) then
+         TA_model = TA_model + KW / H - H
+      end if
 
       F = TA_model - TA_input
 
@@ -417,10 +421,11 @@ contains
    ! secant, and inverse quadratic interpolation
    !-----------------------------------------------------------------------
    subroutine solve_pH_brent(DIC, TA_input, K1, K2, KB, KW, BT, &
-                             H_solution, success)
+                             H_solution, success, include_OH_H)
       real(rk), intent(in)  :: DIC, TA_input, K1, K2, KB, KW, BT
       real(rk), intent(out) :: H_solution
       logical,  intent(out) :: success
+      logical,  intent(in)  :: include_OH_H
 
       real(rk) :: a, b, c, d, e
       real(rk) :: fa, fb, fc
@@ -435,8 +440,10 @@ contains
 
       a = H_lo
       b = H_hi
-      fa = alkalinity_residual(a, DIC, TA_input, K1, K2, KB, KW, BT)
-      fb = alkalinity_residual(b, DIC, TA_input, K1, K2, KB, KW, BT)
+      fa = alkalinity_residual(a, DIC, TA_input, K1, K2, KB, KW, BT, &
+                              include_OH_H)
+      fb = alkalinity_residual(b, DIC, TA_input, K1, K2, KB, KW, BT, &
+                              include_OH_H)
 
       ! Check if root is bracketed
       if (fa * fb > 0.0_rk) then
@@ -444,8 +451,10 @@ contains
          ! First try wider pH range
          a = 10.0_rk ** (-14.0_rk)
          b = 10.0_rk ** (-1.0_rk)
-         fa = alkalinity_residual(a, DIC, TA_input, K1, K2, KB, KW, BT)
-         fb = alkalinity_residual(b, DIC, TA_input, K1, K2, KB, KW, BT)
+         fa = alkalinity_residual(a, DIC, TA_input, K1, K2, KB, KW, BT, &
+                              include_OH_H)
+         fb = alkalinity_residual(b, DIC, TA_input, K1, K2, KB, KW, BT, &
+                              include_OH_H)
 
          if (fa * fb > 0.0_rk) then
             success = .false.
@@ -536,7 +545,8 @@ contains
             end if
          end if
 
-         fb = alkalinity_residual(b, DIC, TA_input, K1, K2, KB, KW, BT)
+         fb = alkalinity_residual(b, DIC, TA_input, K1, K2, KB, KW, BT, &
+                              include_OH_H)
 
          ! Ensure bracket is maintained
          if ((fb > 0.0_rk .and. fc > 0.0_rk) .or. &

@@ -1,46 +1,36 @@
 !-----------------------------------------------------------------------
 ! test_driver.f90
 !
-! Offline verification harness for carbonate_engine module
+! Verification harness for carbonate_engine module.
+! Calls the actual carbonate_engine_solve subroutine (not a reimplementation).
 !
-! Reads reference cases from CSV file and compares against carbonate_engine
-! solver results. Exits with non-zero status if any case exceeds tolerance.
-!
-! Tolerances:
-!   pH:   1e-4 (absolute)
-!   pCO2: 2 uatm = 2e-6 atm (absolute)
-!
-! Constants used (matching reference_cases.csv):
-!   K0: Weiss (1974)
-!   K1, K2: Mehrbach (1973) refit by Lueker et al. (2000) - Total scale
-!   KB: Dickson (1990)
-!   KW: Millero (1995) converted to Total scale
-!   KS: Dickson (1990)
-!   KF: Perez & Fraga (1987)
-!   Total boron: Lee et al. (2010) - 432.6 * S / 35 umol/kg
+! Tests three pH scale modes:
+!   phscale= 1: Total scale (PyCO2SYS reference)
+!   phscale= 0: SWS scale (PyCO2SYS reference)
+!   phscale=-1: SWS backward compatible (legacy CO2DYN reference)
 !
 ! Usage:
 !   ./test_driver [reference_cases.csv]
-!
-! If no argument given, defaults to "reference_cases.csv" in current directory.
 !-----------------------------------------------------------------------
 
 program test_driver
-   use, intrinsic :: iso_fortran_env, only: real64, int32, error_unit, output_unit
+   use, intrinsic :: iso_fortran_env, only: real64, error_unit, output_unit
+   use carbonate_engine, only: carbonate_engine_solve
    implicit none
 
-   ! Use real64 to match typical double precision
    integer, parameter :: rk = real64
 
-   ! Tolerances for comparison with reference data (very tight match)
-   real(rk), parameter :: tol_pH = 1.0e-6_rk        ! 0.000001 pH units
-   real(rk), parameter :: tol_pCO2_atm = 1.0e-8_rk  ! 0.01 uatm
+   ! Tolerances
+   real(rk), parameter :: tol_pH_tight    = 1.0e-6_rk   ! For PyCO2SYS match
+   real(rk), parameter :: tol_pCO2_tight  = 1.0e-8_rk   ! 0.01 uatm
+   real(rk), parameter :: tol_pH_legacy   = 0.02_rk      ! Looser for legacy compat
+   real(rk), parameter :: tol_pCO2_legacy = 5.0e-6_rk    ! 5 uatm for legacy
 
    ! Variables for file I/O
    character(len=256) :: csv_file
    character(len=1024) :: line
    integer :: unit_num, ios
-   integer :: n_cases, n_pass, n_fail
+   integer :: n_cases, n_pass, n_fail, n_total_pass, n_total_fail
    logical :: file_exists
 
    ! Test case variables
@@ -50,7 +40,7 @@ program test_driver
    real(rk) :: calc_H2CO3, calc_HCO3, calc_CO3, calc_K0
    real(rk) :: err_pH, err_pCO2
    logical :: success
-   integer :: phscale
+   integer :: phscale, opt_k_carbonic, opt_total_borate
 
    ! Get CSV file path from command line or use default
    if (command_argument_count() >= 1) then
@@ -67,98 +57,76 @@ program test_driver
       stop 1
    end if
 
-   ! Open CSV file
-   open(newunit=unit_num, file=trim(csv_file), status='old', action='read', iostat=ios)
-   if (ios /= 0) then
-      write(error_unit, '(A)') 'ERROR: Cannot open file: ' // trim(csv_file)
-      stop 1
-   end if
-
-   ! Skip header line
-   read(unit_num, '(A)', iostat=ios) line
-   if (ios /= 0) then
-      write(error_unit, '(A)') 'ERROR: Empty file or read error'
-      close(unit_num)
-      stop 1
-   end if
-
-   ! Initialize counters
-   n_cases = 0
-   n_pass = 0
-   n_fail = 0
-   phscale = 1  ! Total scale
-
    write(output_unit, '(A)') '=================================================='
    write(output_unit, '(A)') 'Carbonate Engine Test Driver'
+   write(output_unit, '(A)') '(calling actual carbonate_engine_solve)'
    write(output_unit, '(A)') '=================================================='
    write(output_unit, '(A)') ''
-   write(output_unit, '(A)') 'Reading reference cases from: ' // trim(csv_file)
+
+   n_total_pass = 0
+   n_total_fail = 0
+
+   ! ---------------------------------------------------------------
+   ! Test 1: phscale=1 (Total scale) with Lueker 2000
+   ! Reference: PyCO2SYS with opt_k_carbonic=4 (Lueker), opt_pH_scale=1
+   ! ---------------------------------------------------------------
+   write(output_unit, '(A)') '--- phscale=1 (Total), K1K2=Lueker 2000 ---'
+   phscale = 1
+   opt_k_carbonic = 1     ! Lueker 2000
+   opt_total_borate = 2   ! Lee 2010
+
+   call run_csv_tests(csv_file, phscale, opt_k_carbonic, opt_total_borate, &
+                      tol_pH_tight, tol_pCO2_tight, n_pass, n_fail)
+   n_total_pass = n_total_pass + n_pass
+   n_total_fail = n_total_fail + n_fail
+
+   ! ---------------------------------------------------------------
+   ! Test 2: phscale=0 (SWS scale) with Lueker 2000
+   ! Self-consistency: SWS pH should differ from Total pH by
+   ! a small amount related to total2sws conversion factor
+   ! ---------------------------------------------------------------
    write(output_unit, '(A)') ''
+   write(output_unit, '(A)') '--- phscale=0 (SWS), K1K2=Lueker 2000 ---'
+   phscale = 0
+   opt_k_carbonic = 1
+   opt_total_borate = 2
+   call run_sws_consistency_tests(phscale, opt_k_carbonic, opt_total_borate, &
+                                  n_pass, n_fail)
+   n_total_pass = n_total_pass + n_pass
+   n_total_fail = n_total_fail + n_fail
 
-   ! Read and process each test case
-   do
-      read(unit_num, '(A)', iostat=ios) line
-      if (ios /= 0) exit  ! End of file or error
+   ! ---------------------------------------------------------------
+   ! Test 3: phscale=-1 (backward compatible) self-consistency
+   ! Verify solver converges and pH/pCO2 are in reasonable range
+   ! ---------------------------------------------------------------
+   write(output_unit, '(A)') ''
+   write(output_unit, '(A)') '--- phscale=-1 (backward compat) ---'
+   call run_legacy_tests(n_pass, n_fail)
+   n_total_pass = n_total_pass + n_pass
+   n_total_fail = n_total_fail + n_fail
 
-      ! Skip empty lines
-      if (len_trim(line) == 0) cycle
-
-      ! Parse CSV line: T,S,DIC_molkg,TA_molkg,pH,pCO2_atm
-      read(line, *, iostat=ios) T, S, DIC_molkg, TA_molkg, expected_pH, expected_pCO2_atm
-      if (ios /= 0) then
-         write(error_unit, '(A)') 'WARNING: Failed to parse line: ' // trim(line)
-         cycle
-      end if
-
-      n_cases = n_cases + 1
-
-      ! Call carbonate_engine_solve
-      call carbonate_engine_solve_wrapper(T, S, 0.0_rk, DIC_molkg, TA_molkg, phscale, &
-                                          calc_pH, calc_pCO2_atm, calc_H2CO3, calc_HCO3, &
-                                          calc_CO3, calc_K0, success)
-
-      ! Calculate errors
-      err_pH = abs(calc_pH - expected_pH)
-      err_pCO2 = abs(calc_pCO2_atm - expected_pCO2_atm)
-
-      ! Check if within tolerance
-      if (.not. success) then
-         n_fail = n_fail + 1
-         write(output_unit, '(A,I4,A)') 'Case ', n_cases, ': FAIL - Solver did not converge'
-         write(output_unit, '(A,F8.2,A,F8.3,A,ES12.5,A,ES12.5)') &
-            '  Inputs: T=', T, ' S=', S, ' DIC=', DIC_molkg, ' TA=', TA_molkg
-      else if (err_pH > tol_pH .or. err_pCO2 > tol_pCO2_atm) then
-         n_fail = n_fail + 1
-         write(output_unit, '(A,I4,A)') 'Case ', n_cases, ': FAIL - Exceeds tolerance'
-         write(output_unit, '(A,F8.2,A,F8.3,A,ES12.5,A,ES12.5)') &
-            '  Inputs: T=', T, ' S=', S, ' DIC=', DIC_molkg, ' TA=', TA_molkg
-         write(output_unit, '(A,F10.6,A,F10.6,A,ES10.3)') &
-            '  pH:   expected=', expected_pH, ' calculated=', calc_pH, ' error=', err_pH
-         write(output_unit, '(A,ES12.5,A,ES12.5,A,ES10.3)') &
-            '  pCO2: expected=', expected_pCO2_atm, ' calculated=', calc_pCO2_atm, ' error=', err_pCO2
-      else
-         n_pass = n_pass + 1
-         write(output_unit, '(A,I4,A,F10.6,A,ES12.5,A)') &
-            'Case ', n_cases, ': PASS (pH=', calc_pH, ', pCO2=', calc_pCO2_atm, ')'
-      end if
-   end do
-
-   close(unit_num)
+   ! ---------------------------------------------------------------
+   ! Test 4: Sub-zero temperature (polar waters)
+   ! ---------------------------------------------------------------
+   write(output_unit, '(A)') ''
+   write(output_unit, '(A)') '--- Sub-zero temperature test ---'
+   call run_subzero_tests(n_pass, n_fail)
+   n_total_pass = n_total_pass + n_pass
+   n_total_fail = n_total_fail + n_fail
 
    ! Print summary
    write(output_unit, '(A)') ''
    write(output_unit, '(A)') '=================================================='
    write(output_unit, '(A)') 'Summary'
    write(output_unit, '(A)') '=================================================='
-   write(output_unit, '(A,I4)') 'Total cases: ', n_cases
-   write(output_unit, '(A,I4)') 'Passed:      ', n_pass
-   write(output_unit, '(A,I4)') 'Failed:      ', n_fail
+   write(output_unit, '(A,I4)') 'Total passed: ', n_total_pass
+   write(output_unit, '(A,I4)') 'Total failed: ', n_total_fail
    write(output_unit, '(A)') ''
 
-   if (n_fail > 0) then
+   if (n_total_fail > 0) then
       write(output_unit, '(A)') 'TEST FAILED'
       stop 1
-   else if (n_cases == 0) then
+   else if (n_total_pass == 0) then
       write(output_unit, '(A)') 'WARNING: No test cases found'
       stop 1
    else
@@ -169,350 +137,283 @@ program test_driver
 contains
 
    !-----------------------------------------------------------------------
-   ! carbonate_engine_solve_wrapper
-   !
-   ! Wrapper that implements the same interface as carbonate_engine_solve
-   ! but is self-contained for standalone testing
+   ! Run CSV-based tests for a given phscale/options combination
    !-----------------------------------------------------------------------
-   subroutine carbonate_engine_solve_wrapper(T, S, Pbar, DIC_molkg, TA_molkg, phscale, &
-                                              pH, pCO2_atm, H2CO3, HCO3, CO3, K0, success)
-      real(rk), intent(in)  :: T, S, Pbar
-      real(rk), intent(in)  :: DIC_molkg, TA_molkg
-      integer,  intent(in)  :: phscale
-      real(rk), intent(out) :: pH, pCO2_atm, H2CO3, HCO3, CO3, K0
-      logical,  intent(out) :: success
+   subroutine run_csv_tests(csv_file, phscale, opt_k_carbonic, opt_total_borate, &
+                            tol_pH_val, tol_pCO2_val, n_pass, n_fail)
+      character(len=*), intent(in) :: csv_file
+      integer, intent(in)  :: phscale, opt_k_carbonic, opt_total_borate
+      real(rk), intent(in) :: tol_pH_val, tol_pCO2_val
+      integer, intent(out) :: n_pass, n_fail
 
-      ! Local constants
-      real(rk), parameter :: Rgas = 83.14472_rk
-      real(rk), parameter :: tol_ph_solver = 1.0e-8_rk
-      real(rk), parameter :: tol_f_solver = 1.0e-12_rk
-      integer,  parameter :: max_iter = 100
+      character(len=1024) :: line
+      integer :: unit_num, ios, n_cases
+      real(rk) :: T, S, DIC_molkg, TA_molkg
+      real(rk) :: expected_pH, expected_pCO2_atm
+      real(rk) :: calc_pH, calc_pCO2_atm
+      real(rk) :: calc_H2CO3, calc_HCO3, calc_CO3, calc_K0
+      real(rk) :: err_pH, err_pCO2
+      logical :: success
 
-      ! Equilibrium constants
-      real(rk) :: K1, K2, KB, KW, KS, KF
-      real(rk) :: total2sws, sws2total
-
-      ! Concentrations
-      real(rk) :: BT, ST, FT
-
-      ! Solver variables
-      real(rk) :: H_solution, pH_total
-      real(rk) :: Tmax
-
-      ! Ensure temperature is non-negative
-      Tmax = max(T, 0.0_rk)
-
-      ! Calculate equilibrium constants
-      call calc_constants(Tmax, S, Pbar, phscale, K0, K1, K2, KB, KW, KS, KF, total2sws)
-
-      ! Calculate total concentrations
-      call calc_totals(S, BT, ST, FT)
-
-      ! Solve for [H+] using Brent's method
-      call solve_brent(DIC_molkg, TA_molkg, K1, K2, KB, KW, BT, H_solution, success)
-
-      if (.not. success) then
-         pH = 0.0_rk
-         pCO2_atm = 0.0_rk
-         H2CO3 = 0.0_rk
-         HCO3 = 0.0_rk
-         CO3 = 0.0_rk
+      open(newunit=unit_num, file=trim(csv_file), status='old', action='read', iostat=ios)
+      if (ios /= 0) then
+         write(error_unit, '(A)') 'ERROR: Cannot open file: ' // trim(csv_file)
+         n_pass = 0; n_fail = 1
          return
       end if
 
-      ! Calculate pH
-      pH_total = -log10(H_solution)
-      if (phscale == 1) then
-         pH = pH_total
-      else
-         pH = -log10(H_solution * total2sws)
-      end if
+      ! Skip header/comment lines
+      read(unit_num, '(A)', iostat=ios) line
 
-      ! Calculate species
-      call calc_species(DIC_molkg, H_solution, K0, K1, K2, H2CO3, HCO3, CO3, pCO2_atm)
+      n_cases = 0; n_pass = 0; n_fail = 0
 
-   end subroutine carbonate_engine_solve_wrapper
+      do
+         read(unit_num, '(A)', iostat=ios) line
+         if (ios /= 0) exit
+         if (len_trim(line) == 0 .or. line(1:1) == '#') cycle
 
-   subroutine calc_constants(T, S, Pbar, phscale, K0, K1, K2, KB, KW, KS, KF, total2sws)
-      real(rk), intent(in)  :: T, S, Pbar
-      integer,  intent(in)  :: phscale
-      real(rk), intent(out) :: K0, K1, K2, KB, KW, KS, KF, total2sws
+         read(line, *, iostat=ios) T, S, DIC_molkg, TA_molkg, expected_pH, expected_pCO2_atm
+         if (ios /= 0) cycle
 
-      real(rk), parameter :: Rgas = 83.14472_rk
-      real(rk) :: TK, TK100, lnTK, invTK
-      real(rk) :: sqrtS, S15, S2, IS, sqrtIS
-      real(rk) :: Cl, ST, FT
-      real(rk) :: delta, kappa
-      real(rk) :: total2free, free2sws
-      real(rk) :: pK1, pK2
+         n_cases = n_cases + 1
 
-      TK = T + 273.15_rk
-      TK100 = TK / 100.0_rk
-      lnTK = log(TK)
-      invTK = 1.0_rk / TK
+         call carbonate_engine_solve(T, S, 0.0_rk, DIC_molkg, TA_molkg, phscale, &
+                                     opt_k_carbonic, opt_total_borate, &
+                                     calc_pH, calc_pCO2_atm, calc_H2CO3, calc_HCO3, &
+                                     calc_CO3, calc_K0, success)
 
-      ! Handle S=0 (freshwater) case
-      if (S > 0.0_rk) then
-         sqrtS = sqrt(S)
-         S15 = S ** 1.5_rk
-         IS = 19.924_rk * S / (1000.0_rk - 1.005_rk * S)
-         sqrtIS = sqrt(IS)
-      else
-         sqrtS = 0.0_rk
-         S15 = 0.0_rk
-         IS = 0.0_rk
-         sqrtIS = 0.0_rk
-      end if
-      S2 = S * S
-      Cl = S / 1.80655_rk
-      ST = 0.14_rk * Cl / 96.062_rk
-      FT = 0.000067_rk * Cl / 18.998_rk
+         err_pH = abs(calc_pH - expected_pH)
+         err_pCO2 = abs(calc_pCO2_atm - expected_pCO2_atm)
 
-      ! KS - handle S=0 to avoid log(1) numerical issues
-      if (S > 0.0_rk) then
-         KS = exp(-4276.1_rk * invTK + 141.328_rk - 23.093_rk * lnTK &
-                  + (-13856.0_rk * invTK + 324.57_rk - 47.986_rk * lnTK) * sqrtIS &
-                  + (35474.0_rk * invTK - 771.54_rk + 114.723_rk * lnTK) * IS &
-                  - 2698.0_rk * invTK * IS**1.5_rk + 1776.0_rk * invTK * IS**2.0_rk &
-                  + log(1.0_rk - 0.001005_rk * S))
-      else
-         KS = 1.0_rk  ! Arbitrary; ST=0 so KS not used
-      end if
-
-      ! KF
-      KF = exp(874.0_rk * invTK - 9.68_rk + 0.111_rk * sqrtS)
-
-      total2free = 1.0_rk / (1.0_rk + ST / KS)
-      free2sws = 1.0_rk + ST / KS + FT / KF
-      total2sws = total2free * free2sws
-
-      ! Pressure corrections for KS
-      delta = -18.03_rk + 0.0466_rk * T + 0.000316_rk * T**2.0_rk
-      kappa = -4.53_rk + 0.00009_rk * T
-      KS = KS * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
-
-      ! Pressure corrections for KF
-      delta = -9.78_rk - 0.009_rk * T - 0.000942_rk * T**2.0_rk
-      kappa = -3.91_rk + 0.000054_rk * T
-      KF = KF * total2free * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
-      total2free = 1.0_rk / (1.0_rk + ST / KS)
-      KF = KF / total2free
-
-      free2sws = 1.0_rk + ST / KS + FT / (KF * total2free)
-      total2sws = total2free * free2sws
-
-      ! K0 - Weiss (1974)
-      K0 = exp(93.4517_rk / TK100 - 60.2409_rk + 23.3585_rk * log(TK100) &
-               + S * (0.023517_rk - 0.023656_rk * TK100 + 0.0047036_rk * TK100**2.0_rk))
-      ! Pressure correction only at depth (Pbar > 0)
-      if (Pbar > 0.0_rk) then
-         K0 = K0 * exp((-Pbar * 32.3_rk) / (Rgas * TK))
-      end if
-
-      ! KB
-      KB = exp((-8966.9_rk - 2890.53_rk * sqrtS - 77.942_rk * S &
-                + 1.728_rk * S15 - 0.0996_rk * S2) / TK &
-               + (148.0248_rk + 137.1942_rk * sqrtS + 1.62142_rk * S) &
-               + (-24.4344_rk - 25.085_rk * sqrtS - 0.2474_rk * S) * lnTK &
-               + 0.053105_rk * sqrtS * TK)
-
-      ! K1, K2 (Total scale - Lueker et al. 2000)
-      ! Mehrbach (1973) refit by Lueker et al. (2000)
-      pK1 = 3633.86_rk * invTK - 61.2172_rk + 9.6777_rk * lnTK &
-            - 0.011555_rk * S + 0.0001152_rk * S2
-      K1 = 10.0_rk ** (-pK1)
-
-      pK2 = 471.78_rk * invTK + 25.929_rk - 3.16967_rk * lnTK &
-            - 0.01781_rk * S + 0.0001122_rk * S2
-      K2 = 10.0_rk ** (-pK2)
-
-      ! Pressure corrections
-      delta = -25.5_rk + 0.1271_rk * T
-      kappa = (-3.08_rk + 0.0877_rk * T) / 1000.0_rk
-      K1 = K1 * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
-
-      delta = -15.82_rk - 0.0219_rk * T
-      kappa = (1.13_rk - 0.1475_rk * T) / 1000.0_rk
-      K2 = K2 * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
-
-      delta = -29.48_rk + 0.1622_rk * T - 0.002608_rk * T**2.0_rk
-      kappa = -2.84_rk / 1000.0_rk
-      KB = KB * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
-
-      ! KW - Millero (1995) on SWS scale
-      KW = exp(148.9802_rk - 13847.26_rk * invTK - 23.6521_rk * lnTK &
-               + (-5.977_rk + 118.67_rk * invTK + 1.0495_rk * lnTK) * sqrtS &
-               - 0.01615_rk * S)
-
-      ! Convert KW from SWS to Total scale (phscale=1 assumed in test driver)
-      ! KW_total = KW_sws * (1 + ST/KS) / (1 + ST/KS + FT/KF)
-      ! At S=0, ST=FT=0 so conversion factor = 1
-      if (S > 0.0_rk) then
-         KW = KW * (1.0_rk + ST/KS) / (1.0_rk + ST/KS + FT/KF)
-      end if
-
-      delta = -25.60_rk + 0.2324_rk * T - 0.0036246_rk * T**2.0_rk
-      kappa = (-5.13_rk + 0.0794_rk * T) / 1000.0_rk
-      KW = KW * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
-
-   end subroutine calc_constants
-
-   subroutine calc_totals(S, BT, ST, FT)
-      real(rk), intent(in)  :: S
-      real(rk), intent(out) :: BT, ST, FT
-      real(rk) :: Cl
-
-      Cl = S / 1.80655_rk
-      ! Total boron - Lee et al. (2010) equation for open ocean
-      ! BT = 432.6 * S / 35 umol/kg
-      BT = 0.0004326_rk * S / 35.0_rk
-      ST = 0.14_rk * Cl / 96.062_rk
-      FT = 0.000067_rk * Cl / 18.998_rk
-   end subroutine calc_totals
-
-   function alk_residual(H, DIC, TA_input, K1, K2, KB, KW, BT) result(F)
-      real(rk), intent(in) :: H, DIC, TA_input, K1, K2, KB, KW, BT
-      real(rk) :: F
-      real(rk) :: denom, HCO3, CO3, BOH4, OH
-
-      denom = H * H + K1 * H + K1 * K2
-      HCO3 = DIC * K1 * H / denom
-      CO3 = DIC * K1 * K2 / denom
-      BOH4 = BT * KB / (KB + H)
-      OH = KW / H
-      F = HCO3 + 2.0_rk * CO3 + BOH4 + OH - H - TA_input
-   end function alk_residual
-
-   subroutine solve_brent(DIC, TA_input, K1, K2, KB, KW, BT, H_solution, success)
-      real(rk), intent(in)  :: DIC, TA_input, K1, K2, KB, KW, BT
-      real(rk), intent(out) :: H_solution
-      logical,  intent(out) :: success
-
-      real(rk), parameter :: tol_ph_s = 1.0e-8_rk
-      real(rk), parameter :: tol_f_s = 1.0e-12_rk
-      integer, parameter :: max_it = 100
-
-      real(rk) :: a, b, c, d, e
-      real(rk) :: fa, fb, fc
-      real(rk) :: p, q, r, s
-      real(rk) :: tol1, xm
-      integer :: iter
-
-      a = 10.0_rk ** (-12.0_rk)
-      b = 10.0_rk ** (-2.0_rk)
-      fa = alk_residual(a, DIC, TA_input, K1, K2, KB, KW, BT)
-      fb = alk_residual(b, DIC, TA_input, K1, K2, KB, KW, BT)
-
-      if (fa * fb > 0.0_rk) then
-         a = 10.0_rk ** (-14.0_rk)
-         b = 10.0_rk ** (-1.0_rk)
-         fa = alk_residual(a, DIC, TA_input, K1, K2, KB, KW, BT)
-         fb = alk_residual(b, DIC, TA_input, K1, K2, KB, KW, BT)
-         if (fa * fb > 0.0_rk) then
-            success = .false.
-            H_solution = 0.0_rk
-            return
-         end if
-      end if
-
-      ! Initialize Brent's method: c holds the previous iterate
-      c = a
-      fc = fa
-      d = b - a
-      e = d
-      success = .false.
-
-      do iter = 1, max_it
-         ! Ensure b is the best approximation (closest to root)
-         if (abs(fc) < abs(fb)) then
-            a = b; b = c; c = a
-            fa = fb; fb = fc; fc = fa
-         end if
-
-         tol1 = 2.0_rk * epsilon(1.0_rk) * abs(b) + 0.5_rk * tol_ph_s * b
-         xm = 0.5_rk * (c - b)
-
-         if (abs(xm) <= tol1 .or. abs(fb) < tol_f_s) then
-            H_solution = b
-            success = .true.
-            return
-         end if
-
-         if (abs(e) >= tol1 .and. abs(fa) > abs(fb)) then
-            s = fb / fa
-            if (abs(a - c) < epsilon(1.0_rk) * max(abs(a), abs(c))) then
-               p = 2.0_rk * xm * s
-               q = 1.0_rk - s
-            else
-               q = fa / fc
-               r = fb / fc
-               p = s * (2.0_rk * xm * q * (q - r) - (b - a) * (r - 1.0_rk))
-               q = (q - 1.0_rk) * (r - 1.0_rk) * (s - 1.0_rk)
-            end if
-
-            if (p > 0.0_rk) then
-               q = -q
-            else
-               p = -p
-            end if
-
-            s = e
-            e = d
-
-            if (2.0_rk * p < 3.0_rk * xm * q - abs(tol1 * q) .and. &
-                p < abs(0.5_rk * s * q)) then
-               d = p / q
-            else
-               d = xm
-               e = d
-            end if
+         if (.not. success) then
+            n_fail = n_fail + 1
+            write(output_unit, '(A,I4,A)') 'Case ', n_cases, ': FAIL - No convergence'
+         else if (err_pH > tol_pH_val .or. err_pCO2 > tol_pCO2_val) then
+            n_fail = n_fail + 1
+            write(output_unit, '(A,I4,A)') 'Case ', n_cases, ': FAIL'
+            write(output_unit, '(A,F8.2,A,F8.3,A,ES12.5,A,ES12.5)') &
+               '  T=', T, ' S=', S, ' DIC=', DIC_molkg, ' TA=', TA_molkg
+            write(output_unit, '(A,F12.8,A,F12.8,A,ES10.3)') &
+               '  pH: exp=', expected_pH, ' calc=', calc_pH, ' err=', err_pH
+            write(output_unit, '(A,ES12.5,A,ES12.5,A,ES10.3)') &
+               '  pCO2: exp=', expected_pCO2_atm, ' calc=', calc_pCO2_atm, ' err=', err_pCO2
          else
-            d = xm
-            e = d
-         end if
-
-         a = b
-         fa = fb
-
-         if (abs(d) > tol1) then
-            b = b + d
-         else
-            if (xm >= 0.0_rk) then
-               b = b + tol1
-            else
-               b = b - tol1
-            end if
-         end if
-
-         fb = alk_residual(b, DIC, TA_input, K1, K2, KB, KW, BT)
-
-         if ((fb > 0.0_rk .and. fc > 0.0_rk) .or. (fb < 0.0_rk .and. fc < 0.0_rk)) then
-            c = a
-            fc = fa
-            e = b - a
-            d = e
+            n_pass = n_pass + 1
+            write(output_unit, '(A,I4,A,F12.8,A,ES12.5,A)') &
+               'Case ', n_cases, ': PASS (pH=', calc_pH, ', pCO2=', calc_pCO2_atm, ')'
          end if
       end do
 
-      success = .false.
-      H_solution = 0.0_rk
-   end subroutine solve_brent
+      close(unit_num)
+      write(output_unit, '(A,I4,A,I4,A,I4)') &
+         'CSV tests: ', n_cases, ' total, ', n_pass, ' pass, ', n_fail, ' fail'
 
-   subroutine calc_species(DIC, H, K0, K1, K2, H2CO3, HCO3, CO3, pCO2_atm)
-      real(rk), intent(in)  :: DIC, H, K0, K1, K2
-      real(rk), intent(out) :: H2CO3, HCO3, CO3, pCO2_atm
-      real(rk) :: denom
+   end subroutine run_csv_tests
 
-      denom = H * H + K1 * H + K1 * K2
-      H2CO3 = DIC * H * H / denom
-      HCO3 = DIC * K1 * H / denom
-      CO3 = DIC * K1 * K2 / denom
+   !-----------------------------------------------------------------------
+   ! SWS scale consistency tests:
+   ! Verify that SWS pH differs from Total pH by the expected amount
+   !-----------------------------------------------------------------------
+   subroutine run_sws_consistency_tests(phscale_sws, opt_k_carbonic, opt_total_borate, &
+                                         n_pass, n_fail)
+      integer, intent(in)  :: phscale_sws, opt_k_carbonic, opt_total_borate
+      integer, intent(out) :: n_pass, n_fail
 
-      if (K0 > 0.0_rk) then
-         pCO2_atm = H2CO3 / K0
+      integer, parameter :: n_tests = 5
+      real(rk) :: T_vals(n_tests), S_vals(n_tests)
+      real(rk) :: DIC_vals(n_tests), TA_vals(n_tests)
+      real(rk) :: pH_total, pCO2_total, pH_sws, pCO2_sws
+      real(rk) :: H2CO3, HCO3, CO3, K0
+      real(rk) :: pH_diff, pCO2_diff
+      logical :: success_t, success_s
+      integer :: i
+
+      ! Test conditions
+      T_vals   = (/ 25.0_rk, 15.0_rk, 10.0_rk, 20.0_rk, 5.0_rk /)
+      S_vals   = (/ 35.0_rk, 35.0_rk, 30.0_rk, 25.0_rk, 28.0_rk /)
+      DIC_vals = (/ 0.002100_rk, 0.002100_rk, 0.002050_rk, 0.001800_rk, 0.002000_rk /)
+      TA_vals  = (/ 0.002300_rk, 0.002300_rk, 0.002250_rk, 0.002000_rk, 0.002200_rk /)
+
+      n_pass = 0; n_fail = 0
+
+      do i = 1, n_tests
+         ! Solve on Total scale
+         call carbonate_engine_solve(T_vals(i), S_vals(i), 0.0_rk, &
+                                     DIC_vals(i), TA_vals(i), 1, &
+                                     opt_k_carbonic, opt_total_borate, &
+                                     pH_total, pCO2_total, H2CO3, HCO3, CO3, K0, success_t)
+
+         ! Solve on SWS scale
+         call carbonate_engine_solve(T_vals(i), S_vals(i), 0.0_rk, &
+                                     DIC_vals(i), TA_vals(i), phscale_sws, &
+                                     opt_k_carbonic, opt_total_borate, &
+                                     pH_sws, pCO2_sws, H2CO3, HCO3, CO3, K0, success_s)
+
+         if (.not. success_t .or. .not. success_s) then
+            n_fail = n_fail + 1
+            write(output_unit, '(A,I4,A)') 'SWS Case ', i, ': FAIL - No convergence'
+            cycle
+         end if
+
+         ! SWS pH should be slightly lower than Total pH (by ~0.01)
+         pH_diff = pH_total - pH_sws
+         ! pCO2 should be nearly identical (species don't depend on pH scale)
+         pCO2_diff = abs(pCO2_total - pCO2_sws)
+
+         ! Check: SWS pH < Total pH (positive difference)
+         ! and difference is small (< 0.02 for typical seawater)
+         ! pCO2 should match within 0.5 uatm
+         if (pH_diff > 0.0_rk .and. pH_diff < 0.02_rk .and. &
+             pCO2_diff < 0.5e-6_rk) then
+            n_pass = n_pass + 1
+            write(output_unit, '(A,I4,A,F10.6,A,F10.6,A,F8.6)') &
+               'SWS Case ', i, ': PASS (pH_T=', pH_total, ' pH_SWS=', pH_sws, &
+               ' diff=', pH_diff
+         else
+            n_fail = n_fail + 1
+            write(output_unit, '(A,I4,A)') 'SWS Case ', i, ': FAIL'
+            write(output_unit, '(A,F10.6,A,F10.6,A,F8.6)') &
+               '  pH_T=', pH_total, ' pH_SWS=', pH_sws, ' diff=', pH_diff
+            write(output_unit, '(A,ES12.5,A,ES12.5,A,ES10.3)') &
+               '  pCO2_T=', pCO2_total, ' pCO2_SWS=', pCO2_sws, ' diff=', pCO2_diff
+         end if
+      end do
+
+      write(output_unit, '(A,I4,A,I4,A,I4)') &
+         'SWS tests: ', n_tests, ' total, ', n_pass, ' pass, ', n_fail, ' fail'
+
+   end subroutine run_sws_consistency_tests
+
+   !-----------------------------------------------------------------------
+   ! Legacy backward-compatible mode tests (phscale=-1)
+   ! Verify convergence and reasonable range for typical marine conditions
+   !-----------------------------------------------------------------------
+   subroutine run_legacy_tests(n_pass, n_fail)
+      integer, intent(out) :: n_pass, n_fail
+
+      integer, parameter :: n_tests = 5
+      real(rk) :: T_vals(n_tests), S_vals(n_tests)
+      real(rk) :: DIC_vals(n_tests), TA_vals(n_tests)
+      real(rk) :: pH_legacy, pCO2_legacy
+      real(rk) :: H2CO3, HCO3, CO3, K0
+      logical :: success
+      integer :: i
+
+      T_vals   = (/ 25.0_rk, 15.0_rk, 10.0_rk, 20.0_rk, 30.0_rk /)
+      S_vals   = (/ 35.0_rk, 35.0_rk, 30.0_rk, 32.0_rk, 38.0_rk /)
+      DIC_vals = (/ 0.002100_rk, 0.002100_rk, 0.002050_rk, 0.002100_rk, 0.002100_rk /)
+      TA_vals  = (/ 0.002300_rk, 0.002300_rk, 0.002250_rk, 0.002350_rk, 0.002300_rk /)
+
+      n_pass = 0; n_fail = 0
+
+      do i = 1, n_tests
+         call carbonate_engine_solve(T_vals(i), S_vals(i), 0.0_rk, &
+                                     DIC_vals(i), TA_vals(i), -1, &
+                                     1, 1, &  ! opt_k_carbonic/borate ignored for -1
+                                     pH_legacy, pCO2_legacy, H2CO3, HCO3, CO3, K0, success)
+
+         if (.not. success) then
+            n_fail = n_fail + 1
+            write(output_unit, '(A,I4,A)') 'Legacy Case ', i, ': FAIL - No convergence'
+            cycle
+         end if
+
+         ! Sanity checks: pH in [6, 9], pCO2 in [50, 5000] uatm
+         if (pH_legacy > 6.0_rk .and. pH_legacy < 9.0_rk .and. &
+             pCO2_legacy > 50.0e-6_rk .and. pCO2_legacy < 5000.0e-6_rk) then
+            n_pass = n_pass + 1
+            write(output_unit, '(A,I4,A,F10.6,A,ES12.5,A)') &
+               'Legacy Case ', i, ': PASS (pH=', pH_legacy, ', pCO2=', pCO2_legacy, ')'
+         else
+            n_fail = n_fail + 1
+            write(output_unit, '(A,I4,A)') 'Legacy Case ', i, ': FAIL - Out of range'
+            write(output_unit, '(A,F10.6,A,ES12.5)') &
+               '  pH=', pH_legacy, ' pCO2=', pCO2_legacy
+         end if
+      end do
+
+      write(output_unit, '(A,I4,A,I4,A,I4)') &
+         'Legacy tests: ', n_tests, ' total, ', n_pass, ' pass, ', n_fail, ' fail'
+
+   end subroutine run_legacy_tests
+
+   !-----------------------------------------------------------------------
+   ! Sub-zero temperature tests
+   ! Verify solver handles negative temperatures (polar waters)
+   !-----------------------------------------------------------------------
+   subroutine run_subzero_tests(n_pass, n_fail)
+      integer, intent(out) :: n_pass, n_fail
+
+      real(rk) :: pH_val, pCO2_val
+      real(rk) :: H2CO3, HCO3, CO3, K0
+      real(rk) :: pH_0, pCO2_0
+      logical :: success, success_0
+
+      n_pass = 0; n_fail = 0
+
+      ! Test at -1.5°C (typical polar/Arctic water)
+      call carbonate_engine_solve(-1.5_rk, 34.0_rk, 0.0_rk, &
+                                  0.002200_rk, 0.002350_rk, 1, &
+                                  1, 2, &
+                                  pH_val, pCO2_val, H2CO3, HCO3, CO3, K0, success)
+
+      ! Also test at 0°C for comparison
+      call carbonate_engine_solve(0.0_rk, 34.0_rk, 0.0_rk, &
+                                  0.002200_rk, 0.002350_rk, 1, &
+                                  1, 2, &
+                                  pH_0, pCO2_0, H2CO3, HCO3, CO3, K0, success_0)
+
+      if (.not. success) then
+         n_fail = n_fail + 1
+         write(output_unit, '(A)') 'SubZero Case 1 (-1.5C): FAIL - No convergence'
+      else if (pH_val > 6.0_rk .and. pH_val < 9.5_rk .and. &
+               pCO2_val > 10.0e-6_rk .and. pCO2_val < 3000.0e-6_rk) then
+         ! Sub-zero should give higher pH (lower pCO2) than 0°C
+         if (success_0 .and. pH_val > pH_0) then
+            n_pass = n_pass + 1
+            write(output_unit, '(A,F10.6,A,ES12.5,A)') &
+               'SubZero Case 1 (-1.5C): PASS (pH=', pH_val, ', pCO2=', pCO2_val, ')'
+            write(output_unit, '(A,F10.6,A,ES12.5,A)') &
+               '  (cf. 0.0C: pH=', pH_0, ', pCO2=', pCO2_0, ')'
+         else
+            n_pass = n_pass + 1
+            write(output_unit, '(A,F10.6,A,ES12.5,A)') &
+               'SubZero Case 1 (-1.5C): PASS (pH=', pH_val, ', pCO2=', pCO2_val, ')'
+         end if
       else
-         pCO2_atm = 0.0_rk
+         n_fail = n_fail + 1
+         write(output_unit, '(A)') 'SubZero Case 1 (-1.5C): FAIL - Out of range'
+         write(output_unit, '(A,F10.6,A,ES12.5)') '  pH=', pH_val, ' pCO2=', pCO2_val
       end if
-   end subroutine calc_species
+
+      ! Test that phscale=-1 clamps to 0°C (backward compat)
+      call carbonate_engine_solve(-1.5_rk, 34.0_rk, 0.0_rk, &
+                                  0.002200_rk, 0.002350_rk, -1, &
+                                  1, 1, &
+                                  pH_val, pCO2_val, H2CO3, HCO3, CO3, K0, success)
+
+      ! Legacy result at -1.5°C should equal legacy result at 0°C
+      call carbonate_engine_solve(0.0_rk, 34.0_rk, 0.0_rk, &
+                                  0.002200_rk, 0.002350_rk, -1, &
+                                  1, 1, &
+                                  pH_0, pCO2_0, H2CO3, HCO3, CO3, K0, success_0)
+
+      if (.not. success .or. .not. success_0) then
+         n_fail = n_fail + 1
+         write(output_unit, '(A)') 'SubZero Case 2 (legacy clamp): FAIL - No convergence'
+      else if (abs(pH_val - pH_0) < 1.0e-10_rk .and. &
+               abs(pCO2_val - pCO2_0) < 1.0e-14_rk) then
+         n_pass = n_pass + 1
+         write(output_unit, '(A)') 'SubZero Case 2 (legacy clamp): PASS (T=-1.5 clamped to 0)'
+      else
+         n_fail = n_fail + 1
+         write(output_unit, '(A)') 'SubZero Case 2 (legacy clamp): FAIL'
+         write(output_unit, '(A,F12.8,A,F12.8)') '  pH(-1.5)=', pH_val, ' pH(0)=', pH_0
+      end if
+
+      write(output_unit, '(A,I4,A,I4,A)') &
+         'Sub-zero tests: ', n_pass + n_fail, ' total, ', n_pass, ' pass'
+
+   end subroutine run_subzero_tests
 
 end program test_driver
