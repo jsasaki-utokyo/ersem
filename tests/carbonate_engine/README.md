@@ -38,7 +38,7 @@ make test
 Or manually:
 ```bash
 gfortran -O2 -o test_driver \
-    ../../src/carbonate_engine.F90 test_driver.f90
+    fabm_types_mock.F90 ../../src/carbonate_engine.F90 test_driver.f90
 ./test_driver
 ```
 

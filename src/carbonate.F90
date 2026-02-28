@@ -308,6 +308,14 @@ contains
          if (self%engine == 0) then
             ! Legacy ERSEM carbonate solver
             CALL CO2DYN (ETW,X1X,pres*0.1_rk,Ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,Hplus,k0co2,success,self%phscale)   ! NB pressure from dbar to bar
+            ! Convert to total scale for standard variable coupling
+            if (self%opt_pH_scale == 1) then
+               pH_total = pH
+            else
+               ! phscale=0/-1: CO2DYN returns SWS pH -> convert to total
+               call convert_pH_scale(ETW, X1X, pres*0.1_rk, pH, &
+                    2, 1, self%opt_total_borate, pH_total)
+            end if
          else
             ! New carbonate-engine solver (PyCO2SYS-style)
             call carbonate_engine_solve(ETW, X1X, pres*0.1_rk, Ctot, TA, &
@@ -345,6 +353,12 @@ contains
          _SET_DIAGNOSTIC_(self%id_ph,pH_total)
          ! Selected-scale diagnostic (if non-total)
          if (self%opt_pH_scale /= 1) then
+            ! For engine=1 success: pH is already on selected scale.
+            ! For engine=0 or non-convergence: pH is total -> convert.
+            if (self%engine == 0 .or. .not. success) then
+               call convert_pH_scale(ETW, X1X, pres*0.1_rk, pH_total, &
+                    1, self%opt_pH_scale, self%opt_total_borate, pH)
+            end if
             _SET_DIAGNOSTIC_(self%id_ph_selected,pH)
          end if
          _SET_DIAGNOSTIC_(self%id_pco2,PCO2*1.e6_rk)
