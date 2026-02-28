@@ -52,6 +52,8 @@ contains
       integer,                      intent(in)            :: configunit
 
       integer :: iswbioalk
+      integer :: opt_pH_scale_yaml  ! raw YAML value (-1 = sentinel)
+      integer :: k_mapped           ! opt_k_carbonic mapped to PyCO2SYS numbering
 !
 !EOP
 !-----------------------------------------------------------------------
@@ -64,38 +66,57 @@ contains
       call self%get_parameter(self%opt_k_carbonic,'opt_k_carbonic','','K1/K2 formulation for engine=1 (1: Lueker et al. 2000, 2: Millero 2010)',default=1,minimum=1,maximum=2)
       call self%get_parameter(self%opt_total_borate,'opt_total_borate','','Total boron for engine=1 (1: Uppstrom 1974, 2: Lee et al. 2010)',default=2,minimum=1,maximum=2)
       call self%get_parameter(self%opt_k_carbonic_pyco2,'opt_k_carbonic_pyco2','','K1/K2 PyCO2SYS numbering for engine=1 (0: auto from opt_k_carbonic, 10: Lueker 2000, 14: Millero 2010)',default=0,minimum=0,maximum=99)
+      call self%get_parameter(opt_pH_scale_yaml,'opt_pH_scale','','pH scale for engine=1 (1: Total, 2: SWS, 3: Free, 4: NBS, -1: auto from pHscale)',default=-1,minimum=-1,maximum=4)
 
-      ! Resolve opt_pH_scale and legacy_mode from pHscale
+      ! ---- Resolve opt_pH_scale and legacy_mode ----
       ! opt_pH_scale: 1=Total, 2=SWS, 3=Free, 4=NBS
-      select case (self%phscale)
-      case (1)
-         self%opt_pH_scale = 1
+      if (opt_pH_scale_yaml > 0) then
+         ! Explicitly set via opt_pH_scale YAML parameter
+         self%opt_pH_scale = opt_pH_scale_yaml
          self%legacy_mode = .false.
-      case (0)
-         self%opt_pH_scale = 2
-         self%legacy_mode = .false.
-      case (-1)
-         self%opt_pH_scale = 2
-         self%legacy_mode = .true.
-      case default
-         self%opt_pH_scale = 1
-         self%legacy_mode = .false.
+      else
+         ! Auto-resolve from legacy pHscale parameter
+         select case (self%phscale)
+         case (1)
+            self%opt_pH_scale = 1
+            self%legacy_mode = .false.
+         case (0)
+            self%opt_pH_scale = 2
+            self%legacy_mode = .false.
+         case (-1)
+            self%opt_pH_scale = 2
+            self%legacy_mode = .true.
+         case default
+            self%opt_pH_scale = 1
+            self%legacy_mode = .false.
+         end select
+      end if
+
+      ! ---- Resolve opt_k_carbonic_resolved for engine=1 ----
+      ! Map legacy opt_k_carbonic to PyCO2SYS numbering
+      select case (self%opt_k_carbonic)
+      case (1);    k_mapped = 10  ! Lueker 2000
+      case (2);    k_mapped = 14  ! Millero 2010
+      case default; k_mapped = 10
       end select
 
-      ! Resolve opt_k_carbonic_resolved for engine=1
       if (self%opt_k_carbonic_pyco2 > 0) then
-         ! PyCO2SYS numbering takes priority
+         ! Validate opt_k_carbonic_pyco2 is a supported value
+         if (self%opt_k_carbonic_pyco2 /= 10 .and. &
+             self%opt_k_carbonic_pyco2 /= 14) then
+            call self%fatal_error('initialize', &
+               'opt_k_carbonic_pyco2 must be 0 (auto), 10 (Lueker 2000),' &
+               // ' or 14 (Millero 2010)')
+         end if
+         ! Check for contradiction with opt_k_carbonic
+         if (self%opt_k_carbonic_pyco2 /= k_mapped) then
+            call self%fatal_error('initialize', &
+               'opt_k_carbonic and opt_k_carbonic_pyco2 are contradictory.' &
+               // ' Remove one or set them consistently.')
+         end if
          self%opt_k_carbonic_resolved = self%opt_k_carbonic_pyco2
       else
-         ! Map from legacy numbering
-         select case (self%opt_k_carbonic)
-         case (1)
-            self%opt_k_carbonic_resolved = 10  ! Lueker 2000
-         case (2)
-            self%opt_k_carbonic_resolved = 14  ! Millero 2010
-         case default
-            self%opt_k_carbonic_resolved = 10
-         end select
+         self%opt_k_carbonic_resolved = k_mapped
       end if
       call self%get_parameter(self%ta_slope,'ta_slope','umol/kg/PSU','TA(S) regression slope for iswtalk=6',default=43.626_rk)
       call self%get_parameter(self%ta_intercept,'ta_intercept','umol/kg','TA(S) regression intercept for iswtalk=6',default=846.48_rk)

@@ -397,8 +397,10 @@ contains
          K = K * free2sws
       case (3)  ! Stay Free
          ! no-op
-      case (4)  ! Free -> NBS
-         K = K * free2sws / fH
+      case (4)  ! Free -> NBS: K_NBS = K_free * fH
+         ! NBS scale uses activity: a_H = fH * H_free
+         ! So K_NBS/K_free = H_NBS/H_free = fH
+         K = K * fH
       end select
 
    end subroutine convert_K

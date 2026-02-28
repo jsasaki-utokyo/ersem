@@ -196,7 +196,7 @@ contains
    !-----------------------------------------------------------------------
    ! Cross-scale consistency tests:
    ! Same input -> 4 pH scales should satisfy:
-   !   pH_total > pH_sws > pH_free
+   !   pH_NBS > pH_free > pH_total > pH_sws
    !   pCO2 identical across all scales
    !-----------------------------------------------------------------------
    subroutine run_cross_scale_tests(n_pass, n_fail)
@@ -247,9 +247,9 @@ contains
          end if
 
          ok = .true.
-         ! pH ordering: Free > Total > SWS > NBS
+         ! pH ordering: NBS > Free > Total > SWS
          ! H_total = H_free*(1+ST/KS), H_sws = H_free*(1+ST/KS+FT/KF)
-         ! H_nbs = H_sws/fH where fH < 1, so H_nbs > H_sws
+         ! H_nbs = fH*H_free where fH < 1, so H_nbs < H_free
          if (.not. (pH_f > pH_t .and. pH_t > pH_s)) then
             ok = .false.
             write(output_unit, '(A,I4,A)') &
@@ -258,13 +258,13 @@ contains
                '  pH_F=', pH_f, ' pH_T=', pH_t, ' pH_SWS=', pH_s
          end if
 
-         ! NBS pH should be lowest (fH < 1 -> H_nbs > H_sws)
-         if (.not. (pH_n < pH_s)) then
+         ! NBS pH should be highest (fH < 1 -> H_nbs < H_free)
+         if (.not. (pH_n > pH_f)) then
             ok = .false.
             write(output_unit, '(A,I4,A)') &
-               'XScale Case ', i, ': FAIL - NBS should be < SWS'
+               'XScale Case ', i, ': FAIL - NBS should be > Free'
             write(output_unit, '(A,F10.6,A,F10.6)') &
-               '  pH_NBS=', pH_n, ' pH_SWS=', pH_s
+               '  pH_NBS=', pH_n, ' pH_F=', pH_f
          end if
 
          ! pCO2 should be nearly identical across all scales
