@@ -99,12 +99,16 @@ contains
 
       ! ---- Validate engine=0 + opt_pH_scale combination ----
       ! CO2DYN solver scale is determined by phscale, not opt_pH_scale.
-      ! Warn if they are inconsistent (opt_pH_scale only affects the
-      ! pH_selected diagnostic via post-hoc convert_pH_scale).
+      ! Warn only when they are inconsistent: opt_pH_scale is explicitly
+      ! set to a scale that differs from what phscale implies.
+      !   phscale=1 -> Total(1), phscale=0/-1 -> SWS(2)
       if (self%engine == 0 .and. opt_pH_scale_yaml > 0) then
-         call self%log_message('engine=0 (CO2DYN): solver pH scale is' &
-            // ' determined by pHscale, not opt_pH_scale.' &
-            // ' opt_pH_scale only affects the pH_selected diagnostic.')
+         if ((self%phscale == 1 .and. self%opt_pH_scale /= 1) .or. &
+             (self%phscale /= 1 .and. self%opt_pH_scale /= 2)) then
+            call self%log_message('engine=0 (CO2DYN): solver pH scale is' &
+               // ' determined by pHscale, not opt_pH_scale.' &
+               // ' opt_pH_scale only affects the pH_selected diagnostic.')
+         end if
       end if
 
       ! ---- Resolve opt_k_carbonic_resolved for engine=1 ----
