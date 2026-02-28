@@ -97,6 +97,16 @@ contains
          end select
       end if
 
+      ! ---- Validate engine=0 + opt_pH_scale combination ----
+      ! CO2DYN solver scale is determined by phscale, not opt_pH_scale.
+      ! Warn if they are inconsistent (opt_pH_scale only affects the
+      ! pH_selected diagnostic via post-hoc convert_pH_scale).
+      if (self%engine == 0 .and. opt_pH_scale_yaml > 0) then
+         call self%log_message('engine=0 (CO2DYN): solver pH scale is' &
+            // ' determined by pHscale, not opt_pH_scale.' &
+            // ' opt_pH_scale only affects the pH_selected diagnostic.')
+      end if
+
       ! ---- Resolve opt_k_carbonic_resolved for engine=1 ----
       ! Map legacy opt_k_carbonic to PyCO2SYS numbering
       select case (self%opt_k_carbonic)
