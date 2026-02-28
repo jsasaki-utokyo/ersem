@@ -4,7 +4,7 @@ module ersem_carbonate
    use fabm_types
    use fabm_builtin_models
    use ersem_shared
-   use carbonate_engine, only: carbonate_engine_solve
+   use carbonate_engine, only: carbonate_engine_solve, convert_pH_scale
 
    implicit none
 
@@ -19,6 +19,7 @@ module ersem_carbonate
 
       type (type_diagnostic_variable_id) :: id_ph,id_pco2,id_CarbA, id_BiCarb, id_Carb, id_TA_diag, id_Hplus
       type (type_diagnostic_variable_id) :: id_Om_cal,id_Om_arg
+      type (type_diagnostic_variable_id) :: id_ph_selected
 
       type (type_horizontal_diagnostic_variable_id) :: id_fair,id_wnd_diag
 
@@ -158,18 +159,29 @@ contains
       end if
 
       if (self%iswCO2X==1) then
-         select case (self%opt_pH_scale)
-         case (1)
-            call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on total scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
-         case (2)
-            call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on seawater scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
-         case (3)
-            call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on free scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
-         case (4)
-            call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on NBS scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
-         case default
-            call self%register_diagnostic_variable(self%id_ph,'pH','-','pH on total scale',standard_variable=standard_variables%ph_reported_on_total_scale,missing_value=0._rk)
-         end select
+         ! Standard variable is always total-scale pH (for FABM coupling)
+         call self%register_diagnostic_variable(self%id_ph,'pH','-', &
+            'pH on total scale', &
+            standard_variable=standard_variables%ph_reported_on_total_scale, &
+            missing_value=0._rk)
+         ! If a non-total scale is selected, also output it as a
+         ! separate diagnostic (without standard_variable tag)
+         if (self%opt_pH_scale /= 1) then
+            select case (self%opt_pH_scale)
+            case (2)
+               call self%register_diagnostic_variable( &
+                  self%id_ph_selected,'pH_sws','-', &
+                  'pH on seawater scale',missing_value=0._rk)
+            case (3)
+               call self%register_diagnostic_variable( &
+                  self%id_ph_selected,'pH_free','-', &
+                  'pH on free scale',missing_value=0._rk)
+            case (4)
+               call self%register_diagnostic_variable( &
+                  self%id_ph_selected,'pH_nbs','-', &
+                  'pH on NBS scale',missing_value=0._rk)
+            end select
+         end if
          call self%register_diagnostic_variable(self%id_pco2,  'pCO2',  '1e-6',    'partial pressure of CO2',missing_value=0._rk)
          call self%register_diagnostic_variable(self%id_CarbA, 'CarbA', 'mmol/m^3','carbonic acid concentration',missing_value=0._rk)
          call self%register_diagnostic_variable(self%id_BiCarb,'BiCarb','mmol/m^3','bicarbonate concentration',missing_value=0._rk)
@@ -258,7 +270,7 @@ contains
 
       real(rk) :: O3c,ETW,X1X,density,pres
       real(rk) :: TA,bioalk,Ctot
-      real(rk) :: pH,PCO2,H2CO3,HCO3,CO3,k0co2,Hplus
+      real(rk) :: pH,pH_total,PCO2,H2CO3,HCO3,CO3,k0co2,Hplus
       real(rk) :: Om_cal,Om_arg
       logical  :: success
 
@@ -302,7 +314,14 @@ contains
                                         self%opt_pH_scale, self%opt_k_carbonic_resolved, &
                                         self%opt_total_borate, self%legacy_mode, &
                                         pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
-            Hplus = 10.0_rk**(-pH)
+            ! Convert to total scale for standard variable coupling
+            if (self%opt_pH_scale == 1) then
+               pH_total = pH
+            else
+               call convert_pH_scale(ETW, X1X, pres*0.1_rk, pH, &
+                    self%opt_pH_scale, 1, self%opt_total_borate, pH_total)
+            end if
+            Hplus = 10.0_rk**(-pH_total)
          end if
 
          if (.not.success) then
@@ -314,6 +333,7 @@ contains
             _GET_(self%id_Carb_in,CO3)
             _GET_(self%id_pCO2_in,pCO2)
             _GET_(self%id_pH_in,pH)
+            pH_total = pH
             _GET_(self%id_Hplus_in,Hplus)
             CO3 = CO3/1.e3_rk/density  ! from mmol/m3 to mol/kg
             HCO3 = HCO3/1.e3_rk/density  ! from mmol/m3 to mol/kg
@@ -321,7 +341,12 @@ contains
             pCO2 = pCO2/1.e6_rk  ! from uatm to atm
             Hplus= Hplus/1.e3_rk/density ! from mmol/m3 to mol/kg
          endif
-         _SET_DIAGNOSTIC_(self%id_ph,pH)
+         ! Standard variable: always total-scale pH
+         _SET_DIAGNOSTIC_(self%id_ph,pH_total)
+         ! Selected-scale diagnostic (if non-total)
+         if (self%opt_pH_scale /= 1) then
+            _SET_DIAGNOSTIC_(self%id_ph_selected,pH)
+         end if
          _SET_DIAGNOSTIC_(self%id_pco2,PCO2*1.e6_rk)
          _SET_DIAGNOSTIC_(self%id_CarbA, H2CO3*1.e3_rk*density)
          _SET_DIAGNOSTIC_(self%id_Bicarb,HCO3*1.e3_rk*density)

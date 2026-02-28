@@ -46,7 +46,7 @@ module carbonate_engine
    ! Universal gas constant (cm3 bar / mol K)
    real(rk), parameter :: Rgas = 83.14472_rk
 
-   public :: carbonate_engine_solve
+   public :: carbonate_engine_solve, convert_pH_scale
 
 contains
 
@@ -171,8 +171,11 @@ contains
       real(rk) :: sqrtS, S15, S2
       real(rk) :: IS, sqrtIS
       real(rk) :: KS, KF_free
+      real(rk) :: KS_surface, KF_surface
       real(rk) :: delta, kappa
       real(rk) :: free2total, free2sws, fH
+      real(rk) :: free2total_surface, free2sws_surface
+      real(rk) :: sws2total_surface
       real(rk) :: pK1, pK2
       integer  :: k1k2_native
 
@@ -195,32 +198,43 @@ contains
       ! KS = [H+][SO4--]/[HSO4-] on free scale
       ! Dickson (1990)
       !-------------------------------------------------------------------
-      KS = exp(-4276.1_rk * invTK + 141.328_rk - 23.093_rk * lnTK &
+      KS_surface = exp(-4276.1_rk * invTK + 141.328_rk - 23.093_rk * lnTK &
                + (-13856.0_rk * invTK + 324.57_rk - 47.986_rk * lnTK) * sqrtIS &
                + (35474.0_rk * invTK - 771.54_rk + 114.723_rk * lnTK) * IS &
                - 2698.0_rk * invTK * IS**1.5_rk + 1776.0_rk * invTK * IS**2.0_rk &
                + log(1.0_rk - 0.001005_rk * S))
-
-      ! Pressure correction for KS (on free scale)
-      delta = -18.03_rk + 0.0466_rk * T + 0.000316_rk * T**2.0_rk
-      kappa = -4.53_rk + 0.00009_rk * T
-      KS = KS * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
 
       !-------------------------------------------------------------------
       ! KF = [H+][F-]/[HF] on free scale
       ! Perez & Fraga (1987) - directly on free scale
       ! (PyCO2SYS kHF_FREE_PF87: no total->free conversion needed)
       !-------------------------------------------------------------------
-      KF_free = exp(874.0_rk * invTK - 9.68_rk + 0.111_rk * sqrtS)
-
-      ! Pressure correction for KF (on free scale)
-      delta = -9.78_rk - 0.009_rk * T - 0.000942_rk * T**2.0_rk
-      kappa = -3.91_rk + 0.000054_rk * T
-      KF_free = KF_free * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar &
-                               / (Rgas * TK))
+      KF_surface = exp(874.0_rk * invTK - 9.68_rk + 0.111_rk * sqrtS)
 
       !-------------------------------------------------------------------
-      ! Scale conversion factors at depth (using depth-corrected KS, KF)
+      ! Surface scale conversion factors (for native->SWS conversion
+      ! before pressure correction, following PyCO2SYS approach)
+      !-------------------------------------------------------------------
+      free2total_surface = 1.0_rk + ST / KS_surface
+      free2sws_surface   = 1.0_rk + ST / KS_surface + FT / KF_surface
+      sws2total_surface  = free2total_surface / free2sws_surface
+
+      !-------------------------------------------------------------------
+      ! Pressure correct KS and KF (on free scale)
+      ! Millero (1995) Table 9
+      !-------------------------------------------------------------------
+      delta = -18.03_rk + 0.0466_rk * T + 0.000316_rk * T**2.0_rk
+      kappa = (-4.53_rk + 0.09_rk * T) / 1000.0_rk
+      KS = KS_surface * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar &
+                             / (Rgas * TK))
+
+      delta = -9.78_rk - 0.009_rk * T - 0.000942_rk * T**2.0_rk
+      kappa = (-3.91_rk + 0.054_rk * T) / 1000.0_rk
+      KF_free = KF_surface * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar &
+                                  / (Rgas * TK))
+
+      !-------------------------------------------------------------------
+      ! Depth scale conversion factors (for SWS->target after pcorr)
       !-------------------------------------------------------------------
       free2total = 1.0_rk + ST / KS
       free2sws   = 1.0_rk + ST / KS + FT / KF_free
@@ -235,10 +249,8 @@ contains
       K0 = exp(93.4517_rk / TK100 - 60.2409_rk + 23.3585_rk * log(TK100) &
                + S * (0.023517_rk - 0.023656_rk * TK100 &
                       + 0.0047036_rk * TK100**2.0_rk))
-
-      if (Pbar > 0.0_rk) then
-         K0 = K0 * exp((-Pbar * 32.3_rk) / (Rgas * TK))
-      end if
+      ! K0 is NOT pressure-corrected (consistent with PyCO2SYS).
+      ! K0 is a surface air-sea equilibrium constant (Weiss 1974).
 
       !-------------------------------------------------------------------
       ! KB = [H+][BO2-]/[HBO2] on total scale (native)
@@ -250,14 +262,19 @@ contains
                + (-24.4344_rk - 25.085_rk * sqrtS - 0.2474_rk * S) * lnTK &
                + 0.053105_rk * sqrtS * TK)
 
-      ! Pressure correction (on native total scale)
+      if (.not. legacy_mode) then
+         ! Convert KB: Total -> SWS using SURFACE factors (before pcorr)
+         KB = KB / sws2total_surface
+      end if
+
+      ! Pressure correction (on SWS scale, Millero 1995)
       delta = -29.48_rk + 0.1622_rk * T - 0.002608_rk * T**2.0_rk
       kappa = -2.84_rk / 1000.0_rk
       KB = KB * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
 
-      ! Convert KB: total(1) -> target scale
+      ! Convert KB: SWS(2) -> target scale using DEPTH factors
       if (.not. legacy_mode) then
-         call convert_K(KB, 1, opt_pH_scale, free2total, free2sws, fH)
+         call convert_K(KB, 2, opt_pH_scale, free2total, free2sws, fH)
       end if
       ! legacy_mode: keep KB on total (intentional: reproduces old bug)
 
@@ -306,7 +323,16 @@ contains
          end select
       end if
 
-      ! Pressure corrections for K1, K2 (on native scale)
+      ! Convert K1, K2 to SWS using SURFACE factors before pcorr
+      ! (Millero 1995 pressure coefficients are valid for SWS scale)
+      if (.not. legacy_mode .and. k1k2_native == 1) then
+         ! Lueker (Total native) -> SWS
+         K1 = K1 / sws2total_surface
+         K2 = K2 / sws2total_surface
+      end if
+      ! Millero/legacy: already on SWS, no conversion needed
+
+      ! Pressure corrections for K1, K2 (on SWS scale)
       delta = -25.5_rk + 0.1271_rk * T
       kappa = (-3.08_rk + 0.0877_rk * T) / 1000.0_rk
       K1 = K1 * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
@@ -315,12 +341,10 @@ contains
       kappa = (1.13_rk - 0.1475_rk * T) / 1000.0_rk
       K2 = K2 * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
 
-      ! Convert K1, K2: native -> target scale
+      ! Convert K1, K2: SWS(2) -> target scale using DEPTH factors
       if (.not. legacy_mode) then
-         call convert_K(K1, k1k2_native, opt_pH_scale, &
-                        free2total, free2sws, fH)
-         call convert_K(K2, k1k2_native, opt_pH_scale, &
-                        free2total, free2sws, fH)
+         call convert_K(K1, 2, opt_pH_scale, free2total, free2sws, fH)
+         call convert_K(K2, 2, opt_pH_scale, free2total, free2sws, fH)
       end if
       ! legacy_mode: keep K1, K2 on SWS (no conversion)
 
@@ -333,7 +357,8 @@ contains
                - 0.01615_rk * S)
 
       ! Pressure correction (on native SWS scale)
-      delta = -25.60_rk + 0.2324_rk * T - 0.0036246_rk * T**2.0_rk
+      ! Millero (1995) - seawater case (not freshwater)
+      delta = -20.02_rk + 0.1119_rk * T - 0.001409_rk * T**2.0_rk
       kappa = (-5.13_rk + 0.0794_rk * T) / 1000.0_rk
       KW = KW * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
 
@@ -648,5 +673,92 @@ contains
       end if
 
    end subroutine calc_carbonate_species
+
+   !-----------------------------------------------------------------------
+   ! convert_pH_scale
+   !
+   ! Convert pH between scales using conversion factors computed from
+   ! T, S, and pressure. Used to provide total-scale pH for the FABM
+   ! standard variable when solving on a different scale.
+   !
+   ! Route: from_scale -> free -> to_scale (via log10 offsets)
+   !-----------------------------------------------------------------------
+   subroutine convert_pH_scale(T, S, Pbar, pH_in, from_scale, to_scale, &
+                                opt_total_borate, pH_out)
+      real(rk), intent(in)  :: T, S, Pbar, pH_in
+      integer,  intent(in)  :: from_scale, to_scale, opt_total_borate
+      real(rk), intent(out) :: pH_out
+
+      real(rk) :: TK, lnTK, invTK, sqrtS, IS, sqrtIS
+      real(rk) :: KS, KF_free, ST, FT, BT
+      real(rk) :: delta, kappa
+      real(rk) :: free2total, free2sws, fH
+      real(rk) :: adj_from, adj_to
+
+      if (from_scale == to_scale) then
+         pH_out = pH_in
+         return
+      end if
+
+      TK = T + 273.15_rk
+      lnTK = log(TK)
+      invTK = 1.0_rk / TK
+      sqrtS = sqrt(max(S, 0.0_rk))
+      IS = 19.924_rk * S / (1000.0_rk - 1.005_rk * S)
+      sqrtIS = sqrt(IS)
+
+      ! Total concentrations
+      call calc_total_concentrations(S, opt_total_borate, BT, ST, FT)
+
+      ! KS on free scale (Dickson 1990)
+      KS = exp(-4276.1_rk * invTK + 141.328_rk - 23.093_rk * lnTK &
+               + (-13856.0_rk * invTK + 324.57_rk - 47.986_rk * lnTK) &
+                 * sqrtIS &
+               + (35474.0_rk * invTK - 771.54_rk + 114.723_rk * lnTK) &
+                 * IS &
+               - 2698.0_rk * invTK * IS**1.5_rk &
+               + 1776.0_rk * invTK * IS**2.0_rk &
+               + log(1.0_rk - 0.001005_rk * S))
+      ! Pressure correction (Millero 1995 Table 9)
+      delta = -18.03_rk + 0.0466_rk * T + 0.000316_rk * T**2.0_rk
+      kappa = (-4.53_rk + 0.09_rk * T) / 1000.0_rk
+      KS = KS * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar &
+                     / (Rgas * TK))
+
+      ! KF on free scale (Perez & Fraga 1987)
+      KF_free = exp(874.0_rk * invTK - 9.68_rk + 0.111_rk * sqrtS)
+      ! Pressure correction (Millero 1995 Table 9)
+      delta = -9.78_rk - 0.009_rk * T - 0.000942_rk * T**2.0_rk
+      kappa = (-3.91_rk + 0.054_rk * T) / 1000.0_rk
+      KF_free = KF_free * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar &
+                               / (Rgas * TK))
+
+      ! Scale conversion factors
+      free2total = 1.0_rk + ST / KS
+      free2sws   = 1.0_rk + ST / KS + FT / KF_free
+      fH = calc_fH(TK, S)
+
+      ! Offset from each scale to free scale:
+      !   pH_free = pH_X + adj_X
+      ! where adj_X = log10([H+]_X / [H+]_free)
+      select case (from_scale)
+      case (1);  adj_from = log10(free2total)
+      case (2);  adj_from = log10(free2sws)
+      case (3);  adj_from = 0.0_rk
+      case (4);  adj_from = log10(free2sws * fH)
+      case default; adj_from = log10(free2total)
+      end select
+
+      select case (to_scale)
+      case (1);  adj_to = log10(free2total)
+      case (2);  adj_to = log10(free2sws)
+      case (3);  adj_to = 0.0_rk
+      case (4);  adj_to = log10(free2sws * fH)
+      case default; adj_to = log10(free2total)
+      end select
+
+      pH_out = pH_in + adj_from - adj_to
+
+   end subroutine convert_pH_scale
 
 end module carbonate_engine

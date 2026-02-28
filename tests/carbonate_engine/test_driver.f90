@@ -9,6 +9,9 @@
 !   2. Cross-scale consistency: Total vs SWS vs Free vs NBS
 !   3. legacy_mode=.true.: backward-compat (convergence + range)
 !   4. Sub-zero temperature (polar waters)
+!   5. opt_k_carbonic=14 (Millero 2010) vs PyCO2SYS
+!   6. Pressure correction (Pbar > 0) vs PyCO2SYS
+!   7. convert_pH_scale round-trip consistency
 !
 ! CSV format (9 columns):
 !   T, S, DIC, TA, pH_total, pH_sws, pH_free, pH_nbs, pCO2_atm
@@ -19,7 +22,7 @@
 
 program test_driver
    use, intrinsic :: iso_fortran_env, only: real64, error_unit, output_unit
-   use carbonate_engine, only: carbonate_engine_solve
+   use carbonate_engine, only: carbonate_engine_solve, convert_pH_scale
    implicit none
 
    integer, parameter :: rk = real64
@@ -89,6 +92,33 @@ program test_driver
    write(output_unit, '(A)') ''
    write(output_unit, '(A)') '--- Sub-zero temperature test ---'
    call run_subzero_tests(n_pass, n_fail)
+   n_total_pass = n_total_pass + n_pass
+   n_total_fail = n_total_fail + n_fail
+
+   ! ---------------------------------------------------------------
+   ! Test 5: opt_k_carbonic=14 (Millero 2010)
+   ! ---------------------------------------------------------------
+   write(output_unit, '(A)') ''
+   write(output_unit, '(A)') '--- Millero 2010 (opt_k_carbonic=14) ---'
+   call run_millero2010_tests(n_pass, n_fail)
+   n_total_pass = n_total_pass + n_pass
+   n_total_fail = n_total_fail + n_fail
+
+   ! ---------------------------------------------------------------
+   ! Test 6: Pressure correction (Pbar > 0)
+   ! ---------------------------------------------------------------
+   write(output_unit, '(A)') ''
+   write(output_unit, '(A)') '--- Pressure correction (Pbar > 0) ---'
+   call run_pressure_tests(n_pass, n_fail)
+   n_total_pass = n_total_pass + n_pass
+   n_total_fail = n_total_fail + n_fail
+
+   ! ---------------------------------------------------------------
+   ! Test 7: convert_pH_scale round-trip
+   ! ---------------------------------------------------------------
+   write(output_unit, '(A)') ''
+   write(output_unit, '(A)') '--- convert_pH_scale round-trip ---'
+   call run_convert_pH_tests(n_pass, n_fail)
    n_total_pass = n_total_pass + n_pass
    n_total_fail = n_total_fail + n_fail
 
@@ -458,5 +488,198 @@ contains
          n_pass, ' pass'
 
    end subroutine run_subzero_tests
+
+   !-----------------------------------------------------------------------
+   ! Millero 2010 (opt_k_carbonic=14) tests vs PyCO2SYS
+   !-----------------------------------------------------------------------
+   subroutine run_millero2010_tests(n_pass, n_fail)
+      integer, intent(out) :: n_pass, n_fail
+
+      integer, parameter :: n_tests = 5
+      real(rk) :: T_v(n_tests), S_v(n_tests)
+      real(rk) :: DIC_v(n_tests), TA_v(n_tests)
+      real(rk) :: exp_pH(n_tests), exp_fCO2(n_tests)
+      real(rk) :: calc_pH, calc_pCO2, H2CO3, HCO3, CO3, K0
+      real(rk) :: err_pH, err_pCO2
+      logical :: success
+      integer :: i
+
+      ! PyCO2SYS reference: opt_k_carbonic=14, opt_k_fluoride=2,
+      ! opt_total_borate=2, opt_pH_scale=1(Total), Pbar=0
+      T_v   = (/ 25.0_rk, 15.0_rk, 20.0_rk, 10.0_rk, 25.0_rk /)
+      S_v   = (/ 35.0_rk, 35.0_rk, 32.0_rk, 30.0_rk, 10.0_rk /)
+      DIC_v = (/ 0.002100_rk, 0.002100_rk, 0.002100_rk, &
+                 0.002050_rk, 0.002000_rk /)
+      TA_v  = (/ 0.002300_rk, 0.002300_rk, 0.002350_rk, &
+                 0.002250_rk, 0.002200_rk /)
+      exp_pH  = (/ 7.8562326840_rk, 8.0033184745_rk, 8.0599744209_rk, &
+                   8.1494226599_rk, 8.2920775215_rk /)
+      exp_fCO2 = (/ 6.7311234012e-04_rk, 4.5472896597e-04_rk, &
+                    4.0791169220e-04_rk, 3.1055875674e-04_rk, &
+                    2.8860492098e-04_rk /)
+
+      n_pass = 0; n_fail = 0
+
+      do i = 1, n_tests
+         call carbonate_engine_solve(T_v(i), S_v(i), 0.0_rk, &
+              DIC_v(i), TA_v(i), 1, 14, 2, .false., &
+              calc_pH, calc_pCO2, H2CO3, HCO3, CO3, K0, success)
+
+         err_pH = abs(calc_pH - exp_pH(i))
+         err_pCO2 = abs(calc_pCO2 - exp_fCO2(i))
+
+         if (.not. success) then
+            n_fail = n_fail + 1
+            write(output_unit, '(A,I4,A)') &
+               'M2010 Case ', i, ': FAIL - No convergence'
+         else if (err_pH > tol_pH_tight .or. &
+                  err_pCO2 > tol_pCO2_tight) then
+            n_fail = n_fail + 1
+            write(output_unit, '(A,I4,A)') 'M2010 Case ', i, ': FAIL'
+            write(output_unit, '(A,F12.8,A,F12.8,A,ES10.3)') &
+               '  pH: exp=', exp_pH(i), ' calc=', calc_pH, &
+               ' err=', err_pH
+            write(output_unit, '(A,ES12.5,A,ES12.5,A,ES10.3)') &
+               '  fCO2: exp=', exp_fCO2(i), ' calc=', calc_pCO2, &
+               ' err=', err_pCO2
+         else
+            n_pass = n_pass + 1
+            write(output_unit, '(A,I4,A,F10.6,A,ES12.5,A)') &
+               'M2010 Case ', i, ': PASS (pH=', calc_pH, &
+               ', fCO2=', calc_pCO2, ')'
+         end if
+      end do
+
+      write(output_unit, '(A,I4,A,I4,A,I4)') &
+         'Millero 2010 tests: ', n_tests, ' total, ', &
+         n_pass, ' pass, ', n_fail, ' fail'
+
+   end subroutine run_millero2010_tests
+
+   !-----------------------------------------------------------------------
+   ! Pressure correction tests (Pbar > 0) vs PyCO2SYS
+   !-----------------------------------------------------------------------
+   subroutine run_pressure_tests(n_pass, n_fail)
+      integer, intent(out) :: n_pass, n_fail
+
+      integer, parameter :: n_tests = 5
+      real(rk) :: T_v(n_tests), S_v(n_tests)
+      real(rk) :: DIC_v(n_tests), TA_v(n_tests), Pbar_v(n_tests)
+      real(rk) :: exp_pH(n_tests), exp_fCO2(n_tests)
+      real(rk) :: calc_pH, calc_pCO2, H2CO3, HCO3, CO3, K0
+      real(rk) :: err_pH, err_pCO2
+      logical :: success
+      integer :: i
+
+      ! PyCO2SYS reference: opt_k_carbonic=10, Pbar > 0
+      T_v    = (/ 25.0_rk, 15.0_rk, 10.0_rk, 5.0_rk, 25.0_rk /)
+      S_v    = (/ 35.0_rk, 35.0_rk, 30.0_rk, 34.0_rk, 35.0_rk /)
+      DIC_v  = (/ 0.002100_rk, 0.002100_rk, 0.002050_rk, &
+                  0.002200_rk, 0.002100_rk /)
+      TA_v   = (/ 0.002300_rk, 0.002300_rk, 0.002250_rk, &
+                  0.002350_rk, 0.002300_rk /)
+      Pbar_v = (/ 10.0_rk, 10.0_rk, 50.0_rk, 100.0_rk, 500.0_rk /)
+      exp_pH   = (/ 7.8491574775_rk, 7.9978894874_rk, &
+                    8.1321585842_rk, 8.0084727413_rk, &
+                    7.6832256078_rk /)
+      exp_fCO2 = (/ 6.7132856591e-04_rk, 4.4849834020e-04_rk, &
+                    3.0286963838e-04_rk, 3.9439259266e-04_rk, &
+                    6.3706467418e-04_rk /)
+
+      n_pass = 0; n_fail = 0
+
+      do i = 1, n_tests
+         call carbonate_engine_solve(T_v(i), S_v(i), Pbar_v(i), &
+              DIC_v(i), TA_v(i), 1, 10, 2, .false., &
+              calc_pH, calc_pCO2, H2CO3, HCO3, CO3, K0, success)
+
+         err_pH = abs(calc_pH - exp_pH(i))
+         err_pCO2 = abs(calc_pCO2 - exp_fCO2(i))
+
+         if (.not. success) then
+            n_fail = n_fail + 1
+            write(output_unit, '(A,I4,A)') &
+               'Depth Case ', i, ': FAIL - No convergence'
+         else if (err_pH > tol_pH_tight .or. &
+                  err_pCO2 > tol_pCO2_tight) then
+            n_fail = n_fail + 1
+            write(output_unit, '(A,I4,A,F6.0,A)') &
+               'Depth Case ', i, ' (Pbar=', Pbar_v(i), '): FAIL'
+            write(output_unit, '(A,F12.8,A,F12.8,A,ES10.3)') &
+               '  pH: exp=', exp_pH(i), ' calc=', calc_pH, &
+               ' err=', err_pH
+            write(output_unit, '(A,ES12.5,A,ES12.5,A,ES10.3)') &
+               '  fCO2: exp=', exp_fCO2(i), ' calc=', calc_pCO2, &
+               ' err=', err_pCO2
+         else
+            n_pass = n_pass + 1
+            write(output_unit, '(A,I4,A,F6.0,A,F10.6,A)') &
+               'Depth Case ', i, ' (Pbar=', Pbar_v(i), &
+               '): PASS (pH=', calc_pH, ')'
+         end if
+      end do
+
+      write(output_unit, '(A,I4,A,I4,A,I4)') &
+         'Pressure tests: ', n_tests, ' total, ', &
+         n_pass, ' pass, ', n_fail, ' fail'
+
+   end subroutine run_pressure_tests
+
+   !-----------------------------------------------------------------------
+   ! convert_pH_scale round-trip tests
+   ! Solve on Total, convert to each scale, convert back -> should match
+   !-----------------------------------------------------------------------
+   subroutine run_convert_pH_tests(n_pass, n_fail)
+      integer, intent(out) :: n_pass, n_fail
+
+      real(rk) :: pH_total, pH_conv, pH_back
+      real(rk) :: pCO2, H2CO3, HCO3, CO3, K0
+      logical :: success
+      integer :: iscale
+      character(len=8) :: sname(4)
+
+      sname(1) = 'Total'
+      sname(2) = 'SWS'
+      sname(3) = 'Free'
+      sname(4) = 'NBS'
+
+      n_pass = 0; n_fail = 0
+
+      ! Get reference total pH
+      call carbonate_engine_solve(25.0_rk, 35.0_rk, 0.0_rk, &
+           0.002100_rk, 0.002300_rk, 1, 10, 2, .false., &
+           pH_total, pCO2, H2CO3, HCO3, CO3, K0, success)
+
+      if (.not. success) then
+         n_fail = n_fail + 4
+         write(output_unit, '(A)') 'Convert: FAIL - No convergence'
+         return
+      end if
+
+      do iscale = 1, 4
+         ! Total -> iscale -> Total
+         call convert_pH_scale(25.0_rk, 35.0_rk, 0.0_rk, &
+              pH_total, 1, iscale, 2, pH_conv)
+         call convert_pH_scale(25.0_rk, 35.0_rk, 0.0_rk, &
+              pH_conv, iscale, 1, 2, pH_back)
+
+         if (abs(pH_back - pH_total) < 1.0e-10_rk) then
+            n_pass = n_pass + 1
+            write(output_unit, '(A,A,A,F10.6,A,F10.6,A)') &
+               'Convert T->', trim(sname(iscale)), '->T: PASS (', &
+               pH_conv, ' ->', pH_back, ')'
+         else
+            n_fail = n_fail + 1
+            write(output_unit, '(A,A,A,ES10.3)') &
+               'Convert T->', trim(sname(iscale)), &
+               '->T: FAIL err=', abs(pH_back - pH_total)
+         end if
+      end do
+
+      write(output_unit, '(A,I4,A,I4,A)') &
+         'Convert tests: ', n_pass + n_fail, ' total, ', &
+         n_pass, ' pass'
+
+   end subroutine run_convert_pH_tests
 
 end program test_driver
