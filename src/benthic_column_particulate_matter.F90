@@ -612,10 +612,10 @@ contains
       if  (remin /= 0._rk) then
          call self%get_parameter(q10, 'q10', '-', 'Q_10 temperature coefficient', default=1.0_rk, minimum=1.0_rk)
          call self%get_parameter(Tref, 'Tref', 'degrees_Celsius', &
-            'reference temperature for Q10 function', default=10.0_rk)
+            'reference temperature for Q10 function', default=20.0_rk)
       else
          q10=1.0_rk
-         Tref=10.0_rk
+         Tref=20.0_rk
       endif
 
       call self%get_parameter(source_depth_distribution,'source_depth_distribution', '','vertical distribution of changes (1: constant absolute rate, 2: constant relative rate, 3: constant carbon-based relative rate)',default=1,minimum=1,maximum=3)

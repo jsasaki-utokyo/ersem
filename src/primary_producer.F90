@@ -110,7 +110,7 @@ contains
       call self%get_parameter(self%sum,   'sum',  '1/d',        'maximum specific productivity at reference temperature')
       call self%get_parameter(self%q10,   'q10',  '-',          'Q_10 temperature coefficient')
       call self%get_parameter(self%Tref,  'Tref', 'degrees_Celsius', &
-         'reference temperature for Q10 function', default=10.0_rk)
+         'reference temperature for Q10 function', default=20.0_rk)
       call self%get_parameter(self%iswTemp,'iswTemp','',          'temperature response (1: Q10 with high-T suppression, 2: CTMI cardinal temperature model)', &
                               default=1,minimum=1,maximum=2)
       call self%get_parameter(self%Tmin,  'Tmin', 'degrees_Celsius','minimum temperature for growth (CTMI only)',default=0.0_rk)

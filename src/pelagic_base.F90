@@ -82,7 +82,7 @@ contains
       call self%get_parameter(self%k1,'k1','1/d','1st order kinetic rate', default=0.0_rk,minimum=0.0_rk)
       call self%get_parameter(self%q_10, 'q10', '-', 'Q_10 temperature coefficient for the 1st order kinetic', default=1.0_rk, minimum=1.0_rk)
       call self%get_parameter(self%Tref, 'Tref', 'degrees_Celsius', &
-         'reference temperature for Q10 function', default=10.0_rk)
+         'reference temperature for Q10 function', default=20.0_rk)
       if (self%k1>0._rk) call self%register_dependency(self%id_temp,standard_variables%temperature)
       
 

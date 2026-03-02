@@ -74,7 +74,7 @@ contains
       call self%get_parameter(c0,        'c0',   'mg C/m^2',   'background concentration',default=0.0_rk)
       call self%get_parameter(self%q10,  'q10',  '-',          'Q_10 temperature coefficient')
       call self%get_parameter(self%Tref, 'Tref', 'degrees_Celsius', &
-         'reference temperature for Q10 function', default=10.0_rk)
+         'reference temperature for Q10 function', default=20.0_rk)
       call self%get_parameter(self%rlO2, 'rlO2', 'mmol O2/m^3','minimum pelagic oxygen concentration')
       call self%get_parameter(self%hO2,  'hO2',  'mmol O2/m^3','Michaelis-Menten constant for oxygen limitation')
       call self%get_parameter(self%xcl,  'xcl',  'mg C/m^2',   'abundance above which crowding reduces food uptake')

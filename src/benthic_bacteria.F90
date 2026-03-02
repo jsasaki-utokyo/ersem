@@ -111,11 +111,10 @@ contains
       call self%get_parameter(self%hO2,  'hO2',  'mmol O2/m^3', &
          'Michaelis-Menten constant for oxygen limitation of respiration',default=0.0_rk)
       ! Reference temperature for Q10 function (jsasaki 2026-03-02)
-      ! Default=10°C preserves original ERSEM behavior (North Sea).
-      ! For warm eutrophic estuaries (e.g. Tokyo Bay), Tref=20°C is recommended
-      ! following DiToro/WASP/CE-QUAL convention, which suppresses winter benthic activity.
+      ! Default=20°C follows DiToro/WASP/CE-QUAL convention.
+      ! Original ERSEM used 10°C (North Sea calibration).
       call self%get_parameter(self%Tref, 'Tref', 'degrees_Celsius', &
-         'reference temperature for Q10 function', default=10.0_rk)
+         'reference temperature for Q10 function', default=20.0_rk)
 
       ! Dependencies on state variables of external modules.
       call self%register_state_dependency(self%id_K4n,'K4n','mmol N/m^2','ammonium')

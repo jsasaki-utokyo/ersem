@@ -80,7 +80,7 @@ contains
 !BOC
       call self%get_parameter(self%q10,    'q10',    '-',          'Q_10 temperature coefficient')
       call self%get_parameter(self%Tref,   'Tref', 'degrees_Celsius', &
-         'reference temperature for Q10 function', default=10.0_rk)
+         'reference temperature for Q10 function', default=20.0_rk)
       call self%get_parameter(self%minfood,'minfood','mg C/m^3',   'Michaelis-Menten constant to perceive food')
       call self%get_parameter(self%chuc,   'chuc',   'mg C/m^3',   'Michaelis-Menten constant for food uptake')
       call self%get_parameter(self%sum,    'sum',    '1/d',        'maximum specific uptake at reference temperature')
