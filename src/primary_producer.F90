@@ -72,6 +72,7 @@ module ersem_primary_producer
       integer :: iswNutUptake
       real(rk) :: KsN, KsP
       real(rk) :: ctmi_a, ctmi_b   ! precomputed polynomial CTMI coefficients
+      real(rk) :: pe_RP_lysis  ! minimum POM fraction of lysis products (jsasaki 2026-03-03)
       logical :: use_Si, calcify, docdyn, cenh
 
    contains
@@ -154,6 +155,11 @@ contains
          call self%get_parameter(self%chs,'chs', 'mmol/m^3',    'Michaelis-Menten constant for silicate limitation')
       end if
       call self%get_parameter(self%sdo,   'sdo',  '1/d',        '1.1 of minimal specific lysis rate')
+      ! Minimum particulate fraction of lysis products (jsasaki 2026-03-03)
+      ! Default=0 preserves original ERSEM behavior (DOM-dominant lysis).
+      ! For eutrophic estuaries with diatom-dominant sinking, set 0.5-0.8.
+      call self%get_parameter(self%pe_RP_lysis, 'pe_RP_lysis', '-', &
+         'minimum particulate fraction of lysis products', default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
       call self%get_parameter(self%alpha, 'alpha','mg C m^2/mg Chl/W/d', 'initial slope of PI-curve')
       call self%get_parameter(self%beta,  'beta', 'mg C m^2/mg Chl/W/d','photoinhibition parameter')
       call self%get_parameter(self%phim,  'phim', 'mg Chl/mg C','maximum effective chlorophyll to carbon photosynthesis ratio')
@@ -443,6 +449,8 @@ contains
 
          ! Fraction of lysis flux that is particulate (remainder is dissolved)
          pe_RP = MIN(self%qplc/(qpc+ZeroX), self%qnlc/(qnc+ZeroX), 1.0_rk)
+         ! Apply minimum POM fraction for lysis (jsasaki 2026-03-03)
+         pe_RP = MAX(pe_RP, self%pe_RP_lysis)
 
          ! Specific loss (1/d) and carbon loss (mg C/m3/d) to particulate matter due to lysis
          sPIRP = pe_RP*sdo
