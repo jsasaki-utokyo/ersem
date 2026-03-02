@@ -777,6 +777,137 @@ ERSEM outputs include:
 
 See output NetCDF files for complete list of available variables.
 
+## Benthic Bacteria: H1/H2 Temperature Function and Tref Modification
+
+### Overview
+
+ERSEM models benthic (sediment) bacterial decomposition through two functional groups:
+
+| Group | Type | Substrate | Habitat | Role |
+|-------|------|-----------|---------|------|
+| **H1** | Aerobic bacteria | POM (Q6/Q7) | Thin oxidized surface layer (~1 mm) | O2-consuming decomposition |
+| **H2** | Anaerobic bacteria | POM (Q6/Q7) | Deep anoxic layer (~10 cm) | Denitrification, sulfate reduction |
+
+Both are implemented in `src/benthic_bacteria.F90` and share the same mathematical framework, differentiated by parameters and coupling to oxygen/nutrient cycles.
+
+### Temperature Function
+
+ERSEM uses a Q10-based temperature response with a high-temperature inhibition term:
+
+```
+eT = Q10^((T - Tref) / 10) - Q10^((T - 32) / 3)
+```
+
+where:
+- `Q10` controls temperature sensitivity (default: 2.0)
+- `Tref` is the reference temperature where eT = 1.0
+- The second term suppresses activity above ~30°C (thermal death)
+
+#### The Tref Problem for Warm Estuaries
+
+The original ERSEM hardcodes **Tref = 10°C** (appropriate for the North Sea where the model was developed). This means:
+- At T = 10°C: eT = 1.0 (full activity)
+- At T = 25°C: eT = 2.56 (strongly enhanced)
+
+In warm eutrophic estuaries like **Tokyo Bay** (winter bottom T ≈ 10°C, summer ≈ 25°C), this causes **winter over-activity** — benthic bacteria decompose POM (Q6) at full speed even in winter, depleting organic matter stores and consuming oxygen year-round. This prevents proper seasonal accumulation of sediment organic matter and can produce unrealistic winter hypoxia.
+
+#### Tref Modification (2026-03-02)
+
+The `Tref` parameter has been made **configurable via `fabm.yaml`** with a default of 10°C for backward compatibility:
+
+**Source code change** (`src/benthic_bacteria.F90`):
+```fortran
+! Type definition
+real(rk) :: Tref  ! Reference temperature for Q10 function
+
+! Parameter registration (initialize subroutine)
+call self%get_parameter(self%Tref, 'Tref', 'degrees_Celsius', &
+   'reference temperature for Q10 function', default=10.0_rk)
+
+! Temperature function (do subroutine)
+eT = max(0.0_rk, self%q10**((ETW-self%Tref)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
+```
+
+**Usage in `fabm.yaml`**:
+```yaml
+H1:
+  model: ersem/benthic_bacteria
+  parameters:
+    Tref: 20.0    # Shift reference to 20°C (recommended for warm estuaries)
+    q10: 2.0
+    # ... other parameters
+H2:
+  model: ersem/benthic_bacteria
+  parameters:
+    Tref: 20.0
+    q10: 2.0
+    # ... other parameters
+```
+
+**Effect of Tref on temperature response** (Q10 = 2.0):
+
+| Temperature | Tref=10 (original) | Tref=20 (recommended) | Tref=30 |
+|:-----------:|:------------------:|:---------------------:|:-------:|
+| 5°C  | 0.71 | 0.35 | 0.18 |
+| 10°C | 1.00 | 0.50 | 0.25 |
+| 15°C | 1.38 | 0.69 | 0.35 |
+| 20°C | 1.83 | 1.00 | 0.48 |
+| 25°C | 2.56 | 1.28 | 0.51 |
+| 30°C | 1.28 | 0.64 | 0.00 |
+
+**Tref = 20°C** is recommended for warm estuaries because:
+1. It follows the international convention (WASP, CE-QUAL-W2, EFDC all use 20°C reference)
+2. Winter activity is halved (eT ≈ 0.5 at 10°C) while summer activity is mildly enhanced
+3. The Modified Arrhenius equation `k(T) = k₂₀ × θ^(T-20)` used in water quality engineering is mathematically equivalent to Q10 with Tref = 20
+
+### Comparison with Other Models
+
+| Model | Temperature Function | Reference T | Notes |
+|-------|---------------------|:-----------:|-------|
+| **ERSEM** (original) | Q10 with thermal death | 10°C | North Sea calibration |
+| **ERSEM** (this fork) | Q10 with thermal death + configurable Tref | 10°C (default) | Backward compatible |
+| **WASP/DiToro** | θ^(T-20) (Modified Arrhenius) | 20°C | US EPA standard |
+| **CE-QUAL-W2** | θ^(T-20) | 20°C | US Army Corps |
+| **EFDC** | θ^(T-20) | 20°C | Tetra Tech |
+| **BROM** | exp(0.12T - 1.4) | None (continuous) | No fixed reference |
+| **Streeter-Phelps** | θ^(T-20), θ=1.047 | 20°C | Classical BOD model |
+
+The Q10 method and Modified Arrhenius (θ) method are mathematically equivalent: θ = Q10^(1/10). For Q10 = 2.0, θ = 1.072.
+
+### H1/H2 Rate Relationship
+
+Observational evidence (Kristensen & Ahmed, 1995; Westrich & Berner, 1984) consistently shows that **aerobic decomposition is ~10× faster** than anaerobic decomposition in marine sediments.
+
+However, in standard ERSEM, the effective decomposition rates show the opposite pattern:
+
+| Parameter | H1 (aerobic) | H2 (anaerobic) | Ratio H1/H2 |
+|-----------|:------------:|:--------------:|:-----------:|
+| Habitat thickness (EDZ_mix) | ~1 mm | ~10 cm | 0.01 |
+| Biomass (typical) | ~300 mg C/m² | ~3000 mg C/m² | 0.1 |
+| POM affinity (su2) | 0.0005 | 0.0001 | 5.0 |
+| **Net decomposition** | ~0.15 mg C/m²/d | ~0.30 mg C/m²/d | **0.5** |
+
+The net effect is that **H2 decomposes POM ~2–4× faster than H1** in ERSEM, which is opposite to observations. This is partly because:
+1. H2 biomass is ~10× larger (deeper habitat with more substrate access)
+2. H1's thin aerobic layer limits its total processing capacity
+3. ERSEM's benthic layer model does not explicitly resolve the aerobic/anaerobic interface dynamics that concentrate O2 consumption near the sediment surface
+
+This structural bias should be considered when calibrating benthic SOD (sediment oxygen demand). For applications where accurate aerobic/anaerobic partitioning matters, increasing H1's POM affinity (`su2`) may be necessary.
+
+### Note on Tref in Other ERSEM Components
+
+The `Tref = 10°C` is hardcoded in multiple ERSEM source files beyond `benthic_bacteria.F90`:
+
+- `bacteria_docdyn.F90` — pelagic bacteria (B1)
+- `primary_producer.F90` — phytoplankton (P1–P4)
+- `microzooplankton.F90` — microzooplankton (Z5, Z6)
+- `mesozooplankton.F90` — mesozooplankton (Z4)
+- `benthic_fauna.F90` — benthic fauna (Y1–Y5)
+- `nitrification.F90` — nitrification
+- `benthic_base.F90`, `benthic_nitrogen_cycle.F90` — benthic nutrient cycling
+
+Currently, only `benthic_bacteria.F90` has been modified to accept a configurable `Tref`. The same modification pattern can be applied to other components as needed.
+
 ## Documentation
 
 **General ERSEM Documentation:**

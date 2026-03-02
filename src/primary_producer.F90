@@ -109,6 +109,8 @@ contains
       ! to present parameters to the user for configuration (e.g., through a GUI)
       call self%get_parameter(self%sum,   'sum',  '1/d',        'maximum specific productivity at reference temperature')
       call self%get_parameter(self%q10,   'q10',  '-',          'Q_10 temperature coefficient')
+      call self%get_parameter(self%Tref,  'Tref', 'degrees_Celsius', &
+         'reference temperature for Q10 function', default=10.0_rk)
       call self%get_parameter(self%iswTemp,'iswTemp','',          'temperature response (1: Q10 with high-T suppression, 2: CTMI cardinal temperature model)', &
                               default=1,minimum=1,maximum=2)
       call self%get_parameter(self%Tmin,  'Tmin', 'degrees_Celsius','minimum temperature for growth (CTMI only)',default=0.0_rk)
@@ -384,7 +386,7 @@ contains
          ! Temperature response
          if (self%iswTemp == 1) then
             ! Original Q10 formulation with high-temperature suppression
-            et = max(0.0_rk,self%q10**((ETW-10._rk)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
+            et = max(0.0_rk,self%q10**((ETW-self%Tref)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
          else
             ! Polynomial CTMI (Cardinal Temperature Model with Inflection)
             ! Singularity-free cubic satisfying f(Tmin)=0, f(Tmax)=0,

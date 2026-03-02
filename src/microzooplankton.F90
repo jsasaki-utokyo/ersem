@@ -69,6 +69,8 @@ contains
 !-----------------------------------------------------------------------
 !BOC
       call self%get_parameter(self%q10,    'q10',    '-',          'Q_10 temperature coefficient')
+      call self%get_parameter(self%Tref,   'Tref', 'degrees_Celsius', &
+         'reference temperature for Q10 function', default=10.0_rk)
       call self%get_parameter(self%minfood,'minfood','mg C/m^3',   'Michaelis-Menten constant to perceive food')
       call self%get_parameter(self%chuc,   'chuc',   'mg C/m^3',   'Michaelis-Menten constant for food uptake')
       call self%get_parameter(self%sum,    'sum',    '1/d',        'maximum specific uptake at reference temperature')
@@ -248,7 +250,7 @@ contains
          qnc = n/c
 
          ! Temperature effect:
-         et = max(0.0_rk,self%q10**((ETW-10._rk)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
+         et = max(0.0_rk,self%q10**((ETW-self%Tref)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
 
          ! Oxygen limitation (based on oxygen saturation eO2mO2):
          CORROX = 1._rk + self%chro

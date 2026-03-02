@@ -76,6 +76,8 @@ contains
 !BOC
       call self%get_parameter(self%iswBlimX,'iswBlim', '',           'nutrient limitation (1: minimum of inorganic and organic availability, 2: additive availability)', minimum=1, maximum=2)
       call self%get_parameter(self%q10B1X,  'q10',     '-',          'Q_10 temperature coefficient')
+      call self%get_parameter(self%Tref,    'Tref', 'degrees_Celsius', &
+         'reference temperature for Q10 function', default=10.0_rk)
       call self%get_parameter(self%chdB1oX, 'chdo',    '-',          'Michaelis-Menten constant for oxygen limitation')
       call self%get_parameter(self%chB1nX,  'chn',     'mmol N/m^3', 'Michaelis-Menten constant for nitrate limitation')
       call self%get_parameter(self%chB1pX,  'chp',     'mmol P/m^3', 'Michaelis-Menten constant for phosphate limitation')
@@ -271,7 +273,7 @@ contains
 
 !..Temperature effect on pelagic bacteria:
 
-         etB1 = max(0.0_rk,self%q10B1X**((ETW-10._rk)/10._rk) - self%q10B1X**((ETW-32._rk)/3._rk))
+         etB1 = max(0.0_rk,self%q10B1X**((ETW-self%Tref)/10._rk) - self%q10B1X**((ETW-32._rk)/3._rk))
 
 !..Prevailing Oxygen limitation for bacteria:
 

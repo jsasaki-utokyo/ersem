@@ -26,7 +26,7 @@ module ersem_pelagic_base
       type (type_bottom_state_variable_id),allocatable,dimension(:) :: id_targetc,id_targetn,id_targetp,id_targets,id_targetf
 
       real(rk) :: rm = 0.0_rk
-      real(rk) :: k1, q_10
+      real(rk) :: k1, q_10, Tref
       real(rk) :: tdep
       integer :: ndeposition
       logical :: no_river_dilution = .false.
@@ -81,6 +81,8 @@ contains
       ! the rate can be made dependent on temperature by specifying a q10 value different from 1
       call self%get_parameter(self%k1,'k1','1/d','1st order kinetic rate', default=0.0_rk,minimum=0.0_rk)
       call self%get_parameter(self%q_10, 'q10', '-', 'Q_10 temperature coefficient for the 1st order kinetic', default=1.0_rk, minimum=1.0_rk)
+      call self%get_parameter(self%Tref, 'Tref', 'degrees_Celsius', &
+         'reference temperature for Q10 function', default=10.0_rk)
       if (self%k1>0._rk) call self%register_dependency(self%id_temp,standard_variables%temperature)
       
 
@@ -284,7 +286,7 @@ contains
          ! first order kinetics
          if (self%k1/=0.0_rk) then
                _GET_(self%id_temp,ETW)
-               eT = self%q_10**((ETW-10._rk)/10._rk)
+               eT = self%q_10**((ETW-self%Tref)/10._rk)
                k1_rate=self%k1 * eT
                if (_VARIABLE_REGISTERED_(self%id_c)) then
                   _GET_(self%id_c,state)

@@ -107,6 +107,12 @@ contains
       ! Default 15.625 mmol O2/m^3 = 0.5 mg/L (bacteria are more tolerant than macrofauna)
       call self%get_parameter(self%hO2,  'hO2',  'mmol O2/m^3', &
          'Michaelis-Menten constant for oxygen limitation of respiration',default=15.625_rk)
+      ! Reference temperature for Q10 function (jsasaki 2026-03-02)
+      ! Default=10°C preserves original ERSEM behavior (North Sea).
+      ! For warm eutrophic estuaries (e.g. Tokyo Bay), Tref=20°C is recommended
+      ! following DiToro/WASP/CE-QUAL convention, which suppresses winter benthic activity.
+      call self%get_parameter(self%Tref, 'Tref', 'degrees_Celsius', &
+         'reference temperature for Q10 function', default=10.0_rk)
 
       ! Dependencies on state variables of external modules.
       call self%register_state_dependency(self%id_K4n,'K4n','mmol N/m^2','ammonium')
@@ -183,7 +189,7 @@ contains
          _GET_HORIZONTAL_(self%id_K4n,K4a)
 
          ! Limitation by temperature and height of habitat layer.
-         eT  = max(0.0_rk,self%q10**((ETW-10._rk)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
+         eT  = max(0.0_rk,self%q10**((ETW-self%Tref)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
          eOx = Dm/(self%dd+Dm)
 
          ! Effective uptake rate (sfQ, 1/d) per substrate

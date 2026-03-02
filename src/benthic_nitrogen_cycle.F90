@@ -17,7 +17,7 @@ module ersem_benthic_nitrogen_cycle
       type (type_horizontal_dependency_id) :: id_D1m,id_K6_sms,id_layer2_thickness
       type (type_horizontal_diagnostic_variable_id) :: id_jM3M4n,id_jM3G4n
       type (type_horizontal_diagnostic_variable_id) :: id_nrate
-      real(rk) :: q10nit,hM4M3,sM4M3,xno3
+      real(rk) :: q10nit,Tref,hM4M3,sM4M3,xno3
       real(rk) :: pammon,pdenit,xn2,hM3G4
       integer :: ISWph
    contains
@@ -40,6 +40,8 @@ contains
       self%dt = 86400._rk
 
       call self%get_parameter(self%q10nit,'q10nit','-',            'Q_10 temperature coefficient')
+      call self%get_parameter(self%Tref,  'Tref', 'degrees_Celsius', &
+         'reference temperature for Q10 function', default=10.0_rk)
       call self%get_parameter(self%hM4M3, 'hM4M3', 'mmol/m^3',     'Michaelis-Menten constant for nitrate limitation')
       call self%get_parameter(self%ISWph, 'ISWph', '',             'pH impact on nitrification (0: off, 1: on)',default=0,minimum=0,maximum=1)
       call self%get_parameter(self%sM4M3, 'sM4M3', '1/d',          'maximum nitrification rate at 10 degrees Celsius')
@@ -121,7 +123,7 @@ contains
          end if
 
          ! Limitation factor for temperature (Q_10)
-         eT = self%q10nit**((ETW-10._rk)/10._rk)
+         eT = self%q10nit**((ETW-self%Tref)/10._rk)
 
          ! Limitation factor for nitrate (hyperbolic, 1 at zero nitrate, dropping to 0 at high nitrate).
          eN = self%hM4M3/(self%hM4M3+MU_m)

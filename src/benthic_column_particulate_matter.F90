@@ -378,6 +378,7 @@ module ersem_benthic_column_particulate_matter
 
       real(rk) :: remin
       real(rk) :: q10
+      real(rk) :: Tref
       integer :: source_depth_distribution
    contains
       procedure :: do_bottom  => constituent_for_single_layer_change_do_bottom
@@ -588,7 +589,7 @@ contains
       integer,                              intent(in)            :: configunit
 
       character(len=10) :: composition
-      real(rk)          :: remin, q10
+      real(rk)          :: remin, q10, Tref
       integer           :: source_depth_distribution
       integer           :: iconstituent
 !EOP
@@ -610,8 +611,11 @@ contains
       call self%get_parameter(remin,'remin','1/d','remineralization rate at 10 degrees Celsius',default=0.0_rk)
       if  (remin /= 0._rk) then
          call self%get_parameter(q10, 'q10', '-', 'Q_10 temperature coefficient', default=1.0_rk, minimum=1.0_rk)
+         call self%get_parameter(Tref, 'Tref', 'degrees_Celsius', &
+            'reference temperature for Q10 function', default=10.0_rk)
       else
          q10=1.0_rk
+         Tref=10.0_rk
       endif
 
       call self%get_parameter(source_depth_distribution,'source_depth_distribution', '','vertical distribution of changes (1: constant absolute rate, 2: constant relative rate, 3: constant carbon-based relative rate)',default=1,minimum=1,maximum=3)
@@ -622,13 +626,13 @@ contains
       do iconstituent=1,len_trim(composition)
          select case (composition(iconstituent:iconstituent))
          case ('c')
-            call layer_initialize_constituent(self,self%constituents(iconstituent),'c','mg C',   'carbon',    remin,q10,source_depth_distribution,standard_variables%total_carbon,1.0_rk/CMass)
+            call layer_initialize_constituent(self,self%constituents(iconstituent),'c','mg C',   'carbon',    remin,q10,Tref,source_depth_distribution,standard_variables%total_carbon,1.0_rk/CMass)
          case ('n')
-            call layer_initialize_constituent(self,self%constituents(iconstituent),'n','mmol N', 'nitrogen',  remin,q10,source_depth_distribution,standard_variables%total_nitrogen)
+            call layer_initialize_constituent(self,self%constituents(iconstituent),'n','mmol N', 'nitrogen',  remin,q10,Tref,source_depth_distribution,standard_variables%total_nitrogen)
          case ('p')
-            call layer_initialize_constituent(self,self%constituents(iconstituent),'p','mmol P', 'phosphorus',remin,q10,source_depth_distribution,standard_variables%total_phosphorus)
+            call layer_initialize_constituent(self,self%constituents(iconstituent),'p','mmol P', 'phosphorus',remin,q10,Tref,source_depth_distribution,standard_variables%total_phosphorus)
          case ('s')
-            call layer_initialize_constituent(self,self%constituents(iconstituent),'s','mmol Si','silicate',  remin,q10,source_depth_distribution,standard_variables%total_silicate)
+            call layer_initialize_constituent(self,self%constituents(iconstituent),'s','mmol Si','silicate',  remin,q10,Tref,source_depth_distribution,standard_variables%total_silicate)
          case ('f')
          case default
             call self%fatal_error('layer_initialize','unknown constituent '//composition(iconstituent:iconstituent)//' specified.')
@@ -637,11 +641,11 @@ contains
 
    end subroutine layer_initialize
 
-   subroutine layer_initialize_constituent(self,info,name,units,long_name,remin,q10,source_depth_distribution,aggregate_target,aggregate_scale_factor)
+   subroutine layer_initialize_constituent(self,info,name,units,long_name,remin,q10,Tref,source_depth_distribution,aggregate_target,aggregate_scale_factor)
       class (type_ersem_benthic_pom_layer),     intent(inout), target :: self
       class (type_constituent_in_single_layer), intent(inout)         :: info
       character(len=*),                         intent(in)            :: name,units,long_name
-      real(rk),                                 intent(in)            :: remin,q10
+      real(rk),                                 intent(in)            :: remin,q10,Tref
       integer,                                  intent(in)            :: source_depth_distribution
       type (type_bulk_standard_variable),       intent(in)            :: aggregate_target
       real(rk),optional,                        intent(in)            :: aggregate_scale_factor
@@ -672,6 +676,7 @@ contains
       change_processor%dt = 86400._rk
       change_processor%remin = remin
       change_processor%q10 = q10
+      change_processor%Tref = Tref
       change_processor%source_depth_distribution = source_depth_distribution
       call self%add_child(change_processor,'change_in_'//name//'_processor',configunit=-1)
       call change_processor%register_state_dependency(change_processor%id_int,name//'_int',units//'/m^2', 'column-integrated '//long_name)
@@ -817,7 +822,7 @@ contains
          ! Add local remineralization
          if (self%remin/=0.0_rk) then
             _GET_(self%id_ETW, ETW)
-            eT  = self%q10**((ETW-10._rk)/10._rk)
+            eT  = self%q10**((ETW-self%Tref)/10._rk)
             _GET_HORIZONTAL_(self%id_local,c_int_local)
             sms_remin = self%remin*c_int_local*eT
             _SET_BOTTOM_ODE_(self%id_remin_target,sms_remin)
