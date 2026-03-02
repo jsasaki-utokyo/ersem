@@ -777,7 +777,7 @@ ERSEM outputs include:
 
 See output NetCDF files for complete list of available variables.
 
-## Benthic Bacteria: H1/H2 Temperature Function and Tref Modification
+## Benthic Bacteria: H1/H2 Temperature Function, hO2, and Tref Modification
 
 ### Overview
 
@@ -789,6 +789,46 @@ ERSEM models benthic (sediment) bacterial decomposition through two functional g
 | **H2** | Anaerobic bacteria | POM (Q6/Q7) | Deep anoxic layer (~10 cm) | Denitrification, sulfate reduction |
 
 Both are implemented in `src/benthic_bacteria.F90` and share the same mathematical framework, differentiated by parameters and coupling to oxygen/nutrient cycles.
+
+### Monod O2 Limitation (hO2 Parameter)
+
+A Monod-type oxygen limitation factor was added (2026-02-15) to prevent aerobic bacteria
+from consuming O2 that is not available:
+
+```
+f_O2_resp = O2 / (O2 + hO2)
+```
+
+This factor multiplies the respiration flux. When `hO2 = 0`, the limitation is disabled
+(`f_O2_resp = 1`).
+
+**Default value: `hO2 = 0.0`** (no limitation). This is appropriate for anaerobic
+bacteria (H2), whose respiration produces reduction equivalents (coupled to sulfate
+reduction), not direct O2 demand. Aerobic bacteria (H1) must set `hO2 > 0` explicitly
+in `fabm.yaml`.
+
+**Bugfix (2026-03-02):** The original implementation used `default = 15.625` mmol O2/m³,
+which incorrectly applied O2 limitation to H2 as well. When bottom water became anoxic,
+H2's respiration was suppressed to near zero, preventing sulfate reduction and causing
+unrealistic accumulation of benthic POM (Q6). The default was changed to `0.0` so that
+anaerobic bacteria are unaffected by default.
+
+**fabm.yaml configuration:**
+```yaml
+H1:
+  model: ersem/benthic_bacteria
+  parameters:
+    hO2: 15.625    # Required: Monod O2 half-saturation (mmol O2/m³ = 0.5 mg/L)
+    # ...
+H2:
+  model: ersem/benthic_bacteria
+  parameters:
+    # hO2 not set → default 0.0 → no O2 limitation (correct for anaerobic)
+    # ...
+```
+
+**Important:** All `fabm.yaml` files must explicitly set `hO2` for H1. Without it, H1
+will have no O2 limitation (`hO2 = 0`) and may drive benthic O2 (G2o) negative.
 
 ### Temperature Function
 
@@ -894,19 +934,29 @@ The net effect is that **H2 decomposes POM ~2–4× faster than H1** in ERSEM, w
 
 This structural bias should be considered when calibrating benthic SOD (sediment oxygen demand). For applications where accurate aerobic/anaerobic partitioning matters, increasing H1's POM affinity (`su2`) may be necessary.
 
-### Note on Tref in Other ERSEM Components
+### Tref in All ERSEM Components
 
-The `Tref = 10°C` is hardcoded in multiple ERSEM source files beyond `benthic_bacteria.F90`:
+As of commit `dd0674a` (2026-03-02), the `Tref` parameter is configurable in **all** ERSEM
+components that use Q10 temperature functions. The default is `10.0°C` for backward
+compatibility. The following source files were modified:
 
-- `bacteria_docdyn.F90` — pelagic bacteria (B1)
-- `primary_producer.F90` — phytoplankton (P1–P4)
-- `microzooplankton.F90` — microzooplankton (Z5, Z6)
-- `mesozooplankton.F90` — mesozooplankton (Z4)
-- `benthic_fauna.F90` — benthic fauna (Y1–Y5)
-- `nitrification.F90` — nitrification
-- `benthic_base.F90`, `benthic_nitrogen_cycle.F90` — benthic nutrient cycling
+| Source File | Instances | Description |
+|-------------|-----------|-------------|
+| `pelagic_base.F90` | (base class) | Base class for P1–P4, Z4–Z6, B1, nitrification |
+| `benthic_base.F90` | (base class) | Base class for Q6/Q7, Y2–Y4, H1/H2 |
+| `primary_producer.F90` | P1–P4 | Phytoplankton |
+| `bacteria.F90`, `bacteria_docdyn.F90` | B1 | Pelagic bacteria |
+| `microzooplankton.F90` | Z5, Z6 | Microzooplankton |
+| `mesozooplankton.F90` | Z4 | Mesozooplankton |
+| `benthic_bacteria.F90` | H1, H2 | Benthic bacteria |
+| `benthic_fauna.F90` | Y2–Y4 | Benthic fauna |
+| `nitrification.F90` | pel_nit | Pelagic nitrification |
+| `benthic_nitrogen_cycle.F90` | ben_nit | Benthic nitrification |
+| `benthic_column_particulate_matter.F90` | Q6, Q7 | POM layer remineralization |
 
-Currently, only `benthic_bacteria.F90` has been modified to accept a configurable `Tref`. The same modification pattern can be applied to other components as needed.
+To set Tref = 20°C globally, add `Tref: 20.0` to the `parameters:` section of every
+instance that has a Q10 temperature function (P1–P4, Z4–Z6, B1, H1, H2, Y2–Y4,
+pel_nit, ben_nit, Q6, Q7).
 
 ## Documentation
 

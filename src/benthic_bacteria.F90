@@ -103,10 +103,13 @@ contains
       call self%get_parameter(self%sr,   'sr',   '1/d', 'specific rest respiration')
       call self%get_parameter(self%pdQ1, 'pdQ1', '-',   'fraction of dying matter that is dissolved')
       call self%get_parameter(self%sd,   'sd',   '1/d', 'specific maximum mortality related to oxygen limitation')
-      ! Monod half-saturation for O2 limitation of aerobic respiration (jsasaki 2026-02-15)
-      ! Default 15.625 mmol O2/m^3 = 0.5 mg/L (bacteria are more tolerant than macrofauna)
+      ! Monod half-saturation for O2 limitation of respiration (jsasaki 2026-02-15)
+      ! Set hO2 > 0 for aerobic bacteria (H1) to prevent O2 going negative.
+      ! Default 0 = no limitation, appropriate for anaerobic bacteria (H2)
+      ! whose respiration produces reduction equivalents, not O2 demand.
+      ! Typical H1 value: 15.625 mmol O2/m^3 (= 0.5 mg/L).
       call self%get_parameter(self%hO2,  'hO2',  'mmol O2/m^3', &
-         'Michaelis-Menten constant for oxygen limitation of respiration',default=15.625_rk)
+         'Michaelis-Menten constant for oxygen limitation of respiration',default=0.0_rk)
       ! Reference temperature for Q10 function (jsasaki 2026-03-02)
       ! Default=10°C preserves original ERSEM behavior (North Sea).
       ! For warm eutrophic estuaries (e.g. Tokyo Bay), Tref=20°C is recommended
