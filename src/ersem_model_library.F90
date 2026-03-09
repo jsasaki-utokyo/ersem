@@ -34,6 +34,7 @@ module ersem_model_library
    use ersem_sulfur_cycle
    use ersem_benthic_sulfur_cycle
    use ersem_nutrient_relaxation
+   use ersem_spm_optics
 
    implicit none
 
@@ -91,6 +92,7 @@ contains
          case ('sulfur_cycle');                            allocate(type_ersem_sulfur_cycle::model)
          case ('benthic_sulfur_cycle');                    allocate(type_ersem_benthic_sulfur_cycle::model)
          case ('nutrient_relaxation');                     allocate(type_ersem_nutrient_relaxation::model)
+         case ('spm_optics');                              allocate(type_ersem_spm_optics::model)
          ! Add new models here
          case default
             call self%type_base_model_factory%create(name,model)
