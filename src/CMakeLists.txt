@@ -42,6 +42,7 @@ add_library(fabm_models_ersem OBJECT
             benthic_sulfur_cycle.F90
             nutrient_relaxation.F90
             spm_optics.F90
+            pom_decay.F90
            )
 
 target_link_libraries(fabm_models_ersem PRIVATE fabm_base)

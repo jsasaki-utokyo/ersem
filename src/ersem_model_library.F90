@@ -35,6 +35,7 @@ module ersem_model_library
    use ersem_benthic_sulfur_cycle
    use ersem_nutrient_relaxation
    use ersem_spm_optics
+   use ersem_pom_decay       ! jsasaki 2026-03-19: direct POM decomposition
 
    implicit none
 
@@ -93,6 +94,7 @@ contains
          case ('benthic_sulfur_cycle');                    allocate(type_ersem_benthic_sulfur_cycle::model)
          case ('nutrient_relaxation');                     allocate(type_ersem_nutrient_relaxation::model)
          case ('spm_optics');                              allocate(type_ersem_spm_optics::model)
+         case ('pom_decay');                               allocate(type_ersem_pom_decay::model)  ! jsasaki 2026-03-19
          ! Add new models here
          case default
             call self%type_base_model_factory%create(name,model)
