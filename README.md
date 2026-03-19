@@ -19,6 +19,18 @@ This repository contains a development version of ERSEM (European Regional Seas 
 
 **Note:** This is a development version optimized for estuarine and coastal systems. The upstream version is maintained at https://github.com/pmlmodelling/ersem (master branch).
 
+### Modifications from Upstream ERSEM
+
+This version includes the following extensions for estuarine/coastal applications:
+
+| Module | Description | Documentation |
+|--------|-------------|:-------------:|
+| **pom_decay** | Direct first-order POM decomposition in the water column with O2 consumption. Parameterizes particle-attached microbial communities absent from standard ERSEM. Enables reproduction of mid-water hypoxia in eutrophic estuaries. | [doc/pom_decay_module.md](doc/pom_decay_module.md) |
+| **spm_optics** | Dynamic suspended particulate matter (SPM) light absorption, replacing bulk constant parameterization. | — |
+| **CTMI temperature** | Configurable Tref with Cardinal Temperature Model for phytoplankton succession (Tmin/Topt/Tmax per species). | [doc/phytoplankton_temperature_ctmi.md](doc/phytoplankton_temperature_ctmi.md) |
+| **Sulfur cycle** | Pelagic and benthic sulfur cycling (H2S, S0, SO4) for oxygen-depleted environments. | [doc/sulfur_cycle_implementation.md](doc/sulfur_cycle_implementation.md) |
+| **CaO dissolution** | Calcium oxide dissolution for alkalinity management. | [doc/CaO_dissolution_implementation_guide.md](doc/CaO_dissolution_implementation_guide.md) |
+
 ## Installation from Source
 
 ### Prerequisites
