@@ -8,324 +8,213 @@ by the inability to reproduce mid-water hypoxia in eutrophic estuaries.
 
 The redesign introduces two new modules and one structural change:
 
-1. **`pom_decay`**: POM hydrolysis (POM → DOM) and direct oxidation (POM → CO2 + O2)
-2. **`dom_decay`** (planned): Bacteria-independent DOM oxidation (DOM → CO2 + O2)
+1. **`pom_decay`** (v3): POM hydrolysis (POM → DOM) and direct oxidation (POM → CO2 + O2)
+   with **independent rate constants** for each pathway
+2. **`dom_decay`**: Bacteria-independent DOM oxidation (DOM → CO2 + O2)
 3. **B1 sRP removal**: B1 no longer consumes POM directly; B1 consumes only DOM
 
 This follows BROM's hybrid philosophy: particle-attached microbial processes
 are parameterized as first-order reactions (implicit bacteria), while
 free-living bacteria (B1) remain explicit state variables for DOM consumption.
 
-**Initial implementation:** 2026-03-19 (jsasaki)
-**Redesign documented:** 2026-03-20
-
-## Background
-
-### Problem: Mid-Water Hypoxia
-
-Standard ERSEM cannot reproduce mid-water (8–14 m) hypoxia in Tokyo Bay
-despite extensive parameter tuning (680+ cases over Phases 26–35).
-Layer-by-layer O2 budget diagnosis showed:
-
-- Mid-water O2 consumption: 6.6 mmol O2/m³/d
-- Lateral O2 supply: ~6.4 mmol O2/m³/d (96% of consumption)
-- Net dO2/dt: −0.008 mg/L/d (model) vs −0.077 mg/L/d (observed)
-
-### Root Cause: Missing POM Decomposition Pathway
-
-Standard ERSEM has no mechanism for POM decomposition in the water column
-independent of free-living bacteria (B1). B1's POM uptake via the sRP
-pathway gives effective decomposition rates of ~0.001 /d, which is 10–75×
-slower than comparable models.
-
-Critically, the sRP pathway in `bacteria_docdyn.F90` does not produce DOM
-as an intermediate. Despite the parameter name "remineralisation of substrate
-to DOM", the code transfers POM carbon directly into B1 biomass:
-
-```fortran
-! bacteria_docdyn.F90 L309: POM uptake goes directly to B1, not to R1/R2/R3
-fRPB1c = sugB1 * RPcP * sRPR1 / sutB1
-rugB1 = sugB1*(R1cP + R2cP*rR2 + R3cP*rR3) + sum(fRPB1c)
-```
-
-This is physically incorrect: bacteria cannot directly ingest particles.
-All POM decomposition must proceed through extracellular enzymatic hydrolysis,
-producing DOM as an intermediate.
-
-### Comparison with Other Models
-
-| Model | POM decomposition | DOM decomposition | Explicit bacteria |
-|-------|-------------------|-------------------|:-----------------:|
-| **BROM** | First-order autolysis + oxidation | First-order + bacteria | Yes (4 types) |
-| **ERGOM** | First-order mineralization | First-order | No |
-| **CE-QUAL-ICM** | First-order (3 G-classes) | First-order | No |
-| **Fasham (1990)** | Via bacteria | Via bacteria | Yes |
-| **ERSEM (original)** | B1 direct uptake only | B1 only | Yes (B1) |
-| **ERSEM (redesign)** | First-order + DOM intermediate | First-order + B1 | Yes (B1) |
-
-The redesigned ERSEM adopts BROM's hybrid approach while retaining ERSEM's
-multi-class DOM structure (R1/R2/R3).
-
-See `TB-FVCOM/ersem/docs/pom_decomposition_model_comparison.md` for the
-full model comparison with equations and parameter values.
+**History:**
+- 2026-03-19 (jsasaki): Initial implementation (direct oxidation only, v1)
+- 2026-03-20: Redesign with autolysis pathway and G-model DOM split (v2)
+- 2026-03-21: Separate independent rate constants k_autolysis and k_oxidation (v3)
 
 ## Design Philosophy
 
 ### BROM's Hybrid Approach
 
-BROM (Yakushev et al. 2017) uses two parallel mechanisms for organic matter
-decomposition:
+BROM (Yakushev et al. 2017) uses independent first-order rate constants:
 
-1. **Implicit (first-order)**: Represents background microbial activity that
-   is always present proportional to substrate concentration. Based on the
-   assumption that microbial communities rapidly colonize substrates
-   (steady-state assumption; Anderson 2005).
-2. **Explicit (bacteria state variable)**: Captures dynamic microbial responses
-   to environmental changes (redox transitions, bloom events).
+| Pathway | Rate constant | Half-life | Products |
+|---------|:------------:|:---------:|----------|
+| Autolysis (POM → DOM) | K_PON_DON = 0.15 /d | 4.6 days | DOM |
+| Direct oxidation (POM → CO2) | K_PON_ox = 0.01 /d | 69 days | CO2 + O2 consumed |
+| DOM oxidation (DOM → CO2) | K_DON_ox = 0.10 /d | 7 days | CO2 + O2 consumed |
 
-Both mechanisms act on the **same substrate pools**. They are not redundant:
-the implicit pathway ensures decomposition occurs even when explicit bacteria
-are scarce, while explicit bacteria add dynamic variability.
+These are **independent** rates, not fractions of a single rate. The autolysis
+and direct oxidation have fundamentally different timescales.
 
 ### Application to ERSEM
 
-ERSEM's B1 (free-living bacteria) serves as the explicit component.
-The new modules add the implicit component:
+- **`pom_decay`**: Two independent rate constants (k_autolysis, k_oxidation)
+- **`dom_decay`**: Background DOM oxidation (equivalent to BROM's K_DON_ox)
+- **B1**: Consumes DOM only (sRP = 0). POM hydrolysis handled by pom_decay.
 
-- **`pom_decay`**: Implicit POM decomposition (particle-attached bacteria)
-- **`dom_decay`**: Implicit DOM decomposition (background microbial activity)
+### POM Class-Specific Parameters
 
-B1's direct POM uptake (sRP pathway) is removed because:
-1. Bacteria cannot directly ingest particles (must hydrolyze to DOM first)
-2. POM hydrolysis is now handled by `pom_decay`
-3. Keeping both would double-count POM decomposition
+ERSEMs three POM classes (R4, R6, R8) represent different particle types
+with different physical and biochemical properties:
 
-## Redesigned Organic Matter Flow
+| POM | Type | Sinking | k_autolysis | Rationale |
+|:---:|------|:-------:|:-----------:|-----------|
+| R4 | Small detritus | Slow | Higher (2× R6) | High surface/volume ratio |
+| R6 | Fecal pellets, aggregates | **Fast** | Base rate | Dense, mineral-ballasted |
+| R8 | Diatom shells, refractory | Slow | Lower (R6/3) | Resistant to hydrolysis |
 
-```
-                    pom_decay module
-                   ┌─────────────────────────────────────────┐
-                   │                                         │
-POM (R4/R6/R8) ───┤  Autolysis (f_aut × k × POM):           │
-                   │    → R1 (G1: 65%)  ─┐                  │
-                   │    → R2 (G2: 25%)  ─┤  DOM production   │
-                   │    → R3 (G3: 10%)  ─┘  (no O2 consumed) │
-                   │                                         │
-                   │  Direct oxidation ((1-f_aut) × k × POM):│
-                   │    → CO2 + O2 consumed                  │
-                   │    → NH4, PO4, Si released              │
-                   └─────────────────────────────────────────┘
-
-                    dom_decay module (planned)
-                   ┌─────────────────────────────────────────┐
-DOM (R1/R2/R3) ───┤  First-order oxidation (k_ox × DOM):     │
-                   │    → CO2 + O2 consumed                  │
-                   │    → NH4, PO4 released                  │
-                   └─────────────────────────────────────────┘
-
-                    B1 bacteria (existing, modified)
-                   ┌─────────────────────────────────────────┐
-DOM (R1/R2/R3) ───┤  B1 uptake (sR1, rR2, rR3):              │
-                   │    → B1 biomass → respiration → O2      │
-                   │  (sRP pathway REMOVED: B1 no longer      │
-                   │   consumes POM directly)                 │
-                   └─────────────────────────────────────────┘
-
-                    Benthic system (existing, unchanged)
-                   ┌─────────────────────────────────────────┐
-POM settling ─────┤  → Q6 (benthic POM)                      │
-                   │  → H1/H2 (benthic bacteria) → O2/SOD    │
-                   └─────────────────────────────────────────┘
-```
-
-### Role Assignment
-
-| Process | Module | Substrate | Products |
-|---------|--------|-----------|----------|
-| POM hydrolysis (autolysis) | `pom_decay` | POM | R1 + R2 + R3 |
-| POM surface oxidation | `pom_decay` | POM | CO2 + O2 consumed |
-| DOM background oxidation | `dom_decay` | R1, R2, R3 | CO2 + O2 consumed |
-| DOM uptake by free-living bacteria | B1 (existing) | R1, R2, R3 | B1 biomass → respiration |
-| POM settling to benthos | Sinking (existing) | POM | Q6 |
-| Benthic decomposition | H1/H2 (existing) | Q6 | SOD |
-
-### Key Design Decisions
-
-1. **B1 sRP pathway is removed** (sRP1R1 = sRP2R1 = sRP3R1 = 0).
-   B1 consumes DOM only. POM hydrolysis is handled by `pom_decay`.
-
-2. **POM autolysis produces R1/R2/R3** following DiToro's G-model fractions
-   (G1=65%, G2=25%, G3=10%). This ensures the reactivity continuum is
-   preserved in the DOM pool.
-
-3. **dom_decay and B1 act on the same DOM pools simultaneously**.
-   This is identical to BROM's design where K_DON_ox and explicit bacteria
-   consume the same DOM. The two pathways are not redundant: when B1 is
-   abundant (surface), B1 dominates; when B1 is scarce (mid-water, deep),
-   dom_decay provides the baseline decomposition.
-
-4. **R3 (semi-refractory DOM) is preserved** for COD environmental assessment.
-   Both dom_decay (with low k_R3_ox) and B1 (with rR3=0.0025) process R3
-   slowly, allowing long-term accumulation.
+Sinking speeds follow Stokes' law relationships:
+- R4 ≈ R6 × 0.1 (small, low density)
+- R8 ≈ R6 × 0.2 (large but porous, low effective density)
+- R6 is fastest due to high particle density (fecal pellets)
 
 ## Equations
 
-### POM Decomposition (`pom_decay`)
+### POM Decomposition (`pom_decay` v3)
 
-For each POM class (R4, R6, R8):
+For each POM class, two independent pathways:
 
 ```
-k_eff = k_decomp × f(T) × f(O2)
 f(T)  = max(0, Q10^((T-Tref)/10) - Q10^((T-32)/3))
 f(O2) = O2 / (O2 + K_O2)
 
-Autolysis pathway (fraction f_aut of total decomposition):
-  dPOM_c/dt -= k_eff × f_aut × POM_c
-  dR1_c/dt  += k_eff × f_aut × POM_c × f_G1        [G1 fraction → R1]
-  dR2_c/dt  += k_eff × f_aut × POM_c × f_G2        [G2 fraction → R2]
-  dR3_c/dt  += k_eff × f_aut × POM_c × f_G3        [G3 fraction → R3]
-  dNH4/dt   += k_eff × f_aut × POM_n               [nutrient release]
-  dPO4/dt   += k_eff × f_aut × POM_p
-  dTA/dt    += k_eff × f_aut × (POM_n - POM_p)     [alkalinity]
-  (NO O2 consumption — O2 is consumed later when DOM is oxidized)
+Autolysis (POM → DOM):
+  rate_aut = k_autolysis × f(T) × f(O2) × POM
+  dPOM/dt -= rate_aut
+  dR1/dt  += rate_aut × f_G1       [65% → R1 labile DOM]
+  dR2/dt  += rate_aut × f_G2       [25% → R2 semi-labile]
+  dR3/dt  += rate_aut × f_G3       [10% → R3 semi-refractory]
+  (NO O2 consumed)
 
-Direct oxidation pathway (fraction 1-f_aut):
-  dPOM_c/dt -= k_eff × (1-f_aut) × POM_c
-  dO2/dt    -= k_eff × (1-f_aut) × POM_c × ur_O2   [O2 consumption]
-  dDIC/dt   += k_eff × (1-f_aut) × POM_c / CMass   [CO2 production]
-  dNH4/dt   += k_eff × (1-f_aut) × POM_n
-  dPO4/dt   += k_eff × (1-f_aut) × POM_p
-  dTA/dt    += k_eff × (1-f_aut) × (POM_n - POM_p)
+Direct oxidation (POM → CO2 + O2):
+  rate_ox = k_oxidation × f(T) × f(O2) × POM
+  dPOM/dt -= rate_ox
+  dO2/dt  -= rate_ox × ur_O2
+  dDIC/dt += rate_ox / CMass
 ```
 
-### DOM Oxidation (`dom_decay`, planned)
+G-model fractions (DiToro 2001): f_G1=0.65, f_G2=0.25, f_G3=0.10.
 
-For each DOM class (R1, R2, R3):
+### DOM Oxidation (`dom_decay`)
 
 ```
-k_ox_eff = k_ox × f(T) × f(O2)
-
-dDOM_c/dt -= k_ox_eff × DOM_c
-dO2/dt    -= k_ox_eff × DOM_c × ur_O2
-dDIC/dt   += k_ox_eff × DOM_c / CMass
-dTA/dt    += k_ox_eff × (DOM_n - DOM_p)    [if N,P tracked]
+dDOM/dt = -k_ox × f(T) × f(O2) × DOM
+dO2/dt  = -k_ox × f(T) × f(O2) × DOM × ur_O2
 ```
 
-Note: R1 has C, N, P composition; R2 and R3 have C only. For R2/R3,
-nutrient release follows Redfield stoichiometry applied to the C flux.
+Both dom_decay and B1 act on the same R1/R2/R3 pools simultaneously.
 
 ## Parameters
 
-### POM Decomposition (`pom_decay`)
+### POM Decomposition (`pom_decay` v3)
 
 | Parameter | Unit | Default | Description |
 |-----------|------|:-------:|-------------|
-| `k_decomp` | 1/d | 0.03 | Total POM decomposition rate at Tref |
-| `f_aut` | - | 0.9 | Fraction routed to DOM (autolysis) |
-| `f_G1` | - | 0.65 | Labile fraction of autolysis products (→R1) |
-| `f_G2` | - | 0.25 | Semi-labile fraction (→R2) |
-| `f_G3` | - | 0.10 | Semi-refractory fraction (→R3) |
+| `k_autolysis` | 1/d | 0.15 | Hydrolysis rate: POM → DOM (BROM: 0.15) |
+| `k_oxidation` | 1/d | 0.01 | Direct oxidation: POM → CO2+O2 (BROM: 0.01) |
+| `f_G1` | - | 0.65 | Labile fraction → R1 (DiToro G1) |
+| `f_G2` | - | 0.25 | Semi-labile fraction → R2 (DiToro G2) |
+| `f_G3` | - | 0.10 | Semi-refractory fraction → R3 (DiToro G3) |
 | `q10` | - | 2.0 | Q10 temperature coefficient |
 | `Tref` | °C | 20.0 | Reference temperature |
-| `K_O2` | mmol O2/m³ | 5.0 | O2 half-saturation for decomposition |
-| `ur_O2` | mmol O2/mg C | 0.1 | O2 consumed per carbon (direct oxidation only) |
+| `K_O2` | mmol O2/m³ | 5.0 | O2 half-saturation |
+| `ur_O2` | mmol O2/mg C | 0.1 | O2 per C (direct oxidation only) |
 
-f_aut=0.9 is based on BROM where autolysis(0.15/d)/total(0.16/d) ≈ 0.94.
+**Note on defaults:** BROM defaults (k_autolysis=0.15) are too high for
+Tokyo Bay. Phase 39b found k_aut_R6=0.02-0.03 is optimal (see Validation).
 
-f_G1/f_G2/f_G3 values are based on DiToro (2001) G-model fractions for
-estuarine organic matter.
+### Recommended Values per POM Class
 
-### DOM Oxidation (`dom_decay`, planned)
+| POM | k_autolysis | k_oxidation | Sinking rm |
+|:---:|:-----------:|:-----------:|:----------:|
+| R4 | R6 × 2 | 0.01 | R6 × 0.1 (min 0.5) |
+| R6 | 0.02–0.03 | 0.01 | 10 m/d (base) |
+| R8 | R6 / 3 | 0.01 | R6 × 0.2 (min 0.5) |
 
-| Parameter | Unit | Default | Description |
-|-----------|------|:-------:|-------------|
-| `k_ox` | 1/d | varies | First-order oxidation rate at Tref |
-
-Suggested values per DOM class:
+### DOM Oxidation (`dom_decay`)
 
 | DOM class | k_ox (/d) | Rationale |
 |-----------|:---------:|-----------|
-| R1 (labile) | 0.05–0.10 | BROM K_DON_ox=0.10; fast turnover |
-| R2 (semi-labile) | 0.005–0.02 | Slower; R2 = semi-labile by definition |
-| R3 (semi-refractory) | 0.0005–0.002 | Very slow; preserves long-term accumulation |
+| R1 (labile) | 0.005–0.01 | Lower than BROM (0.10) to avoid excess consumption |
+| R2 (semi-labile) | k_R1/5 | |
+| R3 (semi-refractory) | k_R1/50 | Preserves long-term accumulation |
 
 ### B1 Modification
 
 | Parameter | Original | Redesign | Reason |
 |-----------|:--------:|:--------:|--------|
-| sRP1R1 (R4 uptake) | 0.011 | **0.0** | POM hydrolysis handled by pom_decay |
-| sRP2R1 (R6 uptake) | 0.020 | **0.0** | Same |
-| sRP3R1 (R8 uptake) | 0.002 | **0.0** | Same |
+| sRP1R1 | 0.011 | **0.0** | POM hydrolysis handled by pom_decay |
+| sRP2R1 | 0.020 | **0.0** | Same |
+| sRP3R1 | 0.002 | **0.0** | Same |
 | sR1, rR2, rR3 | unchanged | unchanged | B1 continues DOM consumption |
-
-## Validation Status
-
-### Phase 36 (initial pom_decay, direct oxidation only)
-
-The initial implementation (POM → CO2 + O2, no DOM intermediate) was tested
-in Phase 36 (26 cases) and Phase 37 (48 cases):
-
-- k_R6=0.03: Mid-water (8–14 m) August bias improved from +1.83 to +0.73 mg/L
-- k_R6=0.05: Mid-water bias −0.51 (first reproduction of mid-water hypoxia)
-- R6 sinking speed (5–30 m/d) had no effect when pom_decay was active
-- Phase 37 showed P5 Tmax fix remains essential even with pom_decay
-- Best configuration: P37_G1 (k=0.035, OBC100%, P5fix, defaults, KGE=0.500)
-
-### Issue Identified: Q6 Depletion
-
-With direct-oxidation-only pom_decay, bottom POM dropped to zero and Q6
-(benthic organic matter) decreased from 33,000 to 6,200 mg C/m².
-This caused shallow-station bottom DO to increase (worsened reproduction)
-because sediment oxygen demand (SOD) collapsed.
-
-The redesign with DOM intermediate (autolysis pathway) and adjusted POM
-sinking speeds is expected to address this by:
-1. Routing most POM → DOM (which doesn't directly affect bottom POM flux)
-2. Only 10% (direct oxidation) consumes POM with O2 in the water column
-3. POM continues sinking while DOM is produced; balance between
-   decomposition and sinking determines bottom POM flux
-
-### Pending Validation
-
-The full redesign (pom_decay with autolysis + dom_decay + B1 sRP removal)
-has not yet been implemented or tested. Phase 38 will validate the
-complete redesigned system.
 
 ## Source Files
 
-### Current (Phase 36–37)
-
-| File | Status | Description |
-|------|--------|-------------|
-| `src/pom_decay.F90` | Implemented | Direct oxidation only (to be updated) |
+| File | Version | Description |
+|------|---------|-------------|
+| `src/pom_decay.F90` | v3 (2026-03-21) | Independent k_autolysis + k_oxidation |
+| `src/dom_decay.F90` | v1 (2026-03-20) | Bacteria-independent DOM oxidation |
 | `src/ersem_model_library.F90` | Modified | Factory registration |
 | `src/CMakeLists.txt` | Modified | Build list |
 
-### Planned (Redesign)
+## Validation (Tokyo Bay)
 
-| File | Status | Description |
-|------|--------|-------------|
-| `src/pom_decay.F90` | To update | Add autolysis pathway + f_G1/G2/G3 |
-| `src/dom_decay.F90` | To create | Bacteria-independent DOM oxidation |
-| `src/ersem_model_library.F90` | To update | Register dom_decay |
-| `src/bacteria_docdyn.F90` | Config only | Set sRP1R1=sRP2R1=sRP3R1=0 in YAML |
+### Phase 36 (26 cases): Initial pom_decay v1 (direct oxidation only)
 
-Note: B1's sRP removal does not require source code changes. Setting
-sRP values to 0.0 in `fabm.yaml` is sufficient.
+- k_R6=0.03: Mid-water bias improved +1.83 → +0.73 mg/L
+- k_R6=0.05: First reproduction of mid-water hypoxia (bias −0.51)
+- **Issue**: POM_bot=0, Q6 depleted (1/5 of original)
+
+### Phase 37-38 (114 cases): pom_decay v2 with autolysis + dom_decay
+
+- P5 Tmax fix remains essential
+- BROM defaults (k_aut=0.15) cause extreme over-consumption
+- k_dom_R1=0.05 (BROM-like) too high; k_dom_R1=0.01 better
+- f_aut fraction approach was abandoned (v2 → v3) because autolysis
+  and direct oxidation have fundamentally different timescales
+
+### Phase 39/39b/39c (166 cases): pom_decay v3 with independent rates
+
+**Critical finding: POM sinking speed has NO effect on dissolved oxygen.**
+
+R4=1-50, R6=1-70 m/d (including Stokes-consistent R4/R8 linkage) all
+produce identical results when k_autolysis is the same. This is because
+pom_decay acts on the standing stock of POM at every grid point; the
+total DOM production (and thus O2 consumption) depends only on the total
+POM present in the domain, not on where it sinks.
+
+**Optimal k_autolysis for R6 (dominant POM class):**
+
+| k_aut_R6 | Mid-water Aug | Bottom Aug | Assessment |
+|:--------:|:-------------:|:----------:|------------|
+| 0.005 | +0.95 | +0.44 | Too weak |
+| 0.01 | +0.88 | +0.35 | Weak |
+| **0.02** | **+0.70** | **+0.13** | **Good balance** |
+| **0.03** | **+0.31** | **−0.20** | **Best mid-water** |
+| 0.05 | −1.08 | −1.40 | Over-consumption |
+| 0.15 (BROM) | −2.86 | −2.75 | Severe over-consumption |
+
+k_aut_R6 = 0.02–0.03 (half-life 23–35 days) is optimal for Tokyo Bay.
+This is ~5–8× slower than BROM's default (0.15 /d, half-life 4.6 days).
+
+### Remaining Issues (as of Phase 39c)
+
+1. **Shallow station bottom DO**: Chi-1LH and Urayasu bottom DO bias not
+   yet evaluated with full postprocessing for the redesigned system.
+2. **Q6 depletion**: With pom_decay active, less POM reaches the benthos.
+   The impact on SOD and benthic nutrient recycling needs assessment.
+3. **POM sinking speed insensitivity**: The finding that sinking speed has
+   zero effect is physically unexpected and may indicate a model behavior
+   that warrants further investigation (e.g., DOM-mediated feedback loops).
+
+### Next Steps (to be resumed)
+
+1. Run postprocess (Stage 1) for P39b (64 cases) and P39c (30 cases)
+   to obtain full validation statistics (KGE, RMSE, bias per station)
+2. Select best cases for Stage 2 (full pipeline with plots)
+3. Evaluate all 4 stations (Kawasaki, Chi-1LH, Kemigawa, Urayasu)
+4. Investigate why POM sinking speed has no effect
+5. Test with adjusted POM production ratios (R4:R6:R8 split in
+   zooplankton/phytoplankton death terms)
 
 ## References
 
 - Yakushev, E.V. et al. (2017). Bottom RedOx Model (BROM v.1.1). *GMD* 10:453–482.
 - DiToro, D.M. (2001). *Sediment Flux Modeling*. Wiley-Interscience.
-- Fasham, M.J.R. et al. (1990). A nitrogen-based model of plankton dynamics
-  in the oceanic mixed layer. *J. Mar. Res.* 48:591–639.
-- Anderson, T.R. (2005). Plankton functional type modelling: running before
-  we can walk? *J. Plankton Res.* 27:1073–1081.
-- Ogura, N. et al. (2003). Decomposition of phytoplankton in seawater.
-  *J. Oceanogr.* 59:417–426.
-- Westrich, J.T. & Berner, R.A. (1984). The role of sedimentary organic matter
-  in bacterial sulfate reduction. *Limnol. Oceanogr.* 29:236–249.
-- Neumann, T. et al. (2022). Non-Redfieldian carbon model (ERGOM v1.2). *GMD* 15:8473–8540.
-- Cerco, C.F. & Cole, T. (1993). Three-dimensional eutrophication model of
-  Chesapeake Bay. *J. Environ. Eng.* 119:1006–1025.
+- Fasham, M.J.R. et al. (1990). A nitrogen-based model of plankton dynamics. *J. Mar. Res.* 48:591–639.
+- Anderson, T.R. (2005). Plankton functional type modelling. *J. Plankton Res.* 27:1073–1081.
+- Ogura, N. et al. (2003). Decomposition of phytoplankton in seawater. *J. Oceanogr.* 59:417–426.
+- Westrich, J.T. & Berner, R.A. (1984). The role of sedimentary organic matter. *Limnol. Oceanogr.* 29:236–249.
+- Cerco, C.F. & Cole, T. (1993). Chesapeake Bay eutrophication model. *J. Environ. Eng.* 119:1006–1025.
 - Butenschön, M. et al. (2016). ERSEM 15.06. *GMD* 9:1293–1339.
