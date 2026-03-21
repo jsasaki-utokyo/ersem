@@ -93,8 +93,8 @@ ersem_model_library.F90  -- Factory: maps "ersem/xyz" names to types
     |
     +-- pelagic_base.F90     -- Base for pelagic state variables (C, N, P, Si, Fe, Chl)
     |   +-- primary_producer.F90   -- P1-P4 phytoplankton
-    |   +-- microzooplankton.F90   -- Heterotrophic nanoflagellates
-    |   +-- mesozooplankton.F90    -- Copepods, etc.
+    |   +-- microzooplankton.F90   -- Z5 microzooplankton, Z6 nanoflagellates
+    |   +-- mesozooplankton.F90    -- Z4 mesozooplankton (copepods, etc.)
     |   +-- bacteria.F90           -- Standard bacterial remineralization
     |   +-- bacteria_docdyn.F90    -- Dynamic DOC bacteria
     |

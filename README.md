@@ -25,7 +25,8 @@ This version includes the following extensions for estuarine/coastal application
 
 | Module | Description | Documentation |
 |--------|-------------|:-------------:|
-| **pom_decay** | Direct first-order POM decomposition in the water column with O2 consumption. Parameterizes particle-attached microbial communities absent from standard ERSEM. Enables reproduction of mid-water hypoxia in eutrophic estuaries. | [doc/pom_decay_module.md](doc/pom_decay_module.md) |
+| **pom_decay** | POM hydrolysis (POM→DOM) and direct oxidation (POM→CO₂+O₂) with independent rate constants. Parameterizes particle-attached microbial communities absent from standard ERSEM. Enables reproduction of mid-water hypoxia in eutrophic estuaries. | [doc/pom_decay_module.md](doc/pom_decay_module.md) |
+| **dom_decay** | Bacteria-independent DOM oxidation (DOM→CO₂+O₂). Provides baseline microbial activity independent of explicit B1 bacteria, following BROM's design. | [doc/pom_decay_module.md](doc/pom_decay_module.md) |
 | **spm_optics** | Dynamic suspended particulate matter (SPM) light absorption, replacing bulk constant parameterization. | — |
 | **CTMI temperature** | Configurable Tref with Cardinal Temperature Model for phytoplankton succession (Tmin/Topt/Tmax per species). | [doc/phytoplankton_temperature_ctmi.md](doc/phytoplankton_temperature_ctmi.md) |
 | **Sulfur cycle** | Pelagic and benthic sulfur cycling (H2S, S0, SO4) for oxygen-depleted environments. | [doc/sulfur_cycle_implementation.md](doc/sulfur_cycle_implementation.md) |
@@ -598,6 +599,9 @@ Example configurations are in `testcases/`:
 | `fabm-ersem-15.06-L4-noben-docdyn-iop.yaml` | Pelagic only (no benthos) |
 | `fabm-ersem-15.06-L4-ben-docdyn-iop-denit.yaml` | With denitrification |
 | `fabm-ersem-15.06-L4-ben-docdyn-iop-n2o.yaml` | With N2O dynamics |
+| `fabm-ersem-Blackford2004-L4-ben-stdbac-stdlight.yaml` | Blackford (2004) with benthos, standard bacteria/light |
+| `fabm-ersem-Blackford2004-L4-noben-stdbac-stdlight.yaml` | Blackford (2004) pelagic only |
+| `sulfur_cycle_example.yaml` | Sulfur cycle configuration example |
 | `fabm-ersem.yaml.template` | Template for custom configurations |
 
 ### Key Model Instances
@@ -635,9 +639,9 @@ ERSEM uses standardized naming for biogeochemical components:
 #### Zooplankton
 | Instance | Model | Description |
 |----------|-------|-------------|
-| `Z4` | `ersem/microzooplankton` | Microzooplankton |
-| `Z5` | `ersem/mesozooplankton` | Mesozooplankton |
-| `Z6` | `ersem/mesozooplankton` | Heterotrophic nanoflagellates |
+| `Z4` | `ersem/mesozooplankton` | Mesozooplankton |
+| `Z5` | `ersem/microzooplankton` | Microzooplankton |
+| `Z6` | `ersem/microzooplankton` | Heterotrophic nanoflagellates |
 
 #### Bacteria
 | Instance | Model | Description |
