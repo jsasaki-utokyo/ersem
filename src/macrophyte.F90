@@ -78,6 +78,7 @@ module ersem_macrophyte
       real(rk) :: vmax_n, vmax_p, hN3, hN4, hP, hKn, hKp, f_root
       real(rk) :: srs_ag, srs_bg, r_nsc, pu_ra, hO2, hG2o
       real(rk) :: tau_store, tau_mob, k_bg
+      real(rk) :: rs_target, k_alloc, q_nsc
       real(rk) :: sd_ag, sd_bg, sd_anx, nsc_starve, sd_starve, f_pel
    contains
       procedure :: initialize
@@ -168,6 +169,20 @@ contains
          'NSC remobilisation rate under light limitation', default=0.05_rk, minimum=0.0_rk)
       call self%get_parameter(self%k_bg, 'k_bg', '1/d', &
          'BG structural growth rate from NSC', default=0.02_rk, minimum=0.0_rk)
+      ! v2 allocation control (2026-08-14): the v1 balance let the BG pool
+      ! collapse over a full year (report_year.md). BG growth is now driven by
+      ! the root:shoot deficit, fed both from positive net AG production
+      ! (k_alloc) and from the reserve (k_bg), and storage stops once the
+      ! reserve reaches its target fraction of BG structure.
+      call self%get_parameter(self%rs_target, 'rs_target', '-', &
+         'target BG:AG carbon ratio for allocation control', &
+         default=0.75_rk, minimum=0.01_rk)
+      call self%get_parameter(self%k_alloc, 'k_alloc', '-', &
+         'maximum fraction of positive net AG production allocated to BG growth', &
+         default=0.35_rk, minimum=0.0_rk, maximum=1.0_rk)
+      call self%get_parameter(self%q_nsc, 'q_nsc', '-', &
+         'target NSC reserve as a fraction of BG carbon', &
+         default=0.15_rk, minimum=0.0_rk)
 
       call self%get_parameter(self%sd_ag, 'sd_ag', '1/d', &
          'AG background sloughing rate', default=0.004_rk, minimum=0.0_rk)
@@ -253,6 +268,7 @@ contains
       real(rk) :: eT, lai, I_can, eI, qn, qp, eQ
       real(rk) :: Pg, Ra_act, Ra_bas, Rn, Rb, fO2ag, fO2bg
       real(rk) :: Pnet_ag, T_st, T_mb, G_bg, G_bg_c
+      real(rk) :: relE, nsc_gap, G_alloc, G_res, gscale
       real(rk) :: cap_n, cap_p, upt_leaf, upt_root
       real(rk) :: jN4_leaf, jN3_leaf, jP_leaf
       real(rk) :: jN4_root, jN3_root, jP_root, wsum
@@ -313,16 +329,29 @@ contains
          Rn = self%r_nsc * eT * NSCc * fO2ag
          Rb = self%srs_bg * eT * BGc * fO2bg
 
-         ! --- Translocation and BG growth ---------------------------------
+         ! --- Translocation and BG growth (v2 allocation control) ---------
          Pnet_ag = Pg - Ra_act - Ra_bas
-         T_st = self%tau_store * max(0.0_rk, Pnet_ag)
+         ! Root:shoot deficit: 1 when BG is absent, 0 at/above the target ratio
+         relE = min(1.0_rk, max(0.0_rk, &
+                1.0_rk - (BGc / max(AGc, 1.0e-8_rk)) / self%rs_target))
+         ! Storage: bank surplus production until the reserve reaches its
+         ! target fraction of BG structure
+         nsc_gap = max(0.0_rk, 1.0_rk - NSCc / max(self%q_nsc * BGc, 1.0e-8_rk))
+         T_st = self%tau_store * max(0.0_rk, Pnet_ag) * nsc_gap
          T_mb = self%tau_mob * NSCc * max(0.0_rk, 1.0_rk - eI)
-         G_bg = self%k_bg * eT * NSCc
+         ! BG growth, driven by the deficit: direct allocation of net
+         ! production (carbon from AG) plus reserve-fed growth (carbon from NSC)
+         G_alloc = relE * self%k_alloc * max(0.0_rk, Pnet_ag)
+         G_res = relE * self%k_bg * eT * NSCc
+         G_bg = G_alloc + G_res
          ! BG structural growth needs N and P from the AG pools at fixed quota;
          ! scale it down when the AG pools cannot pay.
          G_bg_c = min(G_bg, &
                       0.5_rk * AGn / max(self%qn_bg, 1.0e-12_rk), &
                       0.5_rk * AGp / max(self%qp_bg, 1.0e-12_rk))
+         gscale = G_bg_c / max(G_bg, 1.0e-12_rk)
+         G_alloc = G_alloc * gscale
+         G_res = G_res * gscale
 
          ! --- Nutrient uptake (mmol/m^2/d) --------------------------------
          cap_n = self%vmax_n * eT * AGc * max(0.0_rk, 1.0_rk - qn / self%qn_max)
@@ -345,8 +374,8 @@ contains
          M_bg = (self%sd_bg + self%sd_anx * (1.0_rk - fO2bg)) * BGc
 
          ! --- State ODEs (per day) ----------------------------------------
-         dAGc = Pg - Ra_act - Ra_bas - T_st + T_mb - M_ag
-         dNSC = T_st - T_mb - G_bg_c - Rn
+         dAGc = Pg - Ra_act - Ra_bas - T_st + T_mb - M_ag - G_alloc
+         dNSC = T_st - T_mb - G_res - Rn
          dBGc = G_bg_c - Rb - M_bg
          dAGn = jN4_leaf + jN3_leaf + jN4_root + jN3_root &
                 - self%qn_bg * G_bg_c - qn * M_ag
