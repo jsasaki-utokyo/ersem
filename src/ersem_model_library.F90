@@ -29,6 +29,7 @@ module ersem_model_library
    use ersem_benthic_calcite
    use ersem_benthic_erosion
    use ersem_benthic_cao
+   use ersem_macrophyte
    use ersem_fluff
    use ersem_zenith_angle
    use ersem_sulfur_cycle
@@ -89,6 +90,7 @@ contains
          case ('benthic_calcite');                         allocate(type_ersem_benthic_calcite::model)
          case ('benthic_erosion');                         allocate(type_ersem_benthic_erosion::model)
          case ('benthic_cao');                             allocate(type_ersem_benthic_cao::model)
+         case ('macrophyte');                              allocate(type_ersem_macrophyte::model)
          case ('fluff');                                   allocate(type_ersem_fluff::model)
          case ('zenith_angle');                            allocate(type_ersem_zenith_angle::model)
          case ('sulfur_cycle');                            allocate(type_ersem_sulfur_cycle::model)
