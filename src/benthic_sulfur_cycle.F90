@@ -111,6 +111,7 @@ module ersem_benthic_sulfur_cycle
       real(rk) :: K_barrier_rate ! Rate at which barrier oxidizes H2S (1/d)
       real(rk) :: K_FeS_ben      ! FeS precipitation rate in benthic layers (1/d)
       real(rk) :: K_FeS_pel      ! FeS precipitation rate in pelagic (1/d)
+      real(rk) :: p_sr_1         ! fraction of sulfate reduction delivered at the interface / layer 1 (jsasaki 2026-08-15, docs/14)
       real(rk) :: f_DNRA         ! Fraction of H2S-NO3 N going to NH4 (0-1)
 
    contains
@@ -181,6 +182,21 @@ contains
       ! Usually lower than benthic because less reactive Fe available in water column
       call self%get_parameter(self%K_FeS_pel, 'K_FeS_pel', '1/d', &
            'FeS precipitation rate in pelagic (scavenging)', default=0.1_rk)
+      ! Vertical placement of sulfate reduction (jsasaki 2026-08-15; design:
+      ! nippon-steel/docs/14-anaerobic-pathway.md section 4). The original
+      ! wiring put ALL SR products (H2S + alkalinity) in Layer 3, whose
+      ! exchange timescale is far longer than the tank's 72-h closures: the
+      ! SR alkalinity accumulated at depth while the observed water-column
+      ! dark TA rise (+79..+112 umol/kg/72 h) never appeared. In a thin,
+      ! organic-rich sediment SR runs just below the interface, so a
+      ! fraction p_sr_1 of the production (H2S and its +2 TA/S) is delivered
+      ! to Layer 1, where the existing O2-dependent oxidation chain also
+      ! yields the observed dark-light TA sign flip (lit: prompt reoxidation
+      ! retracts the TA; dark: it survives). Default 0 = legacy layer-3-only
+      ! behaviour (bit-identical).
+      call self%get_parameter(self%p_sr_1, 'p_sr_1', '-', &
+           'fraction of sulfate reduction delivered at the interface (Layer 1)', &
+           default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
 
       ! Register dependencies for layer-specific sulfur variables
       ! These link to variables created by benthic_column_dissolved_matter with composition 'h' and 'e'
@@ -451,8 +467,10 @@ contains
          ! ============================================================
          ! Set ODEs
          ! ============================================================
-         ! Layer 3: H2S production from sulfate reduction, loss from FeS burial
-         _SET_BOTTOM_ODE_(self%id_H2S_3, R_sulfate_red - R_FeS_3)
+         ! Layer 3: H2S production from sulfate reduction, loss from FeS burial.
+         ! A p_sr_1 fraction of the production is delivered at the interface
+         ! (Layer 1) instead - see the p_sr_1 parameter note (docs/14).
+         _SET_BOTTOM_ODE_(self%id_H2S_3, (1.0_rk - self%p_sr_1) * R_sulfate_red - R_FeS_3)
 
          ! Layer 2: H2S consumption by NO3 oxidation and FeS precipitation
          ! Electron-balanced stoichiometry for H2S-NO3 coupling:
@@ -476,20 +494,22 @@ contains
          if (.not.legacy_ersem_compatibility) &
             _SET_BOTTOM_ODE_(self%id_benTA2, r_ta * R_H2S_NO3_ox)
 
-         ! Layer 1: H2S consumption by oxidation and FeS precipitation
+         ! Layer 1: H2S delivery from interface sulfate reduction (p_sr_1),
+         !          consumption by oxidation and FeS precipitation,
          !          S0 production from H2S oxidation, loss from oxidation and burial
-         _SET_BOTTOM_ODE_(self%id_H2S_1, -R_H2S_ox_1 - R_FeS_1)
+         _SET_BOTTOM_ODE_(self%id_H2S_1, self%p_sr_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
          _SET_BOTTOM_ODE_(self%id_S0_1,   R_H2S_ox_1 - R_S0_ox_1 - R_S0_burial)
          _SET_BOTTOM_ODE_(self%id_G2o,   -0.5_rk * R_H2S_ox_1 - 1.5_rk * R_S0_ox_1)
 
-         ! Alkalinity: S0 + 1.5 O2 + H2O -> SO4^2- + 2H+ => -2 TA per mol S0
+         ! Alkalinity, layer 1: interface sulfate reduction +2 TA per mol H2S;
+         ! S0 + 1.5 O2 + H2O -> SO4^2- + 2H+ => -2 TA per mol S0
          if (.not.legacy_ersem_compatibility) &
-            _SET_BOTTOM_ODE_(self%id_benTA, -2.0_rk * R_S0_ox_1)
+            _SET_BOTTOM_ODE_(self%id_benTA, 2.0_rk * self%p_sr_1 * R_sulfate_red - 2.0_rk * R_S0_ox_1)
 
          ! Layer 3: sulfate reduction produces +2 TA per mol H2S
          ! SO4^2- + 2C_org -> H2S + 2HCO3- (net +2 mEq per mol H2S)
          if (.not.legacy_ersem_compatibility) &
-            _SET_BOTTOM_ODE_(self%id_benTA3, 2.0_rk * R_sulfate_red)
+            _SET_BOTTOM_ODE_(self%id_benTA3, 2.0_rk * (1.0_rk - self%p_sr_1) * R_sulfate_red)
 
          ! Pelagic: H2S removal by oxic barrier oxidation and FeS scavenging
          ! Barrier oxidation produces S0, FeS scavenging is irreversible removal
