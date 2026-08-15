@@ -63,12 +63,16 @@ module ersem_macrophyte
       type (type_bottom_state_variable_id) :: id_benTA
       type (type_bottom_state_variable_id) :: id_Q6c, id_Q6n, id_Q6p
 
+      ! External grazers (optional grazing closure, docs/13 2026-08-15)
+      type (type_horizontal_dependency_id) :: id_gr1c, id_gr2c
+
       ! Environment
       type (type_dependency_id) :: id_ETW, id_par
 
       ! Diagnostics
       type (type_horizontal_diagnostic_variable_id) :: id_gpp, id_npp
       type (type_horizontal_diagnostic_variable_id) :: id_resp, id_fT, id_fI
+      type (type_horizontal_diagnostic_variable_id) :: id_graz
 
       ! Parameters
       real(rk) :: p_max, alpha, a_lai, k_can
@@ -80,6 +84,7 @@ module ersem_macrophyte
       real(rk) :: tau_store, tau_mob, k_bg
       real(rk) :: rs_target, k_alloc, q_nsc
       real(rk) :: sd_ag, sd_bg, sd_anx, nsc_starve, sd_starve, f_pel
+      real(rk) :: g_max, h_ag, pe_gr
    contains
       procedure :: initialize
       procedure :: do_bottom
@@ -199,6 +204,27 @@ contains
          'fraction of AG sloughing routed to pelagic POM (R6)', &
          default=0.5_rk, minimum=0.0_rk, maximum=1.0_rk)
 
+      ! --- Optional grazing closure on AG (docs/13, 2026-08-15) ----------
+      ! Type-III (sigmoid) loss of AG carbon to external benthic grazers:
+      !   F_gr = g_max * (grazer1c + grazer2c) * AGc^2 / (AGc^2 + h_ag^2)
+      ! The sigmoid gives a low-biomass refuge that the density-independent
+      ! sd_ag lacks (the year-run collapse of report_year_v6.md). A
+      ! fraction pe_gr, limited by the plant's pelagic-O2 Monod factor, is
+      ! respired by the grazers against pelagic O2/DIC with the module's
+      ! standard nutrient and alkalinity return; the remainder is egested
+      ! to the plant detritus pool at AG quota. Default g_max = 0 keeps the
+      ! module bit-identical to the pre-grazing build (the code path is
+      ! guarded; only the always-written 'graz' diagnostic is new).
+      call self%get_parameter(self%g_max, 'g_max', '1/d', &
+         'maximum grazing ration per unit grazer carbon', &
+         default=0.0_rk, minimum=0.0_rk)
+      call self%get_parameter(self%h_ag, 'h_ag', 'mg C/m^2', &
+         'AG carbon at the type-III grazing half-saturation', &
+         default=500.0_rk, minimum=1.0e-6_rk)
+      call self%get_parameter(self%pe_gr, 'pe_gr', '-', &
+         'fraction of grazed carbon respired by the grazers', &
+         default=0.4_rk, minimum=0.0_rk, maximum=1.0_rk)
+
       ! --- Own state variables (initial values must be set in fabm.yaml) --
       call self%register_state_variable(self%id_AGc, 'AGc', 'mg C/m^2', 'above-ground carbon', minimum=0.0_rk)
       call self%register_state_variable(self%id_AGn, 'AGn', 'mmol N/m^2', 'above-ground nitrogen', minimum=0.0_rk)
@@ -240,6 +266,13 @@ contains
       call self%register_state_dependency(self%id_Q6n, 'Q6n', 'mmol N/m^2', 'plant detritus nitrogen')
       call self%register_state_dependency(self%id_Q6p, 'Q6p', 'mmol P/m^2', 'plant detritus phosphorus')
 
+      ! Grazer carbon (mg C/m^2); default zero_hz = no grazers. Couple to
+      ! e.g. Y2/c and Y4/c in fabm.yaml to activate together with g_max.
+      call self%register_dependency(self%id_gr1c, 'grazer1c', 'mg C/m^2', 'carbon of benthic grazer 1')
+      call self%register_dependency(self%id_gr2c, 'grazer2c', 'mg C/m^2', 'carbon of benthic grazer 2')
+      call self%request_coupling(self%id_gr1c, 'zero_hz')
+      call self%request_coupling(self%id_gr2c, 'zero_hz')
+
       call self%register_dependency(self%id_ETW, standard_variables%temperature)
       call self%register_dependency(self%id_par, standard_variables%downwelling_photosynthetic_radiative_flux)
 
@@ -254,6 +287,8 @@ contains
          'CTMI temperature factor', domain=domain_bottom, source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_fI, 'fI', '-', &
          'canopy light factor', domain=domain_bottom, source=source_do_bottom)
+      call self%register_diagnostic_variable(self%id_graz, 'graz', 'mg C/m^2/d', &
+         'grazing loss of AG carbon', domain=domain_bottom, source=source_do_bottom)
 
    end subroutine initialize
 
@@ -274,6 +309,7 @@ contains
       real(rk) :: jN4_root, jN3_root, jP_root, wsum
       real(rk) :: M_ag, M_bg, starve
       real(rk) :: dAGc, dAGn, dAGp, dBGc, dBGn, dBGp, dNSC
+      real(rk) :: gr1c, gr2c, F_gr, resp_gr, eges_gr
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -439,12 +475,41 @@ contains
          _SET_BOTTOM_ODE_(self%id_Q6p, (1.0_rk - self%f_pel) * qp * M_ag &
             + BGp / max(BGc, 1.0e-8_rk) * M_bg)
 
+         ! --- Optional grazing closure (docs/13; inert when g_max = 0) ----
+         F_gr = 0.0_rk
+         if (self%g_max > 0.0_rk) then
+            _GET_HORIZONTAL_(self%id_gr1c, gr1c)
+            _GET_HORIZONTAL_(self%id_gr2c, gr2c)
+            F_gr = self%g_max * (gr1c + gr2c) &
+                   * AGc * AGc / (AGc * AGc + self%h_ag * self%h_ag)
+            ! Grazer respiration against the near-bottom water, limited by
+            ! the same pelagic-O2 Monod factor as the plant's AG respiration;
+            ! the O2-suppressed remainder is egested with the faeces.
+            resp_gr = self%pe_gr * fO2ag * F_gr
+            eges_gr = F_gr - resp_gr
+            _SET_BOTTOM_ODE_(self%id_AGc, -F_gr)
+            _SET_BOTTOM_ODE_(self%id_AGn, -qn * F_gr)
+            _SET_BOTTOM_ODE_(self%id_AGp, -qp * F_gr)
+            _SET_BOTTOM_EXCHANGE_(self%id_O3c, resp_gr / CMass)
+            _SET_BOTTOM_EXCHANGE_(self%id_O2o, -resp_gr / CMass)
+            ! Nutrient and alkalinity return of the respired fraction
+            ! (+1 eq per NH4 released, -1 eq per PO4 released)
+            _SET_BOTTOM_EXCHANGE_(self%id_N4n, qn * resp_gr)
+            _SET_BOTTOM_EXCHANGE_(self%id_N1p, qp * resp_gr)
+            _SET_BOTTOM_EXCHANGE_(self%id_TA, (qn - qp) * resp_gr)
+            ! Egestion to the plant detritus pool at AG quota
+            _SET_BOTTOM_ODE_(self%id_Q6c, eges_gr)
+            _SET_BOTTOM_ODE_(self%id_Q6n, qn * eges_gr)
+            _SET_BOTTOM_ODE_(self%id_Q6p, qp * eges_gr)
+         end if
+
          ! --- Diagnostics --------------------------------------------------
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_gpp, Pg)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_npp, Pg - Ra_act - Ra_bas - Rn - Rb)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_resp, Ra_act + Ra_bas + Rn + Rb)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fT, eT)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fI, eI)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_graz, F_gr)
 
       _HORIZONTAL_LOOP_END_
 

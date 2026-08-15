@@ -37,6 +37,7 @@ module ersem_benthic_bacteria
       real(rk) :: qnc,qpc
       real(rk) :: dd
       real(rk) :: hO2               ! Monod half-saturation for O2 limitation of respiration (jsasaki 2026-02-15)
+      real(rk) :: hO2resp           ! cubic-Hill half-saturation of the respiration O2 response; 0 = legacy Monod (jsasaki 2026-08-15)
       real(rk) :: pur,sr
       real(rk) :: pdQ1
       real(rk) :: sd
@@ -110,6 +111,14 @@ contains
       ! Typical H1 value: 15.625 mmol O2/m^3 (= 0.5 mg/L).
       call self%get_parameter(self%hO2,  'hO2',  'mmol O2/m^3', &
          'Michaelis-Menten constant for oxygen limitation of respiration',default=0.0_rk)
+      ! Steep hypoxia response of respiration (jsasaki 2026-08-15; design:
+      ! nippon-steel/docs/13-respiration-grazing-structure.md). When > 0,
+      ! replaces the Monod factor with a cubic-Hill response so aerobic
+      ! respiration is depressed well before anoxia. Use for H1 only; keep
+      ! 0 for anaerobic bacteria (H2). Default 0 = legacy (bit-identical).
+      call self%get_parameter(self%hO2resp, 'hO2resp', 'mmol O2/m^3', &
+         'half-saturation of the cubic-Hill O2 response of respiration (0: legacy Monod on hO2)', &
+         default=0.0_rk, minimum=0.0_rk)
       ! Reference temperature for Q10 function (jsasaki 2026-03-02)
       ! Default=20°C follows DiToro/WASP/CE-QUAL convention.
       ! Original ERSEM used 10°C (North Sea calibration).
@@ -228,7 +237,12 @@ contains
          ! basal respiration consumes O2 unconditionally, driving it negative.
          ! Uses pelagic O2 concentration with Monod kinetics.
          _GET_(self%id_O2o, O2o)
-         if (self%hO2 > 0.0_rk) then
+         if (self%hO2resp > 0.0_rk) then
+            ! Steep metabolic depression under hypoxia (jsasaki 2026-08-15,
+            ! docs/13 of the nippon-steel repo): cubic-Hill response.
+            f_O2_resp = max(0.0_rk, O2o)**3 &
+               / (max(0.0_rk, O2o)**3 + self%hO2resp**3)
+         else if (self%hO2 > 0.0_rk) then
             f_O2_resp = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
          else
             f_O2_resp = 1.0_rk  ! hO2=0 means no Monod limitation

@@ -47,6 +47,7 @@ module ersem_benthic_fauna
       real(rk) :: pudil
       real(rk) :: sd,sdmO2,sdc,xdc
       real(rk) :: sr,pur
+      real(rk) :: hO2resp
       real(rk) :: ptur,pirr, dwat,dQ6
    contains
       procedure :: initialize
@@ -92,6 +93,17 @@ contains
       call self%get_parameter(self%xdc,  'xdc',  '1/degree_C', 'e-folding temperature factor of cold mortality response')
       call self%get_parameter(self%sr,   'sr',   '1/d',        'specific rest respiration at reference temperature')
       call self%get_parameter(self%pur,  'pur',  '-',          'fraction of assimilated food that is respired')
+      ! Steep hypoxia response of respiration (jsasaki 2026-08-15; design:
+      ! nippon-steel/docs/13-respiration-grazing-structure.md). When > 0,
+      ! the respiration O2 factor uses the cubic-Hill shape of the feeding
+      ! limitation eO with this half-saturation, so metabolism is depressed
+      ! well before anoxia. Default 0 keeps the legacy Monod-on-hO2 factor
+      ! (bit-identical behaviour).
+      call self%get_parameter(self%hO2resp, 'hO2resp', 'mmol O2/m^3', &
+         'half-saturation of the cubic-Hill O2 response of respiration (0: legacy Monod on hO2)', &
+         default=0.0_rk, minimum=0.0_rk)
+      if (self%hO2resp > 0.0_rk .and. self%hO2resp <= self%rlO2) &
+         call self%fatal_error('initialize','hO2resp must exceed rlO2')
 
       ! Add carbon pool as our only state variable.
       call self%add_constituent('c',3000._rk,c0,qn=self%qnc,qp=self%qpc)
@@ -376,7 +388,19 @@ contains
       ! which can drive O2 concentration negative even under anoxic conditions.
       ! Uses existing hO2 parameter as half-saturation constant.
       ! Reference: benthic_sulfur_cycle.F90 Monod implementation.
-      if (self%hO2 > 0.0_rk) then
+      if (self%hO2resp > 0.0_rk) then
+         ! Steep metabolic depression under hypoxia (jsasaki 2026-08-15,
+         ! docs/13 of the nippon-steel repo): cubic-Hill response with its
+         ! own half-saturation. The legacy Monod below only bites near
+         ! ~0.5 mg/L and lets dark runs drain O2 towards zero, whereas the
+         ! tank record floors at 3.6-5.6 mg/L.
+         if (O2o > self%rlO2) then
+            f_O2_resp = (O2o - self%rlO2)**3 &
+               / ((O2o - self%rlO2)**3 + (self%hO2resp - self%rlO2)**3)
+         else
+            f_O2_resp = 0.0_rk
+         end if
+      else if (self%hO2 > 0.0_rk) then
          f_O2_resp = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
       else
          f_O2_resp = 1.0_rk  ! hO2=0 means no Monod limitation
