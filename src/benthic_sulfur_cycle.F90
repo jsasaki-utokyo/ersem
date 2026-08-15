@@ -112,6 +112,7 @@ module ersem_benthic_sulfur_cycle
       real(rk) :: K_FeS_ben      ! FeS precipitation rate in benthic layers (1/d)
       real(rk) :: K_FeS_pel      ! FeS precipitation rate in pelagic (1/d)
       real(rk) :: p_sr_1         ! fraction of sulfate reduction delivered at the interface / layer 1 (jsasaki 2026-08-15, docs/14)
+      real(rk) :: K_O2_half_pel  ! bottom-water O2 half-saturation (cubic Hill) for interface oxidation; 0 = legacy layer-1 Monod (jsasaki 2026-08-15, docs/14)
       real(rk) :: f_DNRA         ! Fraction of H2S-NO3 N going to NH4 (0-1)
 
    contains
@@ -197,6 +198,21 @@ contains
       call self%get_parameter(self%p_sr_1, 'p_sr_1', '-', &
            'fraction of sulfate reduction delivered at the interface (Layer 1)', &
            default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+      ! O2 control of the interface oxidation (jsasaki 2026-08-15, docs/14
+      ! section 5). The legacy Monod uses the layer-1 CONCENTRATION
+      ! G2o/D1m, which in the tank runs sits at a supersaturated
+      ! 2900-3300 mmol/m^3 in lit AND dark alike (a pool/thickness
+      ! bookkeeping artefact) - it carries no light/dark information, so
+      ! sulfide oxidation cannot discriminate the regimes and the observed
+      ! dark-light TA sign flip cannot be expressed. Physically the
+      ! near-interface oxidation is supplied by O2 from the overlying
+      ! water; with K_O2_half_pel > 0 the layer-1 H2S/S0 oxidation uses a
+      ! cubic-Hill response to BOTTOM-WATER O2 instead (lit ~200-230 vs
+      ! dark ~80-200 mmol/m^3 gives the contrast). Default 0 = legacy
+      ! (bit-identical).
+      call self%get_parameter(self%K_O2_half_pel, 'K_O2_half_pel', 'mmol/m^3', &
+           'bottom-water O2 half-saturation (cubic Hill) for interface oxidation (0: legacy layer-1 Monod)', &
+           default=0.0_rk, minimum=0.0_rk)
 
       ! Register dependencies for layer-specific sulfur variables
       ! These link to variables created by benthic_column_dissolved_matter with composition 'h' and 'e'
@@ -356,8 +372,15 @@ contains
          ! Guard against division by very small D1m (layer collapse)
          O2_conc_1 = G2o / max(D1m, 0.0001_rk)
 
-         ! Oxygen limitation (Michaelis-Menten)
-         f_O2 = O2_conc_1 / (O2_conc_1 + self%K_O2_half)
+         ! Oxygen limitation: cubic-Hill on bottom-water O2 when
+         ! K_O2_half_pel > 0 (docs/14 section 5), else legacy Monod on the
+         ! layer-1 concentration.
+         if (self%K_O2_half_pel > 0.0_rk) then
+            f_O2 = max(0.0_rk, O2_pel)**3 &
+                 / (max(0.0_rk, O2_pel)**3 + self%K_O2_half_pel**3)
+         else
+            f_O2 = O2_conc_1 / (O2_conc_1 + self%K_O2_half)
+         end if
 
          ! H2S + 0.5 O2 -> S0
          R_H2S_ox_1 = self%K_H2S_ox * H2S_1 * f_O2
