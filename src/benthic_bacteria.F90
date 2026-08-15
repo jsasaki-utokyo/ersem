@@ -38,6 +38,7 @@ module ersem_benthic_bacteria
       real(rk) :: dd
       real(rk) :: hO2               ! Monod half-saturation for O2 limitation of respiration (jsasaki 2026-02-15)
       real(rk) :: hO2resp           ! cubic-Hill half-saturation of the respiration O2 response; 0 = legacy Monod (jsasaki 2026-08-15)
+      real(rk) :: p_sulf            ! fraction of respiration on sulfate (no G2o draw); 0 = legacy (jsasaki 2026-08-15)
       real(rk) :: pur,sr
       real(rk) :: pdQ1
       real(rk) :: sd
@@ -119,6 +120,19 @@ contains
       call self%get_parameter(self%hO2resp, 'hO2resp', 'mmol O2/m^3', &
          'half-saturation of the cubic-Hill O2 response of respiration (0: legacy Monod on hO2)', &
          default=0.0_rk, minimum=0.0_rk)
+      ! Anaerobic electron-acceptor routing (jsasaki 2026-08-15; design:
+      ! nippon-steel/docs/14-anaerobic-pathway.md). For anaerobic bacteria
+      ! (H2) the electron acceptor is sulfate, not benthic oxygen: with
+      ! p_sulf = 1 respiration no longer draws G2o, and the redox
+      ! consequence is carried by ersem/benthic_sulfur_cycle (H2S production
+      ! coupled to this module's fHG3c, later reoxidation costing O2).
+      ! Without this, the sulfur variant double-paid the electrons (G2o draw
+      ! AND H2S production from the same carbon), and scaling the anaerobic
+      ! pathway up would floor the nonnegative G2o pool, where repair_state
+      ! silently erases the debt. Default 0 = legacy (bit-identical).
+      call self%get_parameter(self%p_sulf, 'p_sulf', '-', &
+         'fraction of respiration whose electron acceptor is sulfate (no G2o draw)', &
+         default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
       ! Reference temperature for Q10 function (jsasaki 2026-03-02)
       ! Default=20°C follows DiToro/WASP/CE-QUAL convention.
       ! Original ERSEM used 10°C (North Sea calibration).
@@ -252,7 +266,9 @@ contains
          ! dissolved inorganic carbon, ammonium, phosphate)
          ! Limited by O2 availability via Monod factor (jsasaki 2026-02-15)
          fHG3c = (self%pur * fQIHc + self%sr * HcP * eT) * f_O2_resp
-         _SET_BOTTOM_ODE_(self%id_G2o,-fHG3c/CMass)  ! oxygen or reduction equivalent
+         ! The p_sulf fraction respires on sulfate: no G2o draw; the redox
+         ! consequence is carried by the sulfur cycle (docs/14).
+         _SET_BOTTOM_ODE_(self%id_G2o,-(1.0_rk-self%p_sulf)*fHG3c/CMass)  ! oxygen or reduction equivalent
          _SET_BOTTOM_ODE_(self%id_G3c, fHG3c/CMass)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHG3c,fHG3c)
 
