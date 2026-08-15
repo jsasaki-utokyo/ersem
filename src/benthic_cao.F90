@@ -16,7 +16,7 @@ module ersem_benthic_cao
 
    type,extends(type_base_model),public :: type_ersem_benthic_cao
       ! Parameters
-      integer  :: iswCaO           ! CaO dissolution mode (0=off, 1=constant, 2=pH-dependent, 3=stock depletion)
+      integer  :: iswCaO           ! CaO dissolution mode (0=off, 1=constant, 2=pH-dependent, 3=stock depletion, 4=surface passivation)
       real(rk) :: CaO_flux_rate    ! Base dissolution flux (mmol/m^2/d)
       real(rk) :: k_CaO_diss       ! Dissolution rate constant for stock depletion (1/d)
       real(rk) :: pH_factor        ! pH sensitivity factor for pH-dependent mode
@@ -49,15 +49,15 @@ contains
 
       ! Register parameters with safe defaults that preserve existing behavior
       call self%get_parameter(self%iswCaO, 'iswCaO', '', &
-         'CaO dissolution mode (0: off, 1: constant flux, 2: pH-dependent, 3: stock depletion)', &
-         default=0, minimum=0, maximum=3)
+         'CaO dissolution mode (0: off, 1: constant flux, 2: pH-dependent, 3: stock depletion, 4: surface passivation)', &
+         default=0, minimum=0, maximum=4)
 
       call self%get_parameter(self%CaO_flux_rate, 'CaO_flux_rate', 'mmol/m^2/d', &
          'base CaO dissolution flux', &
          default=0.0_rk, minimum=0.0_rk)
 
       call self%get_parameter(self%k_CaO_diss, 'k_CaO_diss', '1/d', &
-         'dissolution rate constant for stock depletion mode', &
+         'first-order dissolution rate constant (mode 4: F = k * accessible stock)', &
          default=0.01_rk, minimum=0.0_rk)
 
       call self%get_parameter(self%pH_factor, 'pH_factor', '-', &
@@ -89,11 +89,13 @@ contains
             call self%register_dependency(self%id_temp, standard_variables%temperature)
          end if
 
-         ! Register stock state variable for stock depletion mode
-         if (self%iswCaO == 3) then
+         ! Register stock state variable for the stock-carrying modes (3, 4)
+         if (self%iswCaO == 3 .or. self%iswCaO == 4) then
             call self%register_bottom_state_variable(self%id_cao_stock, 'CaO_stock', 'mmol/m^2', &
                'CaO stock at bottom', &
                self%CaO_stock0, minimum=0.0_rk)
+         end if
+         if (self%iswCaO == 3) then
             call self%get_parameter(self%CaO_half_sat, 'CaO_half_sat', 'mmol/m^2', &
                'half-saturation constant for stock limitation', &
                default=100.0_rk, minimum=0.0_rk)
@@ -156,6 +158,21 @@ contains
                else
                   cao_flux = 0.0_rk
                end if
+
+            case (4)  ! Surface-passivation mode: first-order in the ACCESSIBLE stock
+               _GET_HORIZONTAL_(self%id_cao_stock, stock)
+
+               ! F = k * S with S the accessible SURFACE stock, not the bulk
+               ! inventory: its depletion IS the passivation, so the flux
+               ! declines exponentially with e-folding time 1/k. CaO_stock0
+               ! is therefore a small fitted number (order 1e2 mmol/m^2),
+               ! orders below the bulk Ca inventory. No pH or temperature
+               ! factor: the 2024-10 dissolution series shows Q10 ~ 1 and
+               ! tank pH cannot constrain the pH law.
+               cao_flux = self%k_CaO_diss * max(stock, 0.0_rk)
+
+               ! Deplete the accessible stock
+               _SET_BOTTOM_ODE_(self%id_cao_stock, -cao_flux)
          end select
 
          ! Apply alkalinity flux to water column
