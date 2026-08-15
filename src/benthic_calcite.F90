@@ -26,7 +26,7 @@ module ersem_benthic_calcite
       real(rk) :: fdissmax, fdissmin, ndiss, KcalomX
       real(rk) :: K_prec, K_par_prec, n_prec
       integer  :: iswcal
-      
+
    contains
       procedure :: initialize
       procedure :: do_bottom
