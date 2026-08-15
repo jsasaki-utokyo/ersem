@@ -77,6 +77,9 @@ module ersem_benthic_sulfur_cycle
       ! Bottom cell thickness for pelagic exchange dimension conversion
       type(type_dependency_id) :: id_h_bottom
 
+      ! Bottom PAR for light-driven interface oxidation (jsasaki 2026-08-15)
+      type(type_dependency_id) :: id_par
+
       ! Alkalinity coupling
       type(type_bottom_state_variable_id) :: id_benTA   ! Alkalinity in Layer 1
       type(type_bottom_state_variable_id) :: id_benTA2  ! Alkalinity in Layer 2
@@ -113,6 +116,7 @@ module ersem_benthic_sulfur_cycle
       real(rk) :: K_FeS_pel      ! FeS precipitation rate in pelagic (1/d)
       real(rk) :: p_sr_1         ! fraction of sulfate reduction delivered at the interface / layer 1 (jsasaki 2026-08-15, docs/14)
       real(rk) :: K_O2_half_pel  ! bottom-water O2 half-saturation (cubic Hill) for interface oxidation; 0 = legacy layer-1 Monod (jsasaki 2026-08-15, docs/14)
+      real(rk) :: K_par_ox       ! PAR half-saturation for light-driven interface oxidation (mat photosynthesis O2); 0 = off (jsasaki 2026-08-15, docs/14)
       real(rk) :: f_DNRA         ! Fraction of H2S-NO3 N going to NH4 (0-1)
 
    contains
@@ -213,6 +217,22 @@ contains
       call self%get_parameter(self%K_O2_half_pel, 'K_O2_half_pel', 'mmol/m^3', &
            'bottom-water O2 half-saturation (cubic Hill) for interface oxidation (0: legacy layer-1 Monod)', &
            default=0.0_rk, minimum=0.0_rk)
+      ! Light-driven interface oxidation (jsasaki 2026-08-15, docs/14
+      ! section 6). Even with the bottom-water O2 response, lit and dark
+      ! regimes barely separate: the gated tank (like the real one) keeps
+      ! dark bottom water at 110-200 mmol/m^3. The controlling physics is
+      ! the MAT MICROENVIRONMENT: benthic-producer photosynthesis
+      ! super-oxygenates the top millimetres in the light, while in
+      ! darkness the mat goes anoxic within minutes regardless of the
+      ! overlying water (classic microsensor observation). With
+      ! K_par_ox > 0 the interface H2S/S0 oxidation factor becomes
+      ! max(f_O2, PAR/(PAR + K_par_ox)) - light guarantees oxidation, and
+      ! in the dark the O2 term takes over. Default 0 = off (bit-identical).
+      call self%get_parameter(self%K_par_ox, 'K_par_ox', 'W/m^2', &
+           'PAR half-saturation for light-driven interface oxidation (0: off)', &
+           default=0.0_rk, minimum=0.0_rk)
+
+      call self%register_dependency(self%id_par, standard_variables%downwelling_photosynthetic_radiative_flux)
 
       ! Register dependencies for layer-specific sulfur variables
       ! These link to variables created by benthic_column_dissolved_matter with composition 'h' and 'e'
@@ -318,6 +338,7 @@ contains
       real(rk) :: R_sulfate_red, R_H2S_ox_1, R_H2S_NO3_ox, R_S0_ox_1, R_S0_burial
       real(rk) :: r_no3, r_ta
       real(rk) :: f_barrier, R_barrier_ox
+      real(rk) :: par, f_par
       real(rk) :: R_FeS_1, R_FeS_2, R_FeS_3, R_FeS_ben, R_FeS_pel
 
       _HORIZONTAL_LOOP_BEGIN_
@@ -380,6 +401,13 @@ contains
                  / (max(0.0_rk, O2_pel)**3 + self%K_O2_half_pel**3)
          else
             f_O2 = O2_conc_1 / (O2_conc_1 + self%K_O2_half)
+         end if
+         if (self%K_par_ox > 0.0_rk) then
+            ! Mat-photosynthesis oxygenation: light guarantees interface
+            ! oxidation regardless of the water-column O2 (docs/14 sec. 6)
+            _GET_(self%id_par, par)
+            f_par = max(0.0_rk, par) / (max(0.0_rk, par) + self%K_par_ox)
+            f_O2 = max(f_O2, f_par)
          end if
 
          ! H2S + 0.5 O2 -> S0
