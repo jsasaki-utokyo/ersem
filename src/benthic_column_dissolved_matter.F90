@@ -20,6 +20,7 @@ module ersem_benthic_column_dissolved_matter
       type (type_horizontal_dependency_id) :: id_sms(nlayers)    ! sources-sinks specified for layer-integrated variables (pore water and adsorbed)
       type (type_horizontal_dependency_id) :: id_pw_sms(nlayers) ! sources-sinks specified for layer-integrated pore water concentration
       type (type_horizontal_diagnostic_variable_id) :: id_pbf    ! pelagic-benthic flux
+      type (type_horizontal_diagnostic_variable_id) :: id_cut
       logical :: nonnegative = .true.                            ! Flag specifying whether constituent is non-negative
    end type
 
@@ -35,7 +36,8 @@ module ersem_benthic_column_dissolved_matter
       type (type_horizontal_diagnostic_variable_id) :: id_conc_eq(nlayers)  ! mean equilibrium pore water concentration in individual layers
       type (type_horizontal_diagnostic_variable_id) :: id_conc_tot(nlayers) ! mean pore water concentration in individual layers
       real(rk) :: ads(nlayers)
-      real(rk) :: relax, minD
+      real(rk) :: relax
+      real(rk) :: h_supply, minD
       integer :: last_layer
       logical :: correction
       type (type_single_constituent),allocatable :: constituents(:)
@@ -89,6 +91,29 @@ contains
       call self%get_parameter(self%last_layer,'last_layer','','sediment layer where concentration drops to zero',default=nlayers)
       if (composition=='') call self%fatal_error('benthic_dissolved_matter_initialize','composition must include at least one chemical constituent')
       if (self%last_layer/=nlayers .and. len_trim(composition)>1) call self%fatal_error('benthic_dissolved_matter_initialize','last_layer cannot be set for solutes with more than one chemical constituent')
+      ! --- Supply limitation on the interface flux (jsasaki 2026-08-20) ---
+      ! The flux across the sediment-water interface is derived from the
+      ! steady-state mass balance: it is whatever the reactions in the
+      ! column demand. Nothing in that derivation consults the PELAGIC
+      ! inventory, so when the demand exceeds what the water holds the
+      ! model keeps drawing and the state goes negative. In ERSEM's design
+      ! envelope (deep, advective) that can never happen; in a sealed
+      ! shallow box it happens within hours, and 0-D closed-period runs
+      ! then either clip (inventing mass) or fail.
+      !
+      ! h_supply gives the uptake direction a Monod limiter in the pelagic
+      ! concentration, so uptake -> 0 as c_pel -> 0, mirroring the Patankar
+      ! guard already applied to c_top. What the water does not supply is
+      ! taken from the porewater column instead, which is where the
+      ! reactions' own substrate limitation can then act on it.
+      !
+      ! This is a NUMERICAL SAFEGUARD, not kinetics: h_supply should be set
+      ! small enough that it never binds in a healthy configuration, and
+      ! the flux it removes is reported as <name>_supply_limited so that a
+      ! run which relies on it is visible rather than silent.
+      call self%get_parameter(self%h_supply,'h_supply','mmol/m^3', &
+         'half-saturation of the pelagic supply limitation on benthic uptake &
+         &(numerical safeguard; 0 disables it)',default=0.0_rk,minimum=0.0_rk)
       if (self%last_layer/=nlayers) then
          call self%get_parameter(self%relax,'relax','1/d','rate of relaxation towards equilibrium concentration profile')
          call self%get_parameter(self%minD, 'minD','m',  'minimum depth of zero-concentration isocline')
@@ -184,6 +209,11 @@ contains
 
       ! Diagnostic for pelagic-benthic flux.
       call self%register_diagnostic_variable(info%id_pbf,trim(name)//'_pb_flux','mmol/m^2/d','flux of '//trim(long_name)//' from benthos to pelagic',source=source_do_bottom)
+      ! How much benthic uptake the pelagic supply limitation removed. Zero in
+      ! a healthy configuration; a run that depends on it must show it.
+      call self%register_diagnostic_variable(info%id_cut,trim(name)//'_supply_limited','mmol/m^2/d', &
+         'benthic uptake of '//trim(long_name)//' withheld because the pelagic concentration could not supply it', &
+         source=source_do_bottom)
 
       ! Register new constituent with child model that computes mass per benthic layer.
       call profile%register_dependency(profile_info%id_int,trim(name)//'_int',units,'depth-integrated '//trim(long_name))
@@ -249,6 +279,7 @@ contains
 
       integer  :: ilayer
       real(rk) :: c_pel,c_top,c_int,c_int_deep
+      real(rk) :: flux_pel, flux_cut
       real(rk) :: sms_per_layer(nlayers),pw_sms_per_layer(nlayers),sms
       real(rk) :: Dm(nlayers)
       real(rk) :: c_bot,c_int_per_layer_eq(nlayers),H_eq,d_top
@@ -370,8 +401,15 @@ contains
 
          ! Net change in column-integrated mass must equal column-integrated production - surface exchange.
          ! Thus, surface exchange = column-integrated production - net change (net change = relaxation)
-         _SET_BOTTOM_EXCHANGE_(info%id_pel,sms-(c_int_eq-(c_int+c_int_deep))/self%relax)
-         _SET_HORIZONTAL_DIAGNOSTIC_(info%id_pbf,sms-(c_int_eq-(c_int+c_int_deep))/self%relax)
+         flux_pel = sms-(c_int_eq-(c_int+c_int_deep))/self%relax
+         call limit_uptake_to_supply(self%h_supply,info%nonnegative,c_pel,flux_pel,flux_cut)
+         _SET_BOTTOM_EXCHANGE_(info%id_pel,flux_pel)
+         _SET_HORIZONTAL_DIAGNOSTIC_(info%id_pbf,flux_pel)
+         _SET_HORIZONTAL_DIAGNOSTIC_(info%id_cut,flux_cut)
+         ! What the water did not supply is taken from the porewater column
+         ! instead, so mass still balances and the reactions' own substrate
+         ! limitation -- which reads the porewater -- is what finally bites.
+         if (flux_cut /= 0.0_rk) _SET_BOTTOM_ODE_(info%id_int,flux_cut)
       else
          ! Apply a "technical correction" in case flux from the oxygenated
          ! layer is negative by scaling flux using pelagic concentration and
@@ -439,9 +477,12 @@ contains
          else
             P_res_int = 0.0_rk
          end if
-         _SET_BOTTOM_EXCHANGE_(info%id_pel,sms+P_res_int) ! Equilibrium flux = depth-integrated production sms + residual flux P_res_int
-         _SET_HORIZONTAL_DIAGNOSTIC_(info%id_pbf,sms+P_res_int)
-         _SET_BOTTOM_ODE_(info%id_int,-P_res_int-sms)
+         flux_pel = sms+P_res_int ! Equilibrium flux = depth-integrated production sms + residual flux P_res_int
+         call limit_uptake_to_supply(self%h_supply,info%nonnegative,c_pel,flux_pel,flux_cut)
+         _SET_BOTTOM_EXCHANGE_(info%id_pel,flux_pel)
+         _SET_HORIZONTAL_DIAGNOSTIC_(info%id_pbf,flux_pel)
+         _SET_HORIZONTAL_DIAGNOSTIC_(info%id_cut,flux_cut)
+         _SET_BOTTOM_ODE_(info%id_int,-P_res_int-sms+flux_cut)
 
          ! Save final estimates of mean pore water concentration per layer.
          d_top = 0
@@ -459,6 +500,37 @@ contains
 
       _HORIZONTAL_LOOP_END_
    end subroutine process_constituent
+
+   elemental subroutine limit_uptake_to_supply(h_supply,nonnegative,c_pel,flux,cut)
+      ! Stop the bed drawing a solute the water column does not have.
+      !
+      ! The interface flux is derived from the steady-state mass balance and
+      ! is therefore whatever the sediment's reactions demand -- the pelagic
+      ! concentration never enters it. That is exact while the demand is
+      ! sustainable and wrong the moment it is not.
+      !
+      ! Only the UPTAKE direction is limited; release must never be. The form
+      ! is Monod in the pelagic concentration, matching the Patankar guard the
+      ! module already applies to the interface concentration c_top, and it is
+      ! smooth, so it does not make the ODE non-differentiable the way a
+      ! min/max cap would.
+      !
+      ! h_supply = 0 disables it and reproduces the original behaviour exactly.
+      real(rk), intent(in)    :: h_supply, c_pel
+      logical,  intent(in)    :: nonnegative
+      real(rk), intent(inout) :: flux
+      real(rk), intent(out)   :: cut
+      real(rk) :: limited
+
+      cut = 0.0_rk
+      if (h_supply <= 0.0_rk) return
+      if (.not. nonnegative) return
+      if (flux >= 0.0_rk) return          ! release: never limited
+
+      limited = flux * max(0.0_rk,c_pel) / (max(0.0_rk,c_pel) + h_supply)
+      cut = flux - limited                ! negative of what was withheld
+      flux = limited
+   end subroutine limit_uptake_to_supply
 
    subroutine compute_equilibrium_profile(sigma,C0,P,P_deep,D,C_bot,C_int)
       real(rk),intent(in)  :: sigma,c0,P,P_deep,D
