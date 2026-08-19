@@ -95,6 +95,7 @@ module ersem_benthic_sulfur_cycle
       type(type_horizontal_diagnostic_variable_id) :: id_R_sulfate_red
       type(type_horizontal_diagnostic_variable_id) :: id_R_H2S_ox_ben
       type(type_horizontal_diagnostic_variable_id) :: id_R_H2S_NO3_ox  ! H2S oxidation by NO3 in Layer 2
+      type(type_horizontal_diagnostic_variable_id) :: id_R_S0_NO3_ox   ! S0 oxidation to SULFATE by NO3 in Layer 2
       type(type_horizontal_diagnostic_variable_id) :: id_R_S0_ox_ben
       type(type_horizontal_diagnostic_variable_id) :: id_R_S0_burial
       type(type_horizontal_diagnostic_variable_id) :: id_R_barrier_ox
@@ -106,6 +107,7 @@ module ersem_benthic_sulfur_cycle
       real(rk) :: K_H2S_prod     ! H2S production rate per unit remineralization (mol S/mol C)
       real(rk) :: K_H2S_ox       ! H2S oxidation rate constant (1/d)
       real(rk) :: K_H2S_NO3_ox   ! H2S oxidation by NO3 rate constant (1/d)
+      real(rk) :: K_S0_NO3_ox    ! S0 -> SO4 oxidation by NO3 rate constant (1/d); 0 = off (legacy)
       real(rk) :: K_NO3_half     ! Half-saturation for NO3 (mmol/m3)
       real(rk) :: K_S0_ox        ! S0 oxidation rate constant (1/d)
       real(rk) :: K_S0_burial    ! S0 burial rate (1/d)
@@ -153,6 +155,21 @@ contains
       ! Typical rate: 10-100 1/d (fast reaction when both substrates present)
       call self%get_parameter(self%K_H2S_NO3_ox, 'K_H2S_NO3_ox', '1/d', &
            'H2S oxidation rate by NO3 in Layer 2', default=50.0_rk)
+      ! SECOND STEP of thiodenitrification (jsasaki 2026-08-19, docs/18 §17).
+      ! The H2S -> S0 step above is real and is what the large sulfur bacteria
+      ! (Beggiatoa, Thioploca, Thiomargarita) do: they store the S0 in
+      ! intracellular globules. What was missing is its FATE -- the same
+      ! organisms oxidise the stored S0 on to SULFATE with nitrate when
+      ! sulfide runs short. Without it S0_2 has production and no consumption
+      ! at all (doc/sulfur_process_review.md item 7), and, because only
+      ! oxidation BACK TO SULFATE regenerates the SO4^2- that sulfate
+      ! reduction removed, the alkalinity layer 2 carries can never be given
+      ! back. The model therefore retained 99.98 % of the sulfate-reduction
+      ! alkalinity where coastal sediments reoxidise 70-92 % of their sulfide.
+      ! 0 = off, so every run before this reproduces unchanged.
+      call self%get_parameter(self%K_S0_NO3_ox, 'K_S0_NO3_ox', '1/d', &
+           'S0 oxidation to sulfate by NO3 in Layer 2 (0 = off)', &
+           default=0.0_rk, minimum=0.0_rk)
       call self%get_parameter(self%K_NO3_half, 'K_NO3_half', 'mmol/m^3', &
            'half-saturation NO3 for H2S-NO3 oxidation', default=10.0_rk)
 
@@ -306,6 +323,9 @@ contains
       call self%register_diagnostic_variable(self%id_R_H2S_NO3_ox, 'R_H2S_NO3_ox', &
            'mmol S/m^2/d', 'H2S oxidation by NO3 in Layer 2', &
            domain=domain_bottom, source=source_do_bottom)
+      call self%register_diagnostic_variable(self%id_R_S0_NO3_ox, 'R_S0_NO3_ox', &
+           'mmol S/m^2/d', 'S0 oxidation to sulfate by NO3 in Layer 2', &
+           domain=domain_bottom, source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_R_S0_ox_ben, 'R_S0_ox_ben', &
            'mmol S/m^2/d', 'benthic S0 oxidation rate', &
            domain=domain_bottom, source=source_do_bottom)
@@ -331,11 +351,12 @@ contains
       class(type_ersem_benthic_sulfur_cycle), intent(in) :: self
       _DECLARE_ARGUMENTS_DO_BOTTOM_
 
-      real(rk) :: H2S_1, H2S_2, H2S_3, S0_1, G2o, NO3_2
+      real(rk) :: H2S_1, H2S_2, H2S_3, S0_1, S0_2, G2o, NO3_2
       real(rk) :: H2S_pel, S0_pel, O2_pel
       real(rk) :: D1m, D2m, remin_rate, h_bottom
       real(rk) :: O2_conc_1, NO3_conc_2, f_O2, f_O2_pel, f_NO3
-      real(rk) :: R_sulfate_red, R_H2S_ox_1, R_H2S_NO3_ox, R_S0_ox_1, R_S0_burial
+      real(rk) :: R_sulfate_red, R_H2S_ox_1, R_H2S_NO3_ox, R_S0_NO3_ox, R_S0_ox_1, R_S0_burial
+      real(rk) :: r_no3_S0, r_ta_S0
       real(rk) :: r_no3, r_ta
       real(rk) :: f_barrier, R_barrier_ox
       real(rk) :: par, f_par
@@ -346,6 +367,7 @@ contains
          ! Get state variables
          _GET_HORIZONTAL_(self%id_H2S_1, H2S_1)
          _GET_HORIZONTAL_(self%id_H2S_2, H2S_2)
+         _GET_HORIZONTAL_(self%id_S0_2, S0_2)   ! only WRITTEN before K_S0_NO3_ox
          _GET_HORIZONTAL_(self%id_H2S_3, H2S_3)
          _GET_HORIZONTAL_(self%id_S0_1, S0_1)
          _GET_HORIZONTAL_(self%id_G2o, G2o)
@@ -369,6 +391,7 @@ contains
          ! Ensure non-negative
          H2S_1 = max(0.0_rk, H2S_1)
          H2S_2 = max(0.0_rk, H2S_2)
+         S0_2 = max(0.0_rk, S0_2)
          H2S_3 = max(0.0_rk, H2S_3)
          S0_1 = max(0.0_rk, S0_1)
          G2o = max(0.0_rk, G2o)
@@ -443,6 +466,9 @@ contains
          ! H2S oxidation by NO3 in Layer 2
          ! This is a fast reaction when both substrates are present
          R_H2S_NO3_ox = self%K_H2S_NO3_ox * H2S_2 * f_NO3
+
+         ! S0 oxidation to SULFATE by NO3, the second step (see K_S0_NO3_ox)
+         R_S0_NO3_ox = self%K_S0_NO3_ox * S0_2 * f_NO3
 
          ! ============================================================
          ! OXIC BARRIER MECHANISM
@@ -531,19 +557,37 @@ contains
          !   Mixed: (5+3*f_DNRA) e-/mol NO3 -> r_NO3 = 2/(5+3*f_DNRA)
          r_no3 = 2.0_rk / (5.0_rk + 3.0_rk * self%f_DNRA)
 
+         ! S0 -> SO4 needs 6 e-/mol S against H2S -> S0's 2, so the same
+         ! electron balance gives exactly THREE times the nitrate per sulfur:
+         !   N2 route:   5 S0 + 6 NO3- + 2 H2O -> 5 SO4^2- + 3 N2 + 4 H+
+         !   DNRA route: 4 S0 + 3 NO3- + 7 H2O -> 4 SO4^2- + 3 NH4+ + 2 H+
+         r_no3_S0 = 6.0_rk / (5.0_rk + 3.0_rk * self%f_DNRA)
+
          _SET_BOTTOM_ODE_(self%id_H2S_2, -R_H2S_NO3_ox - R_FeS_2)
-         _SET_BOTTOM_ODE_(self%id_NO3_2, -r_no3 * R_H2S_NO3_ox)
-         _SET_BOTTOM_ODE_(self%id_S0_2,   R_H2S_NO3_ox)           ! S0 produced 1:1 with H2S consumed
+         _SET_BOTTOM_ODE_(self%id_NO3_2, -r_no3 * R_H2S_NO3_ox &
+                                         - r_no3_S0 * R_S0_NO3_ox)
+         ! S0 produced 1:1 with H2S consumed, and consumed by the second step
+         _SET_BOTTOM_ODE_(self%id_S0_2,   R_H2S_NO3_ox - R_S0_NO3_ox)
 
          ! Partition N between N2 (denitrification) and NH4 (DNRA)
-         _SET_BOTTOM_ODE_(self%id_G4n,  (1.0_rk - self%f_DNRA) * r_no3 * R_H2S_NO3_ox)
-         _SET_BOTTOM_ODE_(self%id_K4n2, self%f_DNRA * r_no3 * R_H2S_NO3_ox)
+         _SET_BOTTOM_ODE_(self%id_G4n,  (1.0_rk - self%f_DNRA) &
+                                        * (r_no3 * R_H2S_NO3_ox &
+                                           + r_no3_S0 * R_S0_NO3_ox))
+         _SET_BOTTOM_ODE_(self%id_K4n2, self%f_DNRA &
+                                        * (r_no3 * R_H2S_NO3_ox &
+                                           + r_no3_S0 * R_S0_NO3_ox))
 
          ! Alkalinity: denitrification +1 TA/mol NO3, DNRA +2 TA/mol NO3
          ! r_TA = (1+f_DNRA) * r_NO3 = 2*(1+f_DNRA)/(5+3*f_DNRA)
          r_ta = (1.0_rk + self%f_DNRA) * r_no3
+         ! The second step ALSO regenerates the SO4^2- that sulfate reduction
+         ! removed, which is -2 eq per S and is the whole point of it: at
+         ! f_DNRA = 0 the net is -2 + 1.2 = -0.8 eq per S0 (a RETRACTION),
+         ! and at f_DNRA = 1 it is -2 + 2 x 0.75 = -0.5.
+         r_ta_S0 = -2.0_rk + (1.0_rk + self%f_DNRA) * r_no3_S0
          if (.not.legacy_ersem_compatibility) &
-            _SET_BOTTOM_ODE_(self%id_benTA2, r_ta * R_H2S_NO3_ox)
+            _SET_BOTTOM_ODE_(self%id_benTA2, r_ta * R_H2S_NO3_ox &
+                                             + r_ta_S0 * R_S0_NO3_ox)
 
          ! Layer 1: H2S delivery from interface sulfate reduction (p_sr_1),
          !          consumption by oxidation and FeS precipitation,
@@ -573,6 +617,7 @@ contains
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_sulfate_red, R_sulfate_red)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_H2S_ox_ben, R_H2S_ox_1)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_H2S_NO3_ox, R_H2S_NO3_ox)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_S0_NO3_ox, R_S0_NO3_ox)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_S0_ox_ben, R_S0_ox_1)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_S0_burial, R_S0_burial)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_barrier_ox, R_barrier_ox)
