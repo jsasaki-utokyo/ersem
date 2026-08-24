@@ -1,9 +1,15 @@
 #include "fabm_driver.h"
 
 !-----------------------------------------------------------------------
-! Rooted macrophyte (eelgrass, Zostera marina) module for ERSEM
+! Seagrass (eelgrass, Zostera marina) module for ERSEM
 !
-! Design: nippon-steel/docs/10-macrophyte-module-design.md (2026-08-14).
+! Named `seagrass`, not `macrophyte`: macrophyte conventionally spans
+! seagrasses (rooted vascular plants, porewater uptake through roots)
+! and macroalgae (holdfast, no roots, no porewater pathway), which are
+! always modelled separately. This module is a rooted vascular plant.
+! Renamed 2026-08-19; see nippon-steel/docs/21.
+!
+! Design: nippon-steel/docs/10-macrophyte-module-design.md and docs/21 (2026-08-14).
 ! Bottom-attached plant with above-ground (AG) and below-ground (BG)
 ! structural biomass plus a rhizome non-structural-carbohydrate reserve
 ! (NSC). Replaces the suspended primary-producer proxy for seagrass.
@@ -35,7 +41,7 @@
 ! without this module (same convention as benthic_cao with iswCaO=0).
 !-----------------------------------------------------------------------
 
-module ersem_macrophyte
+module ersem_seagrass
 
    use fabm_types
    use ersem_shared
@@ -44,7 +50,7 @@ module ersem_macrophyte
 
    private
 
-   type,extends(type_base_model),public :: type_ersem_macrophyte
+   type,extends(type_base_model),public :: type_ersem_seagrass
       ! Own bottom state variables
       type (type_bottom_state_variable_id) :: id_AGc, id_AGn, id_AGp
       type (type_bottom_state_variable_id) :: id_BGc, id_BGn, id_BGp
@@ -93,7 +99,7 @@ module ersem_macrophyte
 contains
 
    subroutine initialize(self, configunit)
-      class (type_ersem_macrophyte), intent(inout), target :: self
+      class (type_ersem_seagrass), intent(inout), target :: self
       integer,                       intent(in)            :: configunit
 
       real(rk) :: a, b, ab2
@@ -293,7 +299,7 @@ contains
    end subroutine initialize
 
    subroutine do_bottom(self, _ARGUMENTS_DO_BOTTOM_)
-      class (type_ersem_macrophyte), intent(in) :: self
+      class (type_ersem_seagrass), intent(in) :: self
       _DECLARE_ARGUMENTS_DO_BOTTOM_
 
       real(rk) :: AGc, AGn, AGp, BGc, BGn, BGp, NSCc
@@ -301,6 +307,7 @@ contains
       real(rk) :: K1p1, K1p2, K3n1, K3n2, K4n1, K4n2, G2o
       real(rk) :: ETW, par
       real(rk) :: eT, lai, I_can, eI, qn, qp, eQ
+      real(rk) :: tau
       real(rk) :: Pg, Ra_act, Ra_bas, Rn, Rb, fO2ag, fO2bg
       real(rk) :: Pnet_ag, T_st, T_mb, G_bg, G_bg_c
       real(rk) :: relE, nsc_gap, G_alloc, G_res, gscale
@@ -342,9 +349,14 @@ contains
             eT = max(0.0_rk, min(1.0_rk, eT))
          end if
 
+         ! Optical depth of the canopy. k_can and a_lai enter ONLY as their
+         ! product, so the guard must test the PRODUCT: testing `lai` alone
+         ! divides by zero whenever k_can = 0 with a non-trivial a_lai, which
+         ! the parameter reader allows (minimum=0.0). Found 2026-08-22.
          lai = self%a_lai * AGc
-         if (lai > 1.0e-8_rk) then
-            I_can = max(0.0_rk, par) * (1.0_rk - exp(-self%k_can * lai)) / (self%k_can * lai)
+         tau = self%k_can * lai
+         if (tau > 1.0e-8_rk) then
+            I_can = max(0.0_rk, par) * (1.0_rk - exp(-tau)) / tau
          else
             I_can = max(0.0_rk, par)
          end if
@@ -515,4 +527,4 @@ contains
 
    end subroutine do_bottom
 
-end module ersem_macrophyte
+end module ersem_seagrass
