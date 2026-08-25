@@ -87,6 +87,7 @@ module ersem_seagrass
       real(rk) :: qn_bg, qp_bg
       real(rk) :: vmax_n, vmax_p, hN3, hN4, hP, hKn, hKp, f_root
       real(rk) :: srs_ag, srs_bg, r_nsc, pu_ra, hO2, hG2o
+      real(rk) :: pq, rq_o2c
       real(rk) :: tau_store, tau_mob, k_bg
       real(rk) :: rs_target, k_alloc, q_nsc
       real(rk) :: sd_ag, sd_bg, sd_anx, nsc_starve, sd_starve, f_pel
@@ -173,6 +174,22 @@ contains
          'Monod half-saturation for AG respiration O2', default=15.625_rk, minimum=0.0_rk)
       call self%get_parameter(self%hG2o, 'hG2o', 'mmol O_2/m^2', &
          'Monod half-saturation for BG respiration on benthic O2', default=1.0_rk, minimum=0.0_rk)
+
+      ! --- Oxygen stoichiometry (nippon-steel docs/51 s4, 2026-08-25) ------
+      ! Until this build the module carried PQ = RQ = 1 as a COMMENT on the
+      ! exchange line and no parameter: one mol O_2 per mol C fixed and per
+      ! mol C respired. ERSEM's pelagic producers expose the same two
+      ! constants as uB1c_O2 / urB1_O2 (mmol O_2/mg C); here they are mol/mol
+      ! so that the defaults are exactly 1 and the pre-existing arithmetic is
+      ! reproduced term by term (a product with 1.0_rk is exact and the
+      ! order of the subtractions below is unchanged). Literature: PQ 1.0-1.4
+      ! for a mixed community (nitrate-based growth at the top); RQ as
+      ! CO_2:O_2 0.8-1.2, i.e. rq_o2c = 1/RQ in 0.83-1.25.
+      call self%get_parameter(self%pq, 'pq', 'mol O_2/mol C', &
+         'photosynthetic quotient: O_2 evolved per C fixed', default=1.0_rk, minimum=0.0_rk)
+      call self%get_parameter(self%rq_o2c, 'rq_o2c', 'mol O_2/mol C', &
+         'O_2 consumed per C respired (reciprocal of the respiratory quotient CO_2:O_2)', &
+         default=1.0_rk, minimum=0.0_rk)
 
       call self%get_parameter(self%tau_store, 'tau_store', '-', &
          'stored fraction of positive net AG production', default=0.3_rk, minimum=0.0_rk, maximum=1.0_rk)
@@ -447,11 +464,14 @@ contains
          _SET_BOTTOM_ODE_(self%id_NSCc, dNSC)
 
          ! --- Exchanges with the water column -----------------------------
-         ! Carbon and oxygen (PQ = 1)
+         ! Carbon and oxygen. Carbon is carbon; the oxygen carries the two
+         ! quotients (pq, rq_o2c), both 1 by default, which reproduces the
+         ! former "PQ = 1" line term by term.
          _SET_BOTTOM_EXCHANGE_(self%id_O3c, (-Pg + Ra_act + Ra_bas + Rn + Rb) / CMass)
-         _SET_BOTTOM_EXCHANGE_(self%id_O2o, (Pg - Ra_act - Ra_bas - Rn) / CMass)
+         _SET_BOTTOM_EXCHANGE_(self%id_O2o, (self%pq * Pg - self%rq_o2c * Ra_act &
+                                             - self%rq_o2c * Ra_bas - self%rq_o2c * Rn) / CMass)
          ! BG respiration draws benthic layer-1 oxygen instead
-         _SET_BOTTOM_ODE_(self%id_G2o, -Rb / CMass)
+         _SET_BOTTOM_ODE_(self%id_G2o, -self%rq_o2c * Rb / CMass)
 
          ! Leaf nutrient uptake and respiratory return
          _SET_BOTTOM_EXCHANGE_(self%id_N4n, -jN4_leaf + qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb)
