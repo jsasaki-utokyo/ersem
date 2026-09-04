@@ -79,6 +79,13 @@ module ersem_seagrass
       type (type_horizontal_diagnostic_variable_id) :: id_gpp, id_npp
       type (type_horizontal_diagnostic_variable_id) :: id_resp, id_fT, id_fI
       type (type_horizontal_diagnostic_variable_id) :: id_graz
+      ! Nitrogen exchange terms, so a nitrogen budget can be CLOSED from
+      ! output alone (nippon-steel docs/113 s17): the mat's net stock
+      ! change is only a floor on its gross uptake, because it loses
+      ! nitrogen to mortality and grazing at the same time, and the
+      ! water-column nitrate budget could not be closed without these.
+      type (type_horizontal_diagnostic_variable_id) :: id_uN3l, id_uN4l
+      type (type_horizontal_diagnostic_variable_id) :: id_relN4, id_uN3r, id_uN4r
 
       ! Parameters
       real(rk) :: p_max, alpha, a_lai, k_can
@@ -312,6 +319,21 @@ contains
          'canopy light factor', domain=domain_bottom, source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_graz, 'graz', 'mg C/m^2/d', &
          'grazing loss of AG carbon', domain=domain_bottom, source=source_do_bottom)
+      call self%register_diagnostic_variable(self%id_uN3l, 'upt_N3', 'mmol N/m^2/d', &
+         'GROSS nitrate uptake from the water column by leaves', &
+         domain=domain_bottom, source=source_do_bottom)
+      call self%register_diagnostic_variable(self%id_uN4l, 'upt_N4', 'mmol N/m^2/d', &
+         'GROSS ammonium uptake from the water column by leaves', &
+         domain=domain_bottom, source=source_do_bottom)
+      call self%register_diagnostic_variable(self%id_relN4, 'rel_N4', 'mmol N/m^2/d', &
+         'respiratory ammonium return to the water column', &
+         domain=domain_bottom, source=source_do_bottom)
+      call self%register_diagnostic_variable(self%id_uN3r, 'upt_N3_root', 'mmol N/m^2/d', &
+         'nitrate uptake from porewater by roots', &
+         domain=domain_bottom, source=source_do_bottom)
+      call self%register_diagnostic_variable(self%id_uN4r, 'upt_N4_root', 'mmol N/m^2/d', &
+         'ammonium uptake from porewater by roots', &
+         domain=domain_bottom, source=source_do_bottom)
 
    end subroutine initialize
 
@@ -542,6 +564,12 @@ contains
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fT, eT)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fI, eI)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_graz, F_gr)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN3l, jN3_leaf)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN4l, jN4_leaf)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_relN4, &
+            qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN3r, jN3_root)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN4r, jN4_root)
 
       _HORIZONTAL_LOOP_END_
 
