@@ -93,6 +93,14 @@ module ersem_seagrass
       real(rk) :: qn_min, qn_max, qp_min, qp_max
       real(rk) :: qn_bg, qp_bg
       real(rk) :: vmax_n, vmax_p, hN3, hN4, hP, hKn, hKp, f_root
+      ! docs/21 s10.2 + review 2026-09-04 s1.3. isw_nupt = 0 keeps the
+      ! legacy AMMONIUM-PRIORITY rule (nitrate receives only what ammonium
+      ! leaves), which forces nitrate uptake UP where ammonium is scarce.
+      ! isw_nupt = 1 computes substrate-limited POTENTIALS for all four
+      ! source/form combinations and caps their sum by the one quota
+      ! demand, after ersem/primary_producer's own reviewed structure.
+      integer  :: isw_nupt
+      real(rk) :: psiN4, psiN3
       real(rk) :: srs_ag, srs_bg, r_nsc, pu_ra, hO2, hG2o
       real(rk) :: pq, rq_o2c
       real(rk) :: tau_store, tau_mob, k_bg
@@ -168,6 +176,13 @@ contains
          'half-saturation for root P uptake (layer amount)', default=5.0_rk, minimum=1.0e-6_rk)
       call self%get_parameter(self%f_root, 'f_root', '-', &
          'root fraction of uptake capacity', default=0.5_rk, minimum=0.0_rk, maximum=1.0_rk)
+      call self%get_parameter(self%isw_nupt, 'isw_nupt', '', &
+         'nitrogen uptake rule (0: ammonium priority [legacy], 1: potentials capped by quota demand)', &
+         default=0, minimum=0, maximum=1)
+      call self%get_parameter(self%psiN4, 'psiN4', '-', &
+         'ammonium affinity weight (isw_nupt=1 only)', default=1.0_rk, minimum=0.0_rk)
+      call self%get_parameter(self%psiN3, 'psiN3', '-', &
+         'nitrate affinity weight (isw_nupt=1 only)', default=1.0_rk, minimum=0.0_rk)
 
       call self%get_parameter(self%srs_ag, 'srs_ag', '1/d', &
          'AG basal respiration at Topt', default=0.015_rk, minimum=0.0_rk)
@@ -352,7 +367,7 @@ contains
       real(rk) :: relE, nsc_gap, G_alloc, G_res, gscale
       real(rk) :: cap_n, cap_p, upt_leaf, upt_root
       real(rk) :: jN4_leaf, jN3_leaf, jP_leaf
-      real(rk) :: jN4_root, jN3_root, jP_root, wsum
+      real(rk) :: jN4_root, jN3_root, jP_root, wsum, pot_n, nscale
       real(rk) :: M_ag, M_bg, starve
       real(rk) :: dAGc, dAGn, dAGp, dBGc, dBGn, dBGp, dNSC
       real(rk) :: gr1c, gr2c, F_gr, resp_gr, eges_gr
@@ -445,12 +460,33 @@ contains
          cap_p = self%vmax_p * eT * AGc * max(0.0_rk, 1.0_rk - qp / self%qp_max)
 
          upt_leaf = (1.0_rk - self%f_root) * cap_n
-         jN4_leaf = upt_leaf * N4n / (N4n + self%hN4)
-         jN3_leaf = max(0.0_rk, upt_leaf - jN4_leaf) * N3n / (N3n + self%hN3)
          upt_root = self%f_root * cap_n
          wsum = K4n1 + K4n2
-         jN4_root = upt_root * wsum / (wsum + self%hKn)
-         jN3_root = max(0.0_rk, upt_root - jN4_root) * (K3n1 + K3n2) / (K3n1 + K3n2 + self%hKn)
+         if (self%isw_nupt == 0) then
+            ! LEGACY: ammonium first, nitrate takes the remainder.
+            jN4_leaf = upt_leaf * N4n / (N4n + self%hN4)
+            jN3_leaf = max(0.0_rk, upt_leaf - jN4_leaf) * N3n / (N3n + self%hN3)
+            jN4_root = upt_root * wsum / (wsum + self%hKn)
+            jN3_root = max(0.0_rk, upt_root - jN4_root) * (K3n1 + K3n2) / (K3n1 + K3n2 + self%hKn)
+         else
+            ! Substrate-limited potentials, then ONE quota cap. Each flux is
+            ! zero when its own form is absent, the total tends to zero with
+            ! total DIN, and no form receives a remainder it did not earn.
+            jN4_leaf = upt_leaf * self%psiN4 * N4n / (N4n + self%hN4)
+            jN3_leaf = upt_leaf * self%psiN3 * N3n / (N3n + self%hN3)
+            jN4_root = upt_root * self%psiN4 * wsum / (wsum + self%hKn)
+            jN3_root = upt_root * self%psiN3 * (K3n1 + K3n2) / (K3n1 + K3n2 + self%hKn)
+            pot_n = jN4_leaf + jN3_leaf + jN4_root + jN3_root
+            if (pot_n > 0.0_rk) then
+               nscale = min(1.0_rk, cap_n / pot_n)
+            else
+               nscale = 0.0_rk
+            end if
+            jN4_leaf = jN4_leaf * nscale
+            jN3_leaf = jN3_leaf * nscale
+            jN4_root = jN4_root * nscale
+            jN3_root = jN3_root * nscale
+         end if
          jP_leaf = (1.0_rk - self%f_root) * cap_p * N1p / (N1p + self%hP)
          jP_root = self%f_root * cap_p * (K1p1 + K1p2) / (K1p1 + K1p2 + self%hKp)
 
