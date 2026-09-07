@@ -101,6 +101,7 @@ module ersem_seagrass
       ! demand, after ersem/primary_producer's own reviewed structure.
       integer  :: isw_nupt
       real(rk) :: psiN4, psiN3
+      real(rk) :: psi_inh   ! isw_nupt = 2: ammonium inhibition of nitrate uptake, (mmol N/m3)^-1
       real(rk) :: srs_ag, srs_bg, r_nsc, pu_ra, hO2, hG2o
       real(rk) :: pq, rq_o2c
       real(rk) :: tau_store, tau_mob, k_bg
@@ -183,6 +184,14 @@ contains
          'ammonium affinity weight (isw_nupt=1 only)', default=1.0_rk, minimum=0.0_rk)
       call self%get_parameter(self%psiN3, 'psiN3', '-', &
          'nitrate affinity weight (isw_nupt=1 only)', default=1.0_rk, minimum=0.0_rk)
+      ! isw_nupt = 2 (2026-09-08, nippon-steel docs/114 CX): the isw_nupt = 1 rule
+      ! with the classical ammonium inhibition of nitrate uptake (Wroblewski 1977,
+      ! exp(-psi_inh * NH4)). Motivation: a mat at its quota ceiling returns
+      ! nitrogen by respiration and re-takes nitrate and ammonium in proportion to
+      ! their concentrations, so the water's nitrate drains while ammonium stays;
+      ! the tanks keep nitrate and hold ammonium low. isw_nupt = 1 is untouched.
+      call self%get_parameter(self%psi_inh, 'psi_inh', '(mmol N/m3)^-1', &
+         'ammonium inhibition of nitrate uptake (isw_nupt=2 only)', default=1.5_rk, minimum=0.0_rk)
 
       call self%get_parameter(self%srs_ag, 'srs_ag', '1/d', &
          'AG basal respiration at Topt', default=0.015_rk, minimum=0.0_rk)
@@ -476,6 +485,12 @@ contains
             jN3_leaf = upt_leaf * self%psiN3 * N3n / (N3n + self%hN3)
             jN4_root = upt_root * self%psiN4 * wsum / (wsum + self%hKn)
             jN3_root = upt_root * self%psiN3 * (K3n1 + K3n2) / (K3n1 + K3n2 + self%hKn)
+            if (self%isw_nupt == 2) then
+               ! Ammonium inhibition of nitrate uptake (Wroblewski 1977). The
+               ! potentials above are unchanged for isw_nupt = 1 (bit-identical).
+               jN3_leaf = jN3_leaf * exp(-self%psi_inh * max(N4n, 0.0_rk))
+               jN3_root = jN3_root * exp(-self%psi_inh * max(wsum, 0.0_rk))
+            end if
             pot_n = jN4_leaf + jN3_leaf + jN4_root + jN3_root
             if (pot_n > 0.0_rk) then
                nscale = min(1.0_rk, cap_n / pot_n)
