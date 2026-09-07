@@ -178,8 +178,8 @@ contains
       call self%get_parameter(self%f_root, 'f_root', '-', &
          'root fraction of uptake capacity', default=0.5_rk, minimum=0.0_rk, maximum=1.0_rk)
       call self%get_parameter(self%isw_nupt, 'isw_nupt', '', &
-         'nitrogen uptake rule (0: ammonium priority [legacy], 1: potentials capped by quota demand)', &
-         default=0, minimum=0, maximum=1)
+         'nitrogen uptake rule (0: ammonium priority [legacy], 1: potentials capped by quota demand, 2: as 1 with ammonium inhibition of nitrate uptake)', &
+         default=0, minimum=0, maximum=2)
       call self%get_parameter(self%psiN4, 'psiN4', '-', &
          'ammonium affinity weight (isw_nupt=1 only)', default=1.0_rk, minimum=0.0_rk)
       call self%get_parameter(self%psiN3, 'psiN3', '-', &
