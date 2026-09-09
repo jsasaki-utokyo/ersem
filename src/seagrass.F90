@@ -103,6 +103,7 @@ module ersem_seagrass
       real(rk) :: psiN4, psiN3
       real(rk) :: psi_inh   ! isw_nupt = 2: ammonium inhibition of nitrate uptake, (mmol N/m3)^-1
       real(rk) :: srs_ag, srs_bg, r_nsc, pu_ra, hO2, hG2o
+      real(rk) :: f_rspn
       real(rk) :: pq, rq_o2c
       real(rk) :: tau_store, tau_mob, k_bg
       real(rk) :: rs_target, k_alloc, q_nsc
@@ -192,6 +193,18 @@ contains
       ! the tanks keep nitrate and hold ammonium low. isw_nupt = 1 is untouched.
       call self%get_parameter(self%psi_inh, 'psi_inh', '(mmol N/m3)^-1', &
          'ammonium inhibition of nitrate uptake (isw_nupt=2 only)', default=1.5_rk, minimum=0.0_rk)
+
+      ! f_rspn (2026-09-09, nippon-steel docs/114 DH): the FRACTION of the
+      ! above-ground respiratory nitrogen and phosphorus that the plant RETAINS
+      ! instead of returning to the water. The code below was written to keep
+      ! the quota from drifting when carbon is respired; physiologically basal
+      ! respiration oxidises carbon skeletons while the nitrogen in protein and
+      ! pigment is re-used, so the quota SHOULD rise. Default 0.0 reproduces the
+      ! previous behaviour bit for bit; 1.0 retains everything. Carbon and
+      ! oxygen fluxes are untouched, and so are the below-ground (Rb) terms.
+      call self%get_parameter(self%f_rspn, 'f_rspn', '-', &
+         'fraction of AG respiratory N and P retained by the plant', &
+         default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
 
       call self%get_parameter(self%srs_ag, 'srs_ag', '1/d', &
          'AG basal respiration at Topt', default=0.015_rk, minimum=0.0_rk)
@@ -523,8 +536,8 @@ contains
          ! Respiration releases the associated N and P to the water (AG) as NH4
          ! and PO4 at the current quota, keeping the quota from drifting when
          ! carbon is respired.
-         dAGn = dAGn - qn * (Ra_act + Ra_bas)
-         dAGp = dAGp - qp * (Ra_act + Ra_bas)
+         dAGn = dAGn - (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas)
+         dAGp = dAGp - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas)
          dBGn = dBGn - BGn / max(BGc, 1.0e-8_rk) * Rb
          dBGp = dBGp - BGp / max(BGc, 1.0e-8_rk) * Rb
 
@@ -547,9 +560,9 @@ contains
          _SET_BOTTOM_ODE_(self%id_G2o, -self%rq_o2c * Rb / CMass)
 
          ! Leaf nutrient uptake and respiratory return
-         _SET_BOTTOM_EXCHANGE_(self%id_N4n, -jN4_leaf + qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb)
+         _SET_BOTTOM_EXCHANGE_(self%id_N4n, -jN4_leaf + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb)
          _SET_BOTTOM_EXCHANGE_(self%id_N3n, -jN3_leaf)
-         _SET_BOTTOM_EXCHANGE_(self%id_N1p, -jP_leaf + qp * (Ra_act + Ra_bas) + BGp / max(BGc, 1.0e-8_rk) * Rb)
+         _SET_BOTTOM_EXCHANGE_(self%id_N1p, -jP_leaf + (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) + BGp / max(BGc, 1.0e-8_rk) * Rb)
 
          ! Root uptake from the porewater pools (split by availability)
          wsum = max(K4n1 + K4n2, 1.0e-8_rk)
@@ -566,8 +579,8 @@ contains
          ! respiratory NH4/PO4 return reverses the sign. Leaf terms on pelagic
          ! TA, root terms on the benthic alkalinity pool.
          _SET_BOTTOM_EXCHANGE_(self%id_TA, jN3_leaf - jN4_leaf + jP_leaf &
-            + qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb &
-            - qp * (Ra_act + Ra_bas) - BGp / max(BGc, 1.0e-8_rk) * Rb)
+            + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb &
+            - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - BGp / max(BGc, 1.0e-8_rk) * Rb)
          _SET_BOTTOM_ODE_(self%id_benTA, jN3_root - jN4_root + jP_root)
 
          ! Mortality routing
@@ -618,7 +631,7 @@ contains
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN3l, jN3_leaf)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN4l, jN4_leaf)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_relN4, &
-            qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb)
+            (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN3r, jN3_root)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN4r, jN4_root)
 
