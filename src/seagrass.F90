@@ -60,6 +60,7 @@ module ersem_seagrass
       type (type_state_variable_id) :: id_O2o, id_O3c, id_TA
       type (type_state_variable_id) :: id_N1p, id_N3n, id_N4n
       type (type_state_variable_id) :: id_R6c, id_R6n, id_R6p
+      type (type_state_variable_id) :: id_R2c   ! pelagic semi-labile DOC (f_exu > 0 only)
 
       ! Benthic dependencies
       type (type_bottom_state_variable_id) :: id_K1p1, id_K1p2
@@ -106,6 +107,7 @@ module ersem_seagrass
       real(rk) :: f_rspn
       real(rk) :: pq, rq_o2c
       real(rk) :: tau_store, tau_mob, k_bg
+      real(rk) :: f_exu
       real(rk) :: rs_target, k_alloc, q_nsc
       real(rk) :: sd_ag, sd_bg, sd_anx, nsc_starve, sd_starve, f_pel
       real(rk) :: g_max, h_ag, pe_gr
@@ -237,6 +239,14 @@ contains
 
       call self%get_parameter(self%tau_store, 'tau_store', '-', &
          'stored fraction of positive net AG production', default=0.3_rk, minimum=0.0_rk, maximum=1.0_rk)
+      ! Exudation (docs/114 EV, 2026-09-12): a fraction of GROSS fixation
+      ! released as dissolved organic carbon to the pelagic semi-labile pool
+      ! (R2, carbon only) instead of entering the plant. DIC uptake and O2
+      ! release are those of the fixation and do not change; only where the
+      ! fixed carbon goes does. Default 0 = the former model, and the R2
+      ! coupling is then not even requested (bit-identical).
+      call self%get_parameter(self%f_exu, 'f_exu', '-', &
+           'fraction of gross production exuded as DOC to pelagic R2', default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
       call self%get_parameter(self%tau_mob, 'tau_mob', '1/d', &
          'NSC remobilisation rate under light limitation', default=0.05_rk, minimum=0.0_rk)
       call self%get_parameter(self%k_bg, 'k_bg', '1/d', &
@@ -318,6 +328,8 @@ contains
       call self%register_state_dependency(self%id_N3n, 'N3n', 'mmol N/m^3', 'pelagic nitrate')
       call self%register_state_dependency(self%id_N4n, 'N4n', 'mmol N/m^3', 'pelagic ammonium')
       call self%register_state_dependency(self%id_R6c, 'R6c', 'mg C/m^3', 'pelagic POM carbon')
+      if (self%f_exu > 0.0_rk) &
+         call self%register_state_dependency(self%id_R2c, 'R2c', 'mg C/m^3', 'pelagic semi-labile DOC carbon')
       call self%register_state_dependency(self%id_R6n, 'R6n', 'mmol N/m^3', 'pelagic POM nitrogen')
       call self%register_state_dependency(self%id_R6p, 'R6p', 'mmol P/m^3', 'pelagic POM phosphorus')
 
@@ -525,7 +537,7 @@ contains
          M_bg = (self%sd_bg + self%sd_anx * (1.0_rk - fO2bg)) * BGc
 
          ! --- State ODEs (per day) ----------------------------------------
-         dAGc = Pg - Ra_act - Ra_bas - T_st + T_mb - M_ag - G_alloc
+         dAGc = Pg - Ra_act - Ra_bas - T_st + T_mb - M_ag - G_alloc - self%f_exu * Pg
          dNSC = T_st - T_mb - G_res - Rn
          dBGc = G_bg_c - Rb - M_bg
          dAGn = jN4_leaf + jN3_leaf + jN4_root + jN3_root &
@@ -582,6 +594,9 @@ contains
             + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb &
             - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - BGp / max(BGc, 1.0e-8_rk) * Rb)
          _SET_BOTTOM_ODE_(self%id_benTA, jN3_root - jN4_root + jP_root)
+
+         ! Exudate: the diverted share of gross fixation, carbon only
+         if (self%f_exu > 0.0_rk) _SET_BOTTOM_EXCHANGE_(self%id_R2c, self%f_exu * Pg)
 
          ! Mortality routing
          _SET_BOTTOM_EXCHANGE_(self%id_R6c, self%f_pel * M_ag)
