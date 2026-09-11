@@ -106,6 +106,7 @@ module ersem_benthic_sulfur_cycle
       ! Parameters
       real(rk) :: K_H2S_prod     ! H2S production rate per unit remineralization (mol S/mol C)
       real(rk) :: K_H2S_ox       ! H2S oxidation rate constant (1/d)
+      real(rk) :: f_ox_direct    ! fraction of interface H2S oxidation completed to SO4 in place (0 = legacy, all via S0)
       real(rk) :: K_H2S_NO3_ox   ! H2S oxidation by NO3 rate constant (1/d)
       real(rk) :: K_S0_NO3_ox    ! S0 -> SO4 oxidation by NO3 rate constant (1/d); 0 = off (legacy)
       real(rk) :: K_NO3_half     ! Half-saturation for NO3 (mmol/m3)
@@ -140,6 +141,20 @@ contains
            'H2S production per C remineralized (stoichiometry)', default=0.5_rk)
       call self%get_parameter(self%K_H2S_ox, 'K_H2S_ox', '1/d', &
            'H2S oxidation rate constant', default=0.5_rk)
+      ! COMPLETE interface oxidation (2026-09-11, nippon-steel docs/114 EP).
+      ! The column's dissolved pools are spread UNIFORMLY over the column
+      ! (benthic_column_dissolved_matter per_layer), so S0 made at the oxic
+      ! interface is diluted at once to the whole column depth: with a 5 mm
+      ! oxic layer over an 11 cm column only ~4 % of it stays where it can be
+      ! oxidised, and the S0 -> SO4 step that returns the sulfate-reduction
+      ! alkalinity barely runs (0.01-0.03 mmol S/m2/d against 2-3 produced).
+      ! Coastal sediments reoxidise 70-92 % of their sulfide, mostly to
+      ! sulfate at the interface. f_ox_direct completes that fraction of the
+      ! layer-1 H2S oxidation in place: H2S + 2 O2 -> SO4(2-), -2 TA per S,
+      ! no S0 released. 0 = legacy two-step chain, bit-identical.
+      call self%get_parameter(self%f_ox_direct, 'f_ox_direct', '-', &
+           'fraction of interface H2S oxidation completed to SO4 in place (0 = legacy)', &
+           default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
       call self%get_parameter(self%K_S0_ox, 'K_S0_ox', '1/d', &
            'S0 oxidation rate constant', default=0.02_rk)
       call self%get_parameter(self%K_S0_burial, 'K_S0_burial', '1/d', &
@@ -356,6 +371,7 @@ contains
       real(rk) :: D1m, D2m, remin_rate, h_bottom
       real(rk) :: O2_conc_1, NO3_conc_2, f_O2, f_O2_pel, f_NO3
       real(rk) :: R_sulfate_red, R_H2S_ox_1, R_H2S_NO3_ox, R_S0_NO3_ox, R_S0_ox_1, R_S0_burial
+      real(rk) :: R_ox_direct, R_ox_to_S0
       real(rk) :: r_no3_S0, r_ta_S0
       real(rk) :: r_no3, r_ta
       real(rk) :: f_barrier, R_barrier_ox
@@ -435,6 +451,8 @@ contains
 
          ! H2S + 0.5 O2 -> S0
          R_H2S_ox_1 = self%K_H2S_ox * H2S_1 * f_O2
+         R_ox_direct = self%f_ox_direct * R_H2S_ox_1      ! completed to SO4 in place
+         R_ox_to_S0  = R_H2S_ox_1 - R_ox_direct            ! legacy route via S0
 
          ! S0 + 1.5 O2 -> SO4 (removed from system)
          R_S0_ox_1 = self%K_S0_ox * S0_1 * f_O2
@@ -593,13 +611,13 @@ contains
          !          consumption by oxidation and FeS precipitation,
          !          S0 production from H2S oxidation, loss from oxidation and burial
          _SET_BOTTOM_ODE_(self%id_H2S_1, self%p_sr_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
-         _SET_BOTTOM_ODE_(self%id_S0_1,   R_H2S_ox_1 - R_S0_ox_1 - R_S0_burial)
-         _SET_BOTTOM_ODE_(self%id_G2o,   -0.5_rk * R_H2S_ox_1 - 1.5_rk * R_S0_ox_1)
+         _SET_BOTTOM_ODE_(self%id_S0_1,   R_ox_to_S0 - R_S0_ox_1 - R_S0_burial)
+         _SET_BOTTOM_ODE_(self%id_G2o,   -0.5_rk * R_ox_to_S0 - 2.0_rk * R_ox_direct - 1.5_rk * R_S0_ox_1)
 
          ! Alkalinity, layer 1: interface sulfate reduction +2 TA per mol H2S;
          ! S0 + 1.5 O2 + H2O -> SO4^2- + 2H+ => -2 TA per mol S0
          if (.not.legacy_ersem_compatibility) &
-            _SET_BOTTOM_ODE_(self%id_benTA, 2.0_rk * self%p_sr_1 * R_sulfate_red - 2.0_rk * R_S0_ox_1)
+            _SET_BOTTOM_ODE_(self%id_benTA, 2.0_rk * self%p_sr_1 * R_sulfate_red - 2.0_rk * R_S0_ox_1 - 2.0_rk * R_ox_direct)
 
          ! Layer 3: sulfate reduction produces +2 TA per mol H2S
          ! SO4^2- + 2C_org -> H2S + 2HCO3- (net +2 mEq per mol H2S)
