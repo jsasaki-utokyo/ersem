@@ -4,6 +4,20 @@
 ! Simulates alkalinity release from steelmaking slag containing CaO
 ! CaO + H2O → Ca(OH)2 → Ca2+ + 2OH-
 ! Each mole of CaO increases alkalinity by 2 equivalents
+!
+! SLAG CARBONATION (2026-09-11, nippon-steel docs/114 EG; mechanism M1 of
+! docs/reviews/2026-09-11-fable-late-calcia-carbon.md). Residual portlandite
+! in the slag takes up dissolved CO2 in the solid phase:
+!    Ca(OH)2(s) + CO2(aq) -> CaCO3(s) + H2O
+! The water loses one mole of DIC per mole reacted and NO alkalinity (neither
+! the reactant solid nor the product solid is in the water), and no oxygen.
+! Rate = k_carb * [CO2*], k_carb a transfer velocity (m/d), [CO2*] the bottom
+! cell's carbonic acid (carbonate module diagnostic CarbA, mmol/m^3); first
+! order in CO2*, so it is strongest where pCO2 is highest (late in a dark
+! closure). The carbon removed is kept in the bottom state CaCO3_slag so total
+! carbon is conserved. Independent of iswCaO; k_carb = 0 (default) is OFF and
+! bit-identical. Not represented: exhaustion or passivation of the portlandite
+! (negligible over a 72-h closure at the rates of interest), temperature.
 
 module ersem_benthic_cao
 
@@ -23,12 +37,17 @@ module ersem_benthic_cao
       real(rk) :: temp_Q10         ! Q10 temperature factor
       real(rk) :: CaO_half_sat     ! Half-saturation constant for stock limitation (mmol/m^2)
       real(rk) :: CaO_stock0       ! Initial CaO stock (mmol/m^2)
+      real(rk) :: k_carb           ! slag carbonation transfer velocity (m/d); 0 = off
 
       ! State variables and dependencies
       type (type_bottom_state_variable_id)          :: id_cao_stock  ! CaO stock (if tracking)
       type (type_state_variable_id)                 :: id_TA         ! Total alkalinity
       type (type_dependency_id)                     :: id_pH         ! pH (for pH-dependent mode)
       type (type_dependency_id)                     :: id_temp       ! Temperature
+      type (type_state_variable_id)                 :: id_O3c        ! DIC (carbonation sink)
+      type (type_dependency_id)                     :: id_CO2aq      ! CO2* (carbonation driver)
+      type (type_bottom_state_variable_id)          :: id_carb_c     ! carbonated slag carbon
+      type (type_horizontal_diagnostic_variable_id) :: id_carb_flux  ! carbonation flux
 
       ! Diagnostics
       type (type_horizontal_diagnostic_variable_id) :: id_cao_diss   ! CaO dissolution flux
@@ -72,6 +91,22 @@ contains
          'initial CaO stock at bottom (only used in mode 3)', &
          default=1000.0_rk, minimum=0.0_rk)
 
+      ! Slag carbonation (docs/114 EG). Registered unconditionally so the same
+      ! coupling block works in every arm; k_carb = 0 leaves it inert.
+      call self%get_parameter(self%k_carb, 'k_carb', 'm/d', &
+         'slag carbonation transfer velocity: CO2(aq) taken up by residual portlandite (0 = off)', &
+         default=0.0_rk, minimum=0.0_rk)
+      call self%register_state_dependency(self%id_O3c, 'O3c', 'mmol C/m^3', &
+         'dissolved inorganic carbon (carbonation sink)')
+      call self%register_dependency(self%id_CO2aq, 'CO2aq', 'mmol/m^3', &
+         'carbonic acid concentration CO2* (carbonation driver)')
+      call self%register_bottom_state_variable(self%id_carb_c, 'CaCO3_slag', 'mmol C/m^2', &
+         'carbon fixed by slag carbonation', 0.0_rk, minimum=0.0_rk)
+      call self%add_to_aggregate_variable(standard_variables%total_carbon, self%id_carb_c)
+      call self%register_diagnostic_variable(self%id_carb_flux, 'carbonation', 'mmol C/m^2/d', &
+         'slag carbonation flux (DIC sink, alkalinity-neutral)', &
+         domain=domain_bottom, source=source_do_bottom)
+
       ! Only proceed with registration if CaO dissolution is enabled
       if (self%iswCaO > 0) then
          ! Register dependency on total alkalinity (standard variable)
@@ -113,6 +148,19 @@ contains
 
       real(rk) :: cao_flux, pH, temp, stock
       real(rk) :: f_pH, f_temp, f_stock
+      real(rk) :: co2aq, f_carb
+
+      ! Slag carbonation first: it is independent of the dissolution mode.
+      _HORIZONTAL_LOOP_BEGIN_
+         f_carb = 0.0_rk
+         if (self%k_carb > 0.0_rk) then
+            _GET_(self%id_CO2aq, co2aq)
+            f_carb = self%k_carb * max(co2aq, 0.0_rk)
+            _SET_BOTTOM_EXCHANGE_(self%id_O3c, -f_carb)
+            _SET_BOTTOM_ODE_(self%id_carb_c, f_carb)
+         end if
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_carb_flux, f_carb)
+      _HORIZONTAL_LOOP_END_
 
       ! Exit immediately if CaO dissolution is disabled
       if (self%iswCaO == 0) return
