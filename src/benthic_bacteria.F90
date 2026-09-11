@@ -41,6 +41,8 @@ module ersem_benthic_bacteria
       real(rk) :: hO2resp           ! cubic-Hill half-saturation of the respiration O2 response; 0 = legacy Monod (jsasaki 2026-08-15)
       real(rk) :: p_sulf            ! fraction of respiration on sulfate (no G2o draw); 0 = legacy (jsasaki 2026-08-15)
       real(rk) :: h_h2s_inh        ! half-saturation of free-sulfide inhibition of uptake (mmol S/m^2); 0 = off (2026-09-10)
+      real(rk) :: i_par, K_par_inh ! light suppression of uptake (docs/114 EQ, 2026-09-11); i_par = 0 = off
+      type (type_dependency_id) :: id_par
       real(rk) :: pur,sr
       real(rk) :: pdQ1
       real(rk) :: sd
@@ -132,6 +134,21 @@ contains
       ! AND H2S production from the same carbon), and scaling the anaerobic
       ! pathway up would floor the nonnegative G2o pool, where repair_state
       ! silently erases the debt. Default 0 = legacy (bit-identical).
+      ! LIGHT SUPPRESSION of uptake (2026-09-11, nippon-steel docs/114 EQ).
+      ! Benthic photosynthesis oxygenates the upper sediment in the light and
+      ! pushes the anaerobic zone down; in the dark it returns. Every fit of
+      ! the tank lineage set the sulfate reducers' INITIAL STOCK 6.5x higher
+      ! when the coming closure was dark -- a stock cannot know the coming
+      ! light regime, so that was a stand-in for this process (docs/114 EM).
+      ! uptake x (1 - i_par * PAR/(PAR + K_par_inh)). i_par = 0 (default) is
+      ! off and registers nothing: bit-identical.
+      call self%get_parameter(self%i_par, 'i_par', '-', &
+         'maximum fractional suppression of uptake by light (0 = off)', &
+         default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+      call self%get_parameter(self%K_par_inh, 'K_par_inh', 'W/m^2', &
+         'half-saturation PAR of the light suppression', default=20.0_rk, minimum=1.0e-6_rk)
+      if (self%i_par > 0.0_rk) &
+         call self%register_dependency(self%id_par, standard_variables%downwelling_photosynthetic_radiative_flux)
       call self%get_parameter(self%h_h2s_inh, 'h_h2s_inh', 'mmol S/m^2', &
          'half-saturation of free-sulfide inhibition of uptake (0 = off)', &
          default=0.0_rk, minimum=0.0_rk)
@@ -206,6 +223,7 @@ contains
       real(rk) :: fQIHc
       real(rk) :: fK1Hp,fHG3c,fK4Hn,sfHQ1,sfHQI,sfHQ6
       real(rk) :: H2S_col
+      real(rk) :: par_b
       real(rk) :: O2o, f_O2_resp  ! Monod O2 limitation for respiration (jsasaki 2026-02-15)
 
       _HORIZONTAL_LOOP_BEGIN_
@@ -253,6 +271,12 @@ contains
          if (self%h_h2s_inh > 0.0_rk) then
             _GET_HORIZONTAL_(self%id_H2S_col, H2S_col)
             sfQ = sfQ * self%h_h2s_inh / (self%h_h2s_inh + max(H2S_col, 0.0_rk))
+         end if
+         ! Light suppression (docs/114 EQ); i_par = 0 leaves sfQ untouched.
+         if (self%i_par > 0.0_rk) then
+            _GET_(self%id_par, par_b)
+            par_b = max(par_b, 0.0_rk)
+            sfQ = sfQ * (1.0_rk - self%i_par * par_b / (par_b + self%K_par_inh))
          end if
 
          ! Gross carbon, nitrogen, phosphorus uptake per substrate (mg/m2/d or mmol/m2/d)
