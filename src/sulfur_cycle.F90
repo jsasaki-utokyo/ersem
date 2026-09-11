@@ -37,6 +37,7 @@ module ersem_sulfur_cycle
       ! State variable IDs
       type(type_state_variable_id) :: id_H2S, id_S0
       type(type_state_variable_id) :: id_O2
+      type(type_state_variable_id) :: id_TA   ! alkalinity (isw_ta = 1 only)
 
       ! Diagnostic variable IDs
       type(type_diagnostic_variable_id) :: id_R_H2S_ox, id_R_S0_ox
@@ -48,6 +49,7 @@ module ersem_sulfur_cycle
       real(rk) :: K_O2_half     ! Half-saturation O2 for oxidation (mmol/m3)
       real(rk) :: K_S0_sink     ! S0 settling/sinking rate (1/d)
       real(rk) :: K_S0_disp     ! S0 disproportionation rate (1/d)
+      integer  :: isw_ta        ! 1 = charge the alkalinity of S0 -> SO4 (docs/114, 2026-09-11); 0 = legacy
 
    contains
       procedure :: initialize
@@ -84,6 +86,22 @@ contains
       ! Typical rate: 0.05-0.2 /d under fully anoxic conditions
       call self%get_parameter(self%K_S0_disp, 'K_S0_disp', '1/d', &
            'S0 disproportionation rate under anoxia', default=0.1_rk)
+
+      ! ALKALINITY of the sulfur chain (2026-09-11, nippon-steel docs/114,
+      ! Fable review of EM-ES). The benthic module charges -2 TA per S when S0
+      ! is oxidised to sulfate (returning the +2 TA of sulfate reduction), but
+      ! this pelagic module oxidised S0 with oxygen and NO alkalinity term, so
+      ! S0 leaving the bed was reoxidised in the water without returning the
+      ! sulfate-reduction alkalinity: a charge-balance defect. isw_ta = 1 adds
+      !   S0 + 1.5 O2 + H2O -> SO4(2-) + 2H+        : -2   TA per S0 oxidised
+      !   4 S0 + 4 H2O -> 3 H2S + SO4(2-) + 2H+     : -0.5 TA per S0 disproportionated
+      ! (H2S <-> S0 is TA-neutral in the sulfate-reduction convention used
+      ! throughout). isw_ta = 0 (default) is the legacy behaviour, bit-identical.
+      call self%get_parameter(self%isw_ta, 'isw_ta', '', &
+           'charge the alkalinity of S0 oxidation and disproportionation (0: legacy, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_ta == 1) &
+         call self%register_state_dependency(self%id_TA, standard_variables%alkalinity_expressed_as_mole_equivalent)
 
       ! Register state variables
       call self%register_state_variable(self%id_H2S, 'H2S', 'mmol S/m^3', &
@@ -162,6 +180,9 @@ contains
 
          ! O2: consumed by H2S oxidation and S0 oxidation
          _SET_ODE_(self%id_O2, -0.5_rk * R_H2S_ox - 1.5_rk * R_S0_ox)
+
+         ! Alkalinity of sulfate regeneration (isw_ta = 1; see initialize)
+         if (self%isw_ta == 1) _SET_ODE_(self%id_TA, -2.0_rk * R_S0_ox - 0.5_rk * R_S0_disp)
 
          ! Set diagnostics
          _SET_DIAGNOSTIC_(self%id_R_H2S_ox, R_H2S_ox)
