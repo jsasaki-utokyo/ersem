@@ -63,6 +63,7 @@ module ersem_benthic_sulfur_cycle
       ! State variable dependencies (layer-specific via benthic_column_dissolved_matter)
       type(type_bottom_state_variable_id) :: id_H2S_1, id_H2S_2, id_H2S_3
       type(type_bottom_state_variable_id) :: id_S0_1
+      type(type_bottom_state_variable_id) :: id_S0s    ! layer-1 S0 as a SOLID (isw_S0_solid = 1)
       type(type_bottom_state_variable_id) :: id_S0_2   ! S0 in Layer 2 (H2S-NO3 product)
       type(type_bottom_state_variable_id) :: id_G2o  ! Oxygen in Layer 1
       type(type_bottom_state_variable_id) :: id_NO3_2  ! NO3 in Layer 2 for H2S-NO3 oxidation
@@ -117,6 +118,7 @@ module ersem_benthic_sulfur_cycle
       real(rk) :: K_barrier_rate ! Rate at which barrier oxidizes H2S (1/d)
       real(rk) :: K_FeS_ben      ! FeS precipitation rate in benthic layers (1/d)
       integer  :: isw_barrier_dest  ! 0: barrier S0 to the water (legacy), 1: to bed layer 1
+      integer  :: isw_S0_solid      ! 0: layer-1 S0 in the dissolved column (legacy), 1: own solid pool
       real(rk) :: K_FeS_pel      ! FeS precipitation rate in pelagic (1/d)
       real(rk) :: p_sr_1         ! fraction of sulfate reduction delivered at the interface / layer 1 (jsasaki 2026-08-15, docs/14)
       real(rk) :: K_O2_half_pel  ! bottom-water O2 half-saturation (cubic Hill) for interface oxidation; 0 = legacy layer-1 Monod (jsasaki 2026-08-15, docs/14)
@@ -225,6 +227,21 @@ contains
       ! oxidation, burial and nitrate pathways. Default 0 = the former model.
       call self%get_parameter(self%isw_barrier_dest, 'isw_barrier_dest', '', &
            'barrier S0 destination (0: pelagic, 1: benthic layer 1)', default=0)
+
+      ! Elemental sulphur is a SOLID (nippon-steel docs/114 CY, owner decision
+      ! 2026-09-12). Layer-1 S0 has been a constituent of
+      ! benthic_column_dissolved_matter, whose equilibrium stock is 36-55x the
+      ! actual one for this species, so the bed returns to the water whatever is
+      ! put in it -- measured. At isw_S0_solid = 1 layer-1 S0 lives in this
+      ! module's own bottom state variable: same production, oxidation, burial
+      ! and alkalinity terms, but it stays where it is made. The variable is
+      ! registered only when the switch is on, so the default build is unchanged
+      ! and gains no output variable.
+      call self%get_parameter(self%isw_S0_solid, 'isw_S0_solid', '', &
+           'layer-1 elemental sulphur (0: dissolved column, 1: own solid pool)', default=0)
+      if (self%isw_S0_solid == 1) &
+         call self%register_state_variable(self%id_S0s, 'S0s', 'mmol S/m^2', &
+              'elemental sulfur, solid, layer 1', minimum=0.0_rk)
       ! K_FeS_pel: rate constant for FeS precipitation in pelagic bottom water
       ! Usually lower than benthic because less reactive Fe available in water column
       call self%get_parameter(self%K_FeS_pel, 'K_FeS_pel', '1/d', &
@@ -395,7 +412,11 @@ contains
          _GET_HORIZONTAL_(self%id_H2S_2, H2S_2)
          _GET_HORIZONTAL_(self%id_S0_2, S0_2)   ! only WRITTEN before K_S0_NO3_ox
          _GET_HORIZONTAL_(self%id_H2S_3, H2S_3)
-         _GET_HORIZONTAL_(self%id_S0_1, S0_1)
+         if (self%isw_S0_solid == 1) then
+            _GET_HORIZONTAL_(self%id_S0s, S0_1)
+         else
+            _GET_HORIZONTAL_(self%id_S0_1, S0_1)
+         end if
          _GET_HORIZONTAL_(self%id_G2o, G2o)
          _GET_HORIZONTAL_(self%id_NO3_2, NO3_2)
 
@@ -621,7 +642,11 @@ contains
          !          consumption by oxidation and FeS precipitation,
          !          S0 production from H2S oxidation, loss from oxidation and burial
          _SET_BOTTOM_ODE_(self%id_H2S_1, self%p_sr_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
-         _SET_BOTTOM_ODE_(self%id_S0_1,   R_ox_to_S0 - R_S0_ox_1 - R_S0_burial)
+         if (self%isw_S0_solid == 1) then
+            _SET_BOTTOM_ODE_(self%id_S0s,  R_ox_to_S0 - R_S0_ox_1 - R_S0_burial)
+         else
+            _SET_BOTTOM_ODE_(self%id_S0_1, R_ox_to_S0 - R_S0_ox_1 - R_S0_burial)
+         end if
          _SET_BOTTOM_ODE_(self%id_G2o,   -0.5_rk * R_ox_to_S0 - 2.0_rk * R_ox_direct - 1.5_rk * R_S0_ox_1)
 
          ! Alkalinity, layer 1: interface sulfate reduction +2 TA per mol H2S;
@@ -640,7 +665,11 @@ contains
          _SET_BOTTOM_EXCHANGE_(self%id_H2S_pel, -R_barrier_ox - R_FeS_pel)
          if (self%isw_barrier_dest == 1) then
             ! the interface keeps the S0 it makes
-            _SET_BOTTOM_ODE_(self%id_S0_1, R_barrier_ox)
+            if (self%isw_S0_solid == 1) then
+               _SET_BOTTOM_ODE_(self%id_S0s,  R_barrier_ox)
+            else
+               _SET_BOTTOM_ODE_(self%id_S0_1, R_barrier_ox)
+            end if
          else
             _SET_BOTTOM_EXCHANGE_(self%id_S0_pel, R_barrier_ox)
          end if
