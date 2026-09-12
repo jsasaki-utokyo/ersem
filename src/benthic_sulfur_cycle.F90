@@ -116,6 +116,7 @@ module ersem_benthic_sulfur_cycle
       real(rk) :: K_barrier      ! Oxic barrier effectiveness (1/m)
       real(rk) :: K_barrier_rate ! Rate at which barrier oxidizes H2S (1/d)
       real(rk) :: K_FeS_ben      ! FeS precipitation rate in benthic layers (1/d)
+      integer  :: isw_barrier_dest  ! 0: barrier S0 to the water (legacy), 1: to bed layer 1
       real(rk) :: K_FeS_pel      ! FeS precipitation rate in pelagic (1/d)
       real(rk) :: p_sr_1         ! fraction of sulfate reduction delivered at the interface / layer 1 (jsasaki 2026-08-15, docs/14)
       real(rk) :: K_O2_half_pel  ! bottom-water O2 half-saturation (cubic Hill) for interface oxidation; 0 = legacy layer-1 Monod (jsasaki 2026-08-15, docs/14)
@@ -215,6 +216,15 @@ contains
       ! Typical values: 0.1-1.0 1/d (represents effective Fe availability)
       call self%get_parameter(self%K_FeS_ben, 'K_FeS_ben', '1/d', &
            'FeS precipitation rate in benthic layers (iron sulfide burial)', default=0.5_rk)
+      ! Where the oxic barrier's product goes (nippon-steel docs/114, 2026-09-12).
+      ! The barrier oxidises sulfide AT THE SEDIMENT INTERFACE, but the legacy
+      ! code puts the S0 it makes into the WATER (id_S0_pel), so elemental
+      ! sulphur accumulates in the water column and its later oxidation charges
+      ! the water's alkalinity. isw_barrier_dest = 1 puts the product in the
+      ! bed's layer-1 S0 pool instead, where it is subject to the bed's own
+      ! oxidation, burial and nitrate pathways. Default 0 = the former model.
+      call self%get_parameter(self%isw_barrier_dest, 'isw_barrier_dest', '', &
+           'barrier S0 destination (0: pelagic, 1: benthic layer 1)', default=0)
       ! K_FeS_pel: rate constant for FeS precipitation in pelagic bottom water
       ! Usually lower than benthic because less reactive Fe available in water column
       call self%get_parameter(self%K_FeS_pel, 'K_FeS_pel', '1/d', &
@@ -628,7 +638,12 @@ contains
          ! Barrier oxidation produces S0, FeS scavenging is irreversible removal
          ! Note: Using _SET_BOTTOM_EXCHANGE_ applies flux to bottom cell only
          _SET_BOTTOM_EXCHANGE_(self%id_H2S_pel, -R_barrier_ox - R_FeS_pel)
-         _SET_BOTTOM_EXCHANGE_(self%id_S0_pel,   R_barrier_ox)
+         if (self%isw_barrier_dest == 1) then
+            ! the interface keeps the S0 it makes
+            _SET_BOTTOM_ODE_(self%id_S0_1, R_barrier_ox)
+         else
+            _SET_BOTTOM_EXCHANGE_(self%id_S0_pel, R_barrier_ox)
+         end if
          _SET_BOTTOM_EXCHANGE_(self%id_O2_pel,  -0.5_rk * R_barrier_ox)
 
          ! Set diagnostics
