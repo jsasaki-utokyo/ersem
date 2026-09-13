@@ -374,7 +374,26 @@ contains
          end if
 
          ! Relax depth-integrated mass c_int towards its equilibrium value (sum of depth-integrated equilibrium values of all layers)
-         _SET_BOTTOM_ODE_(info%id_int, (poro*sum(self%ads(:self%last_layer)*c_int_per_layer_eq(:self%last_layer))-c_int)/self%relax - sum(sms_per_layer(:self%last_layer)))
+         !
+         ! The subtraction must cancel the flux COPIES made in initialize_constituent,
+         ! and that set is chosen there by the same test used here (jsasaki 2026-09-13,
+         ! found by an independent review of docs/114 CX): for a `nonnegative`
+         ! constituent EVERY layer is copied to this inventory, not just the layers
+         ! above the zero isocline. Subtracting only `:last_layer` therefore left a
+         ! deeper layer's sink applied to the inventory AND, through `sms` at the
+         ! surface-exchange line below, drawn from the water as well -- the same sink
+         ! paid twice. The `last_layer == nlayers` branch below already subtracts the
+         ! whole column; this makes the two branches consistent.
+         !
+         ! INERT in every configuration used to date: the only writer to a layer
+         ! beyond `last_layer` for a nonnegative constituent is the K6 oxygen debt
+         ! (benthic_nitrogen_cycle), which is identically zero while the anaerobic
+         ! bacteria run at p_sulf = 1. It re-arms at p_sulf < 1.
+         if (info%nonnegative) then
+            _SET_BOTTOM_ODE_(info%id_int, (poro*sum(self%ads(:self%last_layer)*c_int_per_layer_eq(:self%last_layer))-c_int)/self%relax - sum(sms_per_layer))
+         else
+            _SET_BOTTOM_ODE_(info%id_int, (poro*sum(self%ads(:self%last_layer)*c_int_per_layer_eq(:self%last_layer))-c_int)/self%relax - sum(sms_per_layer(:self%last_layer)))
+         end if
 
          ! Relax the depth of the bottom interface of the last layer towards equilibrium value
          _SET_BOTTOM_ODE_(self%id_layer, (d_top - Dm(self%last_layer)) / self%relax)
