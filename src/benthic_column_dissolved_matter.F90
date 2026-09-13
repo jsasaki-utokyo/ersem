@@ -385,10 +385,17 @@ contains
          ! paid twice. The `last_layer == nlayers` branch below already subtracts the
          ! whole column; this makes the two branches consistent.
          !
-         ! INERT in every configuration used to date: the only writer to a layer
-         ! beyond `last_layer` for a nonnegative constituent is the K6 oxygen debt
-         ! (benthic_nitrogen_cycle), which is identically zero while the anaerobic
-         ! bacteria run at p_sulf = 1. It re-arms at p_sulf < 1.
+         ! The ACTIVATION CONDITION is a non-zero net source below `last_layer`
+         ! for a nonnegative constituent; any FABM coupling can supply one.
+         ! MEASURED INERT on the vector x3r_B_cycp, the four 2023 summer
+         ! closures x both arms, 2026-09-13: the only writer in that wiring is
+         ! the K6 oxygen debt (benthic_nitrogen_cycle), whose draw is
+         ! -(1 - p_sulf)*fHG3c with p_sulf = 1.0 in all eight run yamls, and
+         ! whose siblings ben_nit_jM3M4n and ben_nit_jM3G4n measure exactly 0.0
+         ! there. Bit-identity gate: 567 variables equal on all eight
+         ! closure-arms, old binary 644de7f7 vs new e7ffc743. That is a
+         ! statement about ONE tested configuration, not about every run ever
+         ! made (review 2026-09-13).
          if (info%nonnegative) then
             _SET_BOTTOM_ODE_(info%id_int, (poro*sum(self%ads(:self%last_layer)*c_int_per_layer_eq(:self%last_layer))-c_int)/self%relax - sum(sms_per_layer))
          else
