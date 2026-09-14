@@ -115,17 +115,31 @@ contains
          'half-saturation of the pelagic supply limitation on benthic uptake &
          &(numerical safeguard; 0 disables it)',default=0.0_rk,minimum=0.0_rk)
       if (self%last_layer/=nlayers) then
-         ! UNITS CORRECTED 2026-09-14. This was registered as '1/d', a RATE,
-         ! since the 2015-02-01 metadata cleanup -- but every one of its five
-         ! uses below (the two inventory ODEs, the layer-depth ODE, the deep
-         ! inventory ODE and the pelagic flux) DIVIDES by it and none
-         ! multiplies. Dimensionally the ODE forces it to be a TIME: the left
-         ! side is [X]/[d] and the numerator is [X], so `relax` is in DAYS and
-         ! the declared unit was its reciprocal. Nothing numerical changes --
-         ! FABM's `units` argument is metadata and only the separate
-         ! `scale_factor` (default 1) transforms a value -- but a reader who
-         ! trusted the label and wrote 5.0 believed they had asked for a
-         ! 4.8-hour relaxation and received a 5-day one, a factor of 25.
+         ! UNITS CORRECTED IN THIS FORK 2026-09-14; upstream is unchanged.
+         ! Every one of its five uses below (the two inventory ODEs, the
+         ! layer-depth ODE, the deep inventory ODE and the pelagic flux)
+         ! DIVIDES by it and none multiplies. Dimensionally the ODE forces it
+         ! to be a TIME: the left side is [X]/[d] and the numerator is [X], so
+         ! `relax` is in DAYS and the declared unit was its reciprocal. (The
+         ! `relax` in light_iop_ady.F90 is a DIFFERENT parameter and is
+         ! MULTIPLIED, so its '1/d' is correct -- do not change it.)
+         !
+         ! PROVENANCE, corrected after review. The '1/d' predates the
+         ! 2015-02-01 metadata cleanup: 1571858 and the July 2014 versions
+         ! already carry it. What 2015 changed was the long name, from
+         ! "diffusion time scale for benthic/pelagic interface" -- which was
+         ! RIGHT about the dimension -- to "rate of relaxation ...". The
+         ! cleanup removed the one correct word and left the description
+         ! consistently wrong instead of half wrong.
+         !
+         ! Nothing numerical changes: FABM's `units` argument is metadata and
+         ! only the separate `scale_factor` (default 1) transforms a value.
+         ! The cost of the wrong label is CONDITIONAL, on a reader trusting
+         ! it: whoever reads '1/d' and writes 5.0 asks for an e-folding time
+         ! of 0.2 d = 4.8 h and receives 5 d, a factor of 25. That says
+         ! nothing about what the upstream authors intended by 5.0, and a
+         ! 5-day time scale is not dimensionally invalid -- whether it suits
+         ! an application is a separate, configuration-level judgement.
          call self%get_parameter(self%relax,'relax','d','time scale of relaxation towards equilibrium concentration profile')
          call self%get_parameter(self%minD, 'minD','m',  'minimum depth of zero-concentration isocline')
 
