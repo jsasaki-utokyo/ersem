@@ -764,7 +764,7 @@ instances:
       composition: n                                       # composition (any combination of c,n,p,s,o,a)
       c0: 0.0003                                           # background carbon concentration (mg C/m^2), default = 0.0
       last_layer: 2                                        # sediment layer where concentration drops to zero, default = 3
-      relax: 5.0                                           # rate of relaxation towards equilibrium concentration profile (1/d)
+      relax: 5.0                                           # time scale of relaxation towards equilibrium concentration profile (d)
       minD: 0.0001                                         # minimum depth of zero-concentration isocline (m)
     initialization:
       n: 0.584                                             # nitrogen (mmol/m^2)
@@ -800,7 +800,7 @@ instances:
     parameters:
       composition: o                                       # composition (any combination of c,n,p,s,o,a)
       last_layer: 1                                        # sediment layer where concentration drops to zero, default = 3
-      relax: 5.0                                           # rate of relaxation towards equilibrium concentration profile (1/d)
+      relax: 5.0                                           # time scale of relaxation towards equilibrium concentration profile (d)
       minD: 0.0001                                         # minimum depth of zero-concentration isocline (m)
     initialization:
       o: 0.0225                                            # oxygen (mmol/m^2)
