@@ -115,7 +115,18 @@ contains
          'half-saturation of the pelagic supply limitation on benthic uptake &
          &(numerical safeguard; 0 disables it)',default=0.0_rk,minimum=0.0_rk)
       if (self%last_layer/=nlayers) then
-         call self%get_parameter(self%relax,'relax','1/d','rate of relaxation towards equilibrium concentration profile')
+         ! UNITS CORRECTED 2026-09-14. This was registered as '1/d', a RATE,
+         ! since the 2015-02-01 metadata cleanup -- but every one of its five
+         ! uses below (the two inventory ODEs, the layer-depth ODE, the deep
+         ! inventory ODE and the pelagic flux) DIVIDES by it and none
+         ! multiplies. Dimensionally the ODE forces it to be a TIME: the left
+         ! side is [X]/[d] and the numerator is [X], so `relax` is in DAYS and
+         ! the declared unit was its reciprocal. Nothing numerical changes --
+         ! FABM's `units` argument is metadata and only the separate
+         ! `scale_factor` (default 1) transforms a value -- but a reader who
+         ! trusted the label and wrote 5.0 believed they had asked for a
+         ! 4.8-hour relaxation and received a 5-day one, a factor of 25.
+         call self%get_parameter(self%relax,'relax','d','time scale of relaxation towards equilibrium concentration profile')
          call self%get_parameter(self%minD, 'minD','m',  'minimum depth of zero-concentration isocline')
 
          write (index,'(i0)') self%last_layer
