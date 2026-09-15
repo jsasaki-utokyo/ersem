@@ -88,6 +88,20 @@ module ersem_seagrass
       type (type_horizontal_diagnostic_variable_id) :: id_uN3l, id_uN4l
       type (type_horizontal_diagnostic_variable_id) :: id_relN4, id_uN3r, id_uN4r
 
+      ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
+      integer  :: isw_ledger
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_growth_O3c, id_ledger_growth_O2o
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_bgresp_G2o
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_leaf_N4n, id_ledger_leaf_N3n, id_ledger_leaf_N1p
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_root_K4n1, id_ledger_root_K4n2
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_root_K3n1, id_ledger_root_K3n2
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_root_K1p1, id_ledger_root_K1p2
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_leaf_TA, id_ledger_root_benTA
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_exu_R2c
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_slough_R6c, id_ledger_slough_R6n, id_ledger_slough_R6p
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_graze_O3c, id_ledger_graze_O2o
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_graze_N4n, id_ledger_graze_N1p, id_ledger_graze_TA
+
       ! Parameters
       real(rk) :: p_max, alpha, a_lai, k_can
       real(rk) :: Tmin, Topt, Tmax, ctmi_a, ctmi_b
@@ -301,6 +315,94 @@ contains
       call self%get_parameter(self%pe_gr, 'pe_gr', '-', &
          'fraction of grazed carbon respired by the grazers', &
          default=0.4_rk, minimum=0.0_rk, maximum=1.0_rk)
+
+      ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
+      ! isw_ledger = 1 registers one diagnostic per source term this module
+      ! writes to a ledger target (DIC, TA, O2, NO3, NH4, N2, PO4, Si, H2S, S0,
+      ! CaCO3; organic matter only where it crosses between the water and the
+      ! bed). Each value is the expression passed to the _SET_ODE_ /
+      ! _SET_BOTTOM_ODE_ / _SET_BOTTOM_EXCHANGE_ call beside it, in this
+      ! module's time unit (per day), with the sign applied to the target, so
+      ! post-run gates can compare what the code applies against independently
+      ! specified stoichiometry and against the state changes. Diagnostics only:
+      ! never read by any reaction. isw_ledger = 0 (default) registers and
+      ! computes nothing, bit-identical to the legacy build.
+      ! The exudation (f_exu > 0) and grazing (g_max > 0) counters are always
+      ! registered and written as zero when their branch is inactive.
+      call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
+           'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_ledger == 1) then
+         call self%register_diagnostic_variable(self%id_ledger_growth_O3c, 'ledger_growth_O3c', 'mmol C/m^2/d', &
+              'ledger: gross fixation and AG, NSC and BG respiration -> pelagic DIC (exchange)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_growth_O2o, 'ledger_growth_O2o', 'mmol O_2/m^2/d', &
+              'ledger: gross fixation and AG and NSC respiration -> pelagic oxygen (exchange)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_bgresp_G2o, 'ledger_bgresp_G2o', 'mmol O_2/m^2/d', &
+              'ledger: BG respiration -> benthic oxygen layer 1', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_leaf_N4n, 'ledger_leaf_N4n', 'mmol N/m^2/d', &
+              'ledger: leaf ammonium uptake and AG and BG respiratory return -> pelagic ammonium (exchange)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_leaf_N3n, 'ledger_leaf_N3n', 'mmol N/m^2/d', &
+              'ledger: leaf nitrate uptake -> pelagic nitrate (exchange)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_leaf_N1p, 'ledger_leaf_N1p', 'mmol P/m^2/d', &
+              'ledger: leaf phosphate uptake and AG and BG respiratory return -> pelagic phosphate (exchange)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_root_K4n1, 'ledger_root_K4n1', 'mmol N/m^2/d', &
+              'ledger: root ammonium uptake -> porewater ammonium layer 1', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_root_K4n2, 'ledger_root_K4n2', 'mmol N/m^2/d', &
+              'ledger: root ammonium uptake -> porewater ammonium layer 2', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_root_K3n1, 'ledger_root_K3n1', 'mmol N/m^2/d', &
+              'ledger: root nitrate uptake -> porewater nitrate layer 1', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_root_K3n2, 'ledger_root_K3n2', 'mmol N/m^2/d', &
+              'ledger: root nitrate uptake -> porewater nitrate layer 2', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_root_K1p1, 'ledger_root_K1p1', 'mmol P/m^2/d', &
+              'ledger: root phosphate uptake -> porewater phosphate layer 1', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_root_K1p2, 'ledger_root_K1p2', 'mmol P/m^2/d', &
+              'ledger: root phosphate uptake -> porewater phosphate layer 2', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_leaf_TA, 'ledger_leaf_TA', 'mmol eq/m^2/d', &
+              'ledger: leaf N and P uptake and AG and BG respiratory N and P return -> pelagic alkalinity (exchange)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_root_benTA, 'ledger_root_benTA', 'mmol eq/m^2/d', &
+              'ledger: root N and P uptake -> benthic alkalinity layer 1', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_exu_R2c, 'ledger_exu_R2c', 'mg C/m^2/d', &
+              'ledger: exudation of gross fixation -> pelagic semi-labile DOC (exchange; 0 when f_exu = 0)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_slough_R6c, 'ledger_slough_R6c', 'mg C/m^2/d', &
+              'ledger: AG sloughing routed to the water -> pelagic POM carbon (exchange)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_slough_R6n, 'ledger_slough_R6n', 'mmol N/m^2/d', &
+              'ledger: AG sloughing routed to the water -> pelagic POM nitrogen (exchange)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_slough_R6p, 'ledger_slough_R6p', 'mmol P/m^2/d', &
+              'ledger: AG sloughing routed to the water -> pelagic POM phosphorus (exchange)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_graze_O3c, 'ledger_graze_O3c', 'mmol C/m^2/d', &
+              'ledger: grazer respiration -> pelagic DIC (exchange; 0 when g_max = 0)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_graze_O2o, 'ledger_graze_O2o', 'mmol O_2/m^2/d', &
+              'ledger: grazer respiration -> pelagic oxygen (exchange; 0 when g_max = 0)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_graze_N4n, 'ledger_graze_N4n', 'mmol N/m^2/d', &
+              'ledger: grazer respiratory return -> pelagic ammonium (exchange; 0 when g_max = 0)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_graze_N1p, 'ledger_graze_N1p', 'mmol P/m^2/d', &
+              'ledger: grazer respiratory return -> pelagic phosphate (exchange; 0 when g_max = 0)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_graze_TA, 'ledger_graze_TA', 'mmol eq/m^2/d', &
+              'ledger: grazer respiratory N and P return -> pelagic alkalinity (exchange; 0 when g_max = 0)', &
+              domain=domain_bottom, source=source_do_bottom)
+      end if
 
       ! --- Own state variables (initial values must be set in fabm.yaml) --
       call self%register_state_variable(self%id_AGc, 'AGc', 'mg C/m^2', 'above-ground carbon', minimum=0.0_rk)
@@ -568,24 +670,49 @@ contains
          _SET_BOTTOM_EXCHANGE_(self%id_O3c, (-Pg + Ra_act + Ra_bas + Rn + Rb) / CMass)
          _SET_BOTTOM_EXCHANGE_(self%id_O2o, (self%pq * Pg - self%rq_o2c * Ra_act &
                                              - self%rq_o2c * Ra_bas - self%rq_o2c * Rn) / CMass)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_growth_O3c, (-Pg + Ra_act + Ra_bas + Rn + Rb) / CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_growth_O2o, (self%pq * Pg - self%rq_o2c * Ra_act &
+                                             - self%rq_o2c * Ra_bas - self%rq_o2c * Rn) / CMass)
+         end if
          ! BG respiration draws benthic layer-1 oxygen instead
          _SET_BOTTOM_ODE_(self%id_G2o, -self%rq_o2c * Rb / CMass)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_bgresp_G2o, -self%rq_o2c * Rb / CMass)
+         end if
 
          ! Leaf nutrient uptake and respiratory return
          _SET_BOTTOM_EXCHANGE_(self%id_N4n, -jN4_leaf + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb)
          _SET_BOTTOM_EXCHANGE_(self%id_N3n, -jN3_leaf)
          _SET_BOTTOM_EXCHANGE_(self%id_N1p, -jP_leaf + (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) + BGp / max(BGc, 1.0e-8_rk) * Rb)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_leaf_N4n, -jN4_leaf + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_leaf_N3n, -jN3_leaf)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_leaf_N1p, -jP_leaf + (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) + BGp / max(BGc, 1.0e-8_rk) * Rb)
+         end if
 
          ! Root uptake from the porewater pools (split by availability)
          wsum = max(K4n1 + K4n2, 1.0e-8_rk)
          _SET_BOTTOM_ODE_(self%id_K4n1, -jN4_root * K4n1 / wsum)
          _SET_BOTTOM_ODE_(self%id_K4n2, -jN4_root * K4n2 / wsum)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K4n1, -jN4_root * K4n1 / wsum)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K4n2, -jN4_root * K4n2 / wsum)
+         end if
          wsum = max(K3n1 + K3n2, 1.0e-8_rk)
          _SET_BOTTOM_ODE_(self%id_K3n1, -jN3_root * K3n1 / wsum)
          _SET_BOTTOM_ODE_(self%id_K3n2, -jN3_root * K3n2 / wsum)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K3n1, -jN3_root * K3n1 / wsum)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K3n2, -jN3_root * K3n2 / wsum)
+         end if
          wsum = max(K1p1 + K1p2, 1.0e-8_rk)
          _SET_BOTTOM_ODE_(self%id_K1p1, -jP_root * K1p1 / wsum)
          _SET_BOTTOM_ODE_(self%id_K1p2, -jP_root * K1p2 / wsum)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K1p1, -jP_root * K1p1 / wsum)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K1p2, -jP_root * K1p2 / wsum)
+         end if
 
          ! Alkalinity bookkeeping: +1 per NO3, -1 per NH4, +1 per PO4 taken up;
          ! respiratory NH4/PO4 return reverses the sign. Leaf terms on pelagic
@@ -594,14 +721,32 @@ contains
             + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb &
             - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - BGp / max(BGc, 1.0e-8_rk) * Rb)
          _SET_BOTTOM_ODE_(self%id_benTA, jN3_root - jN4_root + jP_root)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_leaf_TA, jN3_leaf - jN4_leaf + jP_leaf &
+            + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb &
+            - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - BGp / max(BGc, 1.0e-8_rk) * Rb)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_benTA, jN3_root - jN4_root + jP_root)
+         end if
 
          ! Exudate: the diverted share of gross fixation, carbon only
          if (self%f_exu > 0.0_rk) _SET_BOTTOM_EXCHANGE_(self%id_R2c, self%f_exu * Pg)
+         if (self%isw_ledger == 1) then
+            if (self%f_exu > 0.0_rk) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_exu_R2c, self%f_exu * Pg)
+            else
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_exu_R2c, 0.0_rk)
+            end if
+         end if
 
          ! Mortality routing
          _SET_BOTTOM_EXCHANGE_(self%id_R6c, self%f_pel * M_ag)
          _SET_BOTTOM_EXCHANGE_(self%id_R6n, self%f_pel * qn * M_ag)
          _SET_BOTTOM_EXCHANGE_(self%id_R6p, self%f_pel * qp * M_ag)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_slough_R6c, self%f_pel * M_ag)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_slough_R6n, self%f_pel * qn * M_ag)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_slough_R6p, self%f_pel * qp * M_ag)
+         end if
          _SET_BOTTOM_ODE_(self%id_Q6c, (1.0_rk - self%f_pel) * M_ag + M_bg)
          _SET_BOTTOM_ODE_(self%id_Q6n, (1.0_rk - self%f_pel) * qn * M_ag &
             + BGn / max(BGc, 1.0e-8_rk) * M_bg)
@@ -625,15 +770,31 @@ contains
             _SET_BOTTOM_ODE_(self%id_AGp, -qp * F_gr)
             _SET_BOTTOM_EXCHANGE_(self%id_O3c, resp_gr / CMass)
             _SET_BOTTOM_EXCHANGE_(self%id_O2o, -resp_gr / CMass)
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_graze_O3c, resp_gr / CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_graze_O2o, -resp_gr / CMass)
+            end if
             ! Nutrient and alkalinity return of the respired fraction
             ! (+1 eq per NH4 released, -1 eq per PO4 released)
             _SET_BOTTOM_EXCHANGE_(self%id_N4n, qn * resp_gr)
             _SET_BOTTOM_EXCHANGE_(self%id_N1p, qp * resp_gr)
             _SET_BOTTOM_EXCHANGE_(self%id_TA, (qn - qp) * resp_gr)
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_graze_N4n, qn * resp_gr)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_graze_N1p, qp * resp_gr)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_graze_TA, (qn - qp) * resp_gr)
+            end if
             ! Egestion to the plant detritus pool at AG quota
             _SET_BOTTOM_ODE_(self%id_Q6c, eges_gr)
             _SET_BOTTOM_ODE_(self%id_Q6n, qn * eges_gr)
             _SET_BOTTOM_ODE_(self%id_Q6p, qp * eges_gr)
+         else if (self%isw_ledger == 1) then
+            ! ledger counters of the inactive grazing branch (g_max = 0)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_graze_O3c, 0.0_rk)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_graze_O2o, 0.0_rk)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_graze_N4n, 0.0_rk)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_graze_N1p, 0.0_rk)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_graze_TA, 0.0_rk)
          end if
 
          ! --- Diagnostics --------------------------------------------------

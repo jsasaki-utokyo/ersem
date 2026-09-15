@@ -37,6 +37,11 @@ module ersem_benthic_fauna
       type (type_bottom_state_variable_id) :: id_G3c,id_G2o,id_K4n,id_K1p,id_K4n2,id_K1p2
       type (type_horizontal_dependency_id) :: id_Dm
       type (type_horizontal_diagnostic_variable_id) :: id_bioirr,id_biotur,id_fYG3c, id_fYKIn,id_fYK1p,id_fYQPc,id_fYQPn,id_fYQPp
+      ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
+      integer :: isw_ledger
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_resp_G3c,id_ledger_resp_G2o
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_excr_K4n,id_ledger_excr_K4n2,id_ledger_excr_K1p,id_ledger_excr_K1p2
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_excr_benTA,id_ledger_excr_benTA2
       type (type_food), allocatable :: food(:)
 
       integer  :: nfood
@@ -225,6 +230,46 @@ contains
       call self%register_diagnostic_variable(self%id_fYQPc,'fYQPc','mg C/m^2/d',  'production of particulate organic carbon',    domain=domain_bottom,source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_fYQPn,'fYQPn','mmol N/m^2/d','production of particulate organic nitrogen',  domain=domain_bottom,source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_fYQPp,'fYQPp','mmol P/m^2/d','production of particulate organic phosphorus',domain=domain_bottom,source=source_do_bottom)
+
+      ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
+      ! isw_ledger = 1 registers one diagnostic per source term this module
+      ! writes to a ledger target (DIC, TA, O2, NO3, NH4, N2, PO4, Si, H2S, S0,
+      ! CaCO3; organic matter only where it crosses between the water and the
+      ! bed). Each value is the expression passed to the _SET_ODE_ /
+      ! _SET_BOTTOM_ODE_ / _SET_BOTTOM_EXCHANGE_ call beside it, in this
+      ! module's time unit (per day), with the sign applied to the target, so
+      ! post-run gates can compare what the code applies against independently
+      ! specified stoichiometry and against the state changes. Diagnostics only:
+      ! never read by any reaction. isw_ledger = 0 (default) registers and
+      ! computes nothing, bit-identical to the legacy build.
+      ! Note: the excretion alkalinity is counted as passed to benTA/benTA2,
+      ! whatever those are coupled to (zero_hz in the nippon-steel Step 0
+      ! configuration, docs/119 row C5). Pelagic food uptake (food{n}ispel) is
+      ! applied per state of the food model in a generic loop and is NOT counted
+      ! here; the existing fprey{n}c/n/p/s diagnostics record it.
+      call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
+           'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_ledger == 1) then
+         call self%register_diagnostic_variable(self%id_ledger_resp_G3c, 'ledger_resp_G3c', 'mmol C/m^2/d', &
+              'ledger: respiration -> benthic dissolved inorganic carbon', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_resp_G2o, 'ledger_resp_G2o', 'mmol O_2/m^2/d', &
+              'ledger: respiration -> benthic oxygen', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_excr_K4n, 'ledger_excr_K4n', 'mmol N/m^2/d', &
+              'ledger: excess-nitrogen excretion -> benthic ammonium, aerobic layer', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_excr_K4n2, 'ledger_excr_K4n2', 'mmol N/m^2/d', &
+              'ledger: excess-nitrogen excretion -> benthic ammonium, anaerobic layer', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_excr_K1p, 'ledger_excr_K1p', 'mmol P/m^2/d', &
+              'ledger: excess-phosphorus excretion -> benthic phosphate, aerobic layer', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_excr_K1p2, 'ledger_excr_K1p2', 'mmol P/m^2/d', &
+              'ledger: excess-phosphorus excretion -> benthic phosphate, anaerobic layer', source=source_do_bottom)
+         if (.not.legacy_ersem_compatibility) then
+            call self%register_diagnostic_variable(self%id_ledger_excr_benTA, 'ledger_excr_benTA', 'mmol eq/m^2/d', &
+                 'ledger: ammonium and phosphate excretion -> benthic alkalinity, aerobic layer (benTA coupling)', source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_excr_benTA2, 'ledger_excr_benTA2', 'mmol eq/m^2/d', &
+                 'ledger: ammonium and phosphate excretion -> benthic alkalinity, anaerobic layer (benTA2 coupling)', source=source_do_bottom)
+         end if
+      end if
 
    end subroutine initialize
 
@@ -415,6 +460,10 @@ contains
       SYc = SYc - fYG3c
       _SET_BOTTOM_ODE_(self%id_G3c, fYG3c/CMass)
       _SET_BOTTOM_ODE_(self%id_G2o,-fYG3c/CMass)
+      if (self%isw_ledger == 1) then
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_resp_G3c, fYG3c/CMass)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_resp_G2o,-fYG3c/CMass)
+      end if
       _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fYG3c,fYG3c)
 
       ! Specific mortality (1/d): background mortality + mortality due to oxygen limitation + mortality due to cold.
@@ -457,6 +506,12 @@ contains
       _SET_BOTTOM_ODE_(self%id_K4n2,p_an       *excess_n)
       _SET_BOTTOM_ODE_(self%id_K1p,(1._rk-p_an)*excess_p)
       _SET_BOTTOM_ODE_(self%id_K1p2,p_an       *excess_p)
+      if (self%isw_ledger == 1) then
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_excr_K4n,(1._rk-p_an)*excess_n)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_excr_K4n2,p_an       *excess_n)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_excr_K1p,(1._rk-p_an)*excess_p)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_excr_K1p2,p_an       *excess_p)
+      end if
 
       _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fYKIn,excess_n)
       _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fYK1p,excess_p)
@@ -469,6 +524,10 @@ contains
          ! Alkalinity contributions: +1 for NH4, -1 for PO4
          _SET_BOTTOM_ODE_(self%id_benTA,(1._rk-p_an)*(excess_n-excess_p))
          _SET_BOTTOM_ODE_(self%id_benTA2,p_an       *(excess_n-excess_p))
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_excr_benTA,(1._rk-p_an)*(excess_n-excess_p))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_excr_benTA2,p_an       *(excess_n-excess_p))
+         end if
       end if
 
       _HORIZONTAL_LOOP_END_

@@ -104,6 +104,17 @@ module ersem_benthic_sulfur_cycle
       type(type_horizontal_diagnostic_variable_id) :: id_R_FeS_pel
       type(type_horizontal_diagnostic_variable_id) :: id_f_barrier
 
+      ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
+      integer  :: isw_ledger
+      type(type_horizontal_diagnostic_variable_id) :: id_ledger_srfes_H2S_3, id_ledger_no3fes_H2S_2
+      type(type_horizontal_diagnostic_variable_id) :: id_ledger_thio_NO3_2, id_ledger_thio_S0_2
+      type(type_horizontal_diagnostic_variable_id) :: id_ledger_thio_G4n, id_ledger_thio_K4n2, id_ledger_thio_benTA2
+      type(type_horizontal_diagnostic_variable_id) :: id_ledger_srox_H2S_1, id_ledger_oxbur_S0s, id_ledger_oxbur_S0_1
+      type(type_horizontal_diagnostic_variable_id) :: id_ledger_ox1_G2o, id_ledger_srox_benTA, id_ledger_sr3_benTA3
+      type(type_horizontal_diagnostic_variable_id) :: id_ledger_barfes_H2S_pel, id_ledger_barrier_S0s
+      type(type_horizontal_diagnostic_variable_id) :: id_ledger_barrier_S0_1, id_ledger_barrier_S0_pel
+      type(type_horizontal_diagnostic_variable_id) :: id_ledger_barrier_O2_pel
+
       ! Parameters
       real(rk) :: K_H2S_prod     ! H2S production rate per unit remineralization (mol S/mol C)
       real(rk) :: K_H2S_ox       ! H2S oxidation rate constant (1/d)
@@ -290,6 +301,90 @@ contains
       call self%get_parameter(self%K_par_ox, 'K_par_ox', 'W/m^2', &
            'PAR half-saturation for light-driven interface oxidation (0: off)', &
            default=0.0_rk, minimum=0.0_rk)
+
+      ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
+      ! isw_ledger = 1 registers one diagnostic per source term this module
+      ! writes to a ledger target (DIC, TA, O2, NO3, NH4, N2, PO4, Si, H2S, S0,
+      ! CaCO3; organic matter only where it crosses between the water and the
+      ! bed). Each value is the expression passed to the _SET_ODE_ /
+      ! _SET_BOTTOM_ODE_ / _SET_BOTTOM_EXCHANGE_ call beside it, in this
+      ! module's time unit (per day), with the sign applied to the target, so
+      ! post-run gates can compare what the code applies against independently
+      ! specified stoichiometry and against the state changes. Diagnostics only:
+      ! never read by any reaction. isw_ledger = 0 (default) registers and
+      ! computes nothing, bit-identical to the legacy build.
+      ! Counters whose SET call depends on isw_S0_solid, isw_barrier_dest or
+      ! legacy_ersem_compatibility are registered under the same condition.
+      call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
+           'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_ledger == 1) then
+         call self%register_diagnostic_variable(self%id_ledger_srfes_H2S_3, 'ledger_srfes_H2S_3', 'mmol S/m^2/d', &
+              'ledger: sulfate reduction (layer-3 share) and FeS precipitation -> H2S layer 3', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_no3fes_H2S_2, 'ledger_no3fes_H2S_2', 'mmol S/m^2/d', &
+              'ledger: H2S oxidation by NO3 and FeS precipitation -> H2S layer 2', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_thio_NO3_2, 'ledger_thio_NO3_2', 'mmol N/m^2/d', &
+              'ledger: thiodenitrification (H2S -> S0 and S0 -> SO4 by NO3) -> nitrate layer 2', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_thio_S0_2, 'ledger_thio_S0_2', 'mmol S/m^2/d', &
+              'ledger: thiodenitrification (H2S -> S0 and S0 -> SO4 by NO3) -> S0 layer 2', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_thio_G4n, 'ledger_thio_G4n', 'mmol N/m^2/d', &
+              'ledger: thiodenitrification (H2S -> S0 and S0 -> SO4 by NO3) -> dinitrogen gas', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_thio_K4n2, 'ledger_thio_K4n2', 'mmol N/m^2/d', &
+              'ledger: thiodenitrification DNRA share -> ammonium layer 2', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_srox_H2S_1, 'ledger_srox_H2S_1', 'mmol S/m^2/d', &
+              'ledger: sulfate reduction (layer-1 share), H2S oxidation and FeS precipitation -> H2S layer 1', &
+              domain=domain_bottom, source=source_do_bottom)
+         if (self%isw_S0_solid == 1) then
+            call self%register_diagnostic_variable(self%id_ledger_oxbur_S0s, 'ledger_oxbur_S0s', 'mmol S/m^2/d', &
+                 'ledger: H2S oxidation to S0, S0 oxidation and S0 burial -> solid S0 layer 1', &
+                 domain=domain_bottom, source=source_do_bottom)
+         else
+            call self%register_diagnostic_variable(self%id_ledger_oxbur_S0_1, 'ledger_oxbur_S0_1', 'mmol S/m^2/d', &
+                 'ledger: H2S oxidation to S0, S0 oxidation and S0 burial -> S0 layer 1', &
+                 domain=domain_bottom, source=source_do_bottom)
+         end if
+         call self%register_diagnostic_variable(self%id_ledger_ox1_G2o, 'ledger_ox1_G2o', 'mmol O_2/m^2/d', &
+              'ledger: H2S oxidation (to S0 and direct to SO4) and S0 oxidation -> benthic oxygen layer 1', &
+              domain=domain_bottom, source=source_do_bottom)
+         if (.not.legacy_ersem_compatibility) then
+            call self%register_diagnostic_variable(self%id_ledger_thio_benTA2, 'ledger_thio_benTA2', 'mmol eq/m^2/d', &
+                 'ledger: thiodenitrification (H2S -> S0 and S0 -> SO4 by NO3) -> benthic alkalinity layer 2', &
+                 domain=domain_bottom, source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_srox_benTA, 'ledger_srox_benTA', 'mmol eq/m^2/d', &
+                 'ledger: sulfate reduction (layer-1 share), S0 oxidation and direct H2S oxidation -> benthic alkalinity layer 1', &
+                 domain=domain_bottom, source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_sr3_benTA3, 'ledger_sr3_benTA3', 'mmol eq/m^2/d', &
+                 'ledger: sulfate reduction (layer-3 share) -> benthic alkalinity layer 3', &
+                 domain=domain_bottom, source=source_do_bottom)
+         end if
+         call self%register_diagnostic_variable(self%id_ledger_barfes_H2S_pel, 'ledger_barfes_H2S_pel', 'mmol S/m^2/d', &
+              'ledger: oxic barrier oxidation and pelagic FeS scavenging -> pelagic H2S (exchange)', &
+              domain=domain_bottom, source=source_do_bottom)
+         if (self%isw_barrier_dest == 1) then
+            if (self%isw_S0_solid == 1) then
+               call self%register_diagnostic_variable(self%id_ledger_barrier_S0s, 'ledger_barrier_S0s', 'mmol S/m^2/d', &
+                    'ledger: oxic barrier oxidation -> solid S0 layer 1', &
+                    domain=domain_bottom, source=source_do_bottom)
+            else
+               call self%register_diagnostic_variable(self%id_ledger_barrier_S0_1, 'ledger_barrier_S0_1', 'mmol S/m^2/d', &
+                    'ledger: oxic barrier oxidation -> S0 layer 1', &
+                    domain=domain_bottom, source=source_do_bottom)
+            end if
+         else
+            call self%register_diagnostic_variable(self%id_ledger_barrier_S0_pel, 'ledger_barrier_S0_pel', 'mmol S/m^2/d', &
+                 'ledger: oxic barrier oxidation -> pelagic S0 (exchange)', &
+                 domain=domain_bottom, source=source_do_bottom)
+         end if
+         call self%register_diagnostic_variable(self%id_ledger_barrier_O2_pel, 'ledger_barrier_O2_pel', 'mmol O_2/m^2/d', &
+              'ledger: oxic barrier oxidation -> pelagic oxygen (exchange)', &
+              domain=domain_bottom, source=source_do_bottom)
+      end if
 
       call self%register_dependency(self%id_par, standard_variables%downwelling_photosynthetic_radiative_flux)
 
@@ -597,6 +692,9 @@ contains
          ! A p_sr_1 fraction of the production is delivered at the interface
          ! (Layer 1) instead - see the p_sr_1 parameter note (docs/14).
          _SET_BOTTOM_ODE_(self%id_H2S_3, (1.0_rk - self%p_sr_1) * R_sulfate_red - R_FeS_3)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srfes_H2S_3, (1.0_rk - self%p_sr_1) * R_sulfate_red - R_FeS_3)
+         end if
 
          ! Layer 2: H2S consumption by NO3 oxidation and FeS precipitation
          ! Electron-balanced stoichiometry for H2S-NO3 coupling:
@@ -615,8 +713,16 @@ contains
          _SET_BOTTOM_ODE_(self%id_H2S_2, -R_H2S_NO3_ox - R_FeS_2)
          _SET_BOTTOM_ODE_(self%id_NO3_2, -r_no3 * R_H2S_NO3_ox &
                                          - r_no3_S0 * R_S0_NO3_ox)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_no3fes_H2S_2, -R_H2S_NO3_ox - R_FeS_2)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_thio_NO3_2, -r_no3 * R_H2S_NO3_ox &
+                                         - r_no3_S0 * R_S0_NO3_ox)
+         end if
          ! S0 produced 1:1 with H2S consumed, and consumed by the second step
          _SET_BOTTOM_ODE_(self%id_S0_2,   R_H2S_NO3_ox - R_S0_NO3_ox)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_thio_S0_2, R_H2S_NO3_ox - R_S0_NO3_ox)
+         end if
 
          ! Partition N between N2 (denitrification) and NH4 (DNRA)
          _SET_BOTTOM_ODE_(self%id_G4n,  (1.0_rk - self%f_DNRA) &
@@ -625,6 +731,14 @@ contains
          _SET_BOTTOM_ODE_(self%id_K4n2, self%f_DNRA &
                                         * (r_no3 * R_H2S_NO3_ox &
                                            + r_no3_S0 * R_S0_NO3_ox))
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_thio_G4n, (1.0_rk - self%f_DNRA) &
+                                        * (r_no3 * R_H2S_NO3_ox &
+                                           + r_no3_S0 * R_S0_NO3_ox))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_thio_K4n2, self%f_DNRA &
+                                        * (r_no3 * R_H2S_NO3_ox &
+                                           + r_no3_S0 * R_S0_NO3_ox))
+         end if
 
          ! Alkalinity: denitrification +1 TA/mol NO3, DNRA +2 TA/mol NO3
          ! r_TA = (1+f_DNRA) * r_NO3 = 2*(1+f_DNRA)/(5+3*f_DNRA)
@@ -637,43 +751,80 @@ contains
          if (.not.legacy_ersem_compatibility) &
             _SET_BOTTOM_ODE_(self%id_benTA2, r_ta * R_H2S_NO3_ox &
                                              + r_ta_S0 * R_S0_NO3_ox)
+         if (self%isw_ledger == 1 .and. .not.legacy_ersem_compatibility) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_thio_benTA2, r_ta * R_H2S_NO3_ox &
+                                             + r_ta_S0 * R_S0_NO3_ox)
+         end if
 
          ! Layer 1: H2S delivery from interface sulfate reduction (p_sr_1),
          !          consumption by oxidation and FeS precipitation,
          !          S0 production from H2S oxidation, loss from oxidation and burial
          _SET_BOTTOM_ODE_(self%id_H2S_1, self%p_sr_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srox_H2S_1, self%p_sr_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
+         end if
          if (self%isw_S0_solid == 1) then
             _SET_BOTTOM_ODE_(self%id_S0s,  R_ox_to_S0 - R_S0_ox_1 - R_S0_burial)
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_oxbur_S0s, R_ox_to_S0 - R_S0_ox_1 - R_S0_burial)
+            end if
          else
             _SET_BOTTOM_ODE_(self%id_S0_1, R_ox_to_S0 - R_S0_ox_1 - R_S0_burial)
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_oxbur_S0_1, R_ox_to_S0 - R_S0_ox_1 - R_S0_burial)
+            end if
          end if
          _SET_BOTTOM_ODE_(self%id_G2o,   -0.5_rk * R_ox_to_S0 - 2.0_rk * R_ox_direct - 1.5_rk * R_S0_ox_1)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_ox1_G2o, -0.5_rk * R_ox_to_S0 - 2.0_rk * R_ox_direct - 1.5_rk * R_S0_ox_1)
+         end if
 
          ! Alkalinity, layer 1: interface sulfate reduction +2 TA per mol H2S;
          ! S0 + 1.5 O2 + H2O -> SO4^2- + 2H+ => -2 TA per mol S0
          if (.not.legacy_ersem_compatibility) &
             _SET_BOTTOM_ODE_(self%id_benTA, 2.0_rk * self%p_sr_1 * R_sulfate_red - 2.0_rk * R_S0_ox_1 - 2.0_rk * R_ox_direct)
+         if (self%isw_ledger == 1 .and. .not.legacy_ersem_compatibility) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srox_benTA, 2.0_rk * self%p_sr_1 * R_sulfate_red - 2.0_rk * R_S0_ox_1 - 2.0_rk * R_ox_direct)
+         end if
 
          ! Layer 3: sulfate reduction produces +2 TA per mol H2S
          ! SO4^2- + 2C_org -> H2S + 2HCO3- (net +2 mEq per mol H2S)
          if (.not.legacy_ersem_compatibility) &
             _SET_BOTTOM_ODE_(self%id_benTA3, 2.0_rk * (1.0_rk - self%p_sr_1) * R_sulfate_red)
+         if (self%isw_ledger == 1 .and. .not.legacy_ersem_compatibility) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_sr3_benTA3, 2.0_rk * (1.0_rk - self%p_sr_1) * R_sulfate_red)
+         end if
 
          ! Pelagic: H2S removal by oxic barrier oxidation and FeS scavenging
          ! Barrier oxidation produces S0, FeS scavenging is irreversible removal
          ! Note: Using _SET_BOTTOM_EXCHANGE_ applies flux to bottom cell only
          _SET_BOTTOM_EXCHANGE_(self%id_H2S_pel, -R_barrier_ox - R_FeS_pel)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_barfes_H2S_pel, -R_barrier_ox - R_FeS_pel)
+         end if
          if (self%isw_barrier_dest == 1) then
             ! the interface keeps the S0 it makes
             if (self%isw_S0_solid == 1) then
                _SET_BOTTOM_ODE_(self%id_S0s,  R_barrier_ox)
+               if (self%isw_ledger == 1) then
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_barrier_S0s, R_barrier_ox)
+               end if
             else
                _SET_BOTTOM_ODE_(self%id_S0_1, R_barrier_ox)
+               if (self%isw_ledger == 1) then
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_barrier_S0_1, R_barrier_ox)
+               end if
             end if
          else
             _SET_BOTTOM_EXCHANGE_(self%id_S0_pel, R_barrier_ox)
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_barrier_S0_pel, R_barrier_ox)
+            end if
          end if
          _SET_BOTTOM_EXCHANGE_(self%id_O2_pel,  -0.5_rk * R_barrier_ox)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_barrier_O2_pel, -0.5_rk * R_barrier_ox)
+         end if
 
          ! Set diagnostics
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_sulfate_red, R_sulfate_red)

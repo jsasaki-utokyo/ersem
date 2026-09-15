@@ -33,6 +33,12 @@ module ersem_mesozooplankton
       type (type_diagnostic_variable_id) :: id_fZIRDn,id_fZIRPn,id_fZINIn
       type (type_diagnostic_variable_id) :: id_fZIRDp,id_fZIRPp,id_fZINIp
       type (type_diagnostic_variable_id), allocatable,dimension(:) :: id_fpreyc,id_fpreyn,id_fpreyp,id_fpreys
+      ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
+      integer  :: isw_ledger
+      type (type_diagnostic_variable_id) :: id_ledger_gutcal_L2c, id_ledger_gutcal_O3c, id_ledger_gutcal_TA
+      type (type_diagnostic_variable_id) :: id_ledger_resp_O3c, id_ledger_resp_O2o
+      type (type_diagnostic_variable_id) :: id_ledger_excess_N4n, id_ledger_excess_N1p, id_ledger_excess_TA
+      type (type_diagnostic_variable_id) :: id_ledger_winter_O3c, id_ledger_winter_N4n, id_ledger_winter_N1p, id_ledger_winter_TA
 
       ! Parameters
       integer  :: nprey
@@ -237,6 +243,51 @@ contains
       call self%register_diagnostic_variable(self%id_fZIRDp,'fZIRDp','mmol P/m^3/d','loss to DOP')
       ! Contribute to aggregate fluxes.
 
+      ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
+      ! isw_ledger = 1 registers one diagnostic per source term this module
+      ! writes to a ledger target (DIC, TA, O2, NO3, NH4, N2, PO4, Si, H2S, S0,
+      ! CaCO3; organic matter only where it crosses between the water and the
+      ! bed). Each value is the expression passed to the _SET_ODE_ /
+      ! _SET_BOTTOM_ODE_ / _SET_BOTTOM_EXCHANGE_ call beside it, in this
+      ! module's time unit (per day), with the sign applied to the target, so
+      ! post-run gates can compare what the code applies against independently
+      ! specified stoichiometry and against the state changes. Diagnostics only:
+      ! never read by any reaction. isw_ledger = 0 (default) registers and
+      ! computes nothing, bit-identical to the legacy build.
+      ! The feeding-state counters (gutcal, resp, excess) are written 0 while
+      ! overwintering and the overwintering counters (winter) are written 0
+      ! while feeding; gutcal is also 0 when no calcite pool is coupled.
+      ! Overwintering respiration writes DIC but no oxygen term (as coded).
+      call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
+           'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_ledger == 1) then
+         call self%register_diagnostic_variable(self%id_ledger_gutcal_L2c, 'ledger_gutcal_L2c', 'mg C/m^3/d', &
+              'ledger: undissolved prey calcite released after ingestion -> calcite', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_gutcal_O3c, 'ledger_gutcal_O3c', 'mmol C/m^3/d', &
+              'ledger: undissolved prey calcite released after ingestion -> dissolved inorganic carbon', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_gutcal_TA, 'ledger_gutcal_TA', 'mmol/m^3/d', &
+              'ledger: undissolved prey calcite released after ingestion -> alkalinity', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_resp_O3c, 'ledger_resp_O3c', 'mmol C/m^3/d', &
+              'ledger: rest and activity respiration (feeding) -> dissolved inorganic carbon', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_resp_O2o, 'ledger_resp_O2o', 'mmol O_2/m^3/d', &
+              'ledger: rest and activity respiration (feeding) -> oxygen', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_excess_N4n, 'ledger_excess_N4n', 'mmol N/m^3/d', &
+              'ledger: excretion of excess nitrogen (feeding) -> ammonium', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_excess_N1p, 'ledger_excess_N1p', 'mmol P/m^3/d', &
+              'ledger: excretion of excess phosphorus (feeding) -> phosphate', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_excess_TA, 'ledger_excess_TA', 'mmol/m^3/d', &
+              'ledger: excretion of excess nitrogen and phosphorus (feeding) -> alkalinity', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_winter_O3c, 'ledger_winter_O3c', 'mmol C/m^3/d', &
+              'ledger: overwintering respiration -> dissolved inorganic carbon', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_winter_N4n, 'ledger_winter_N4n', 'mmol N/m^3/d', &
+              'ledger: overwintering respiration nitrogen release -> ammonium', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_winter_N1p, 'ledger_winter_N1p', 'mmol P/m^3/d', &
+              'ledger: overwintering respiration phosphorus release -> phosphate', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_winter_TA, 'ledger_winter_TA', 'mmol/m^3/d', &
+              'ledger: overwintering respiration nitrogen and phosphorus release -> alkalinity', source=source_do)
+      end if
+
    end subroutine
 
    subroutine do(self,_ARGUMENTS_DO_)
@@ -367,8 +418,18 @@ contains
                _SET_ODE_(self%id_O3c, -(1.0_rk-self%gutdiss)*ineff*sum(self%pu_ea*sprey*preylP)/CMass)
                _SET_ODE_(self%id_TA,-2*(1.0_rk-self%gutdiss)*ineff*sum(self%pu_ea*sprey*preylP)/CMass)   ! CaCO3 formation decreases alkalinity by 2 units
                _SET_DIAGNOSTIC_ (self%id_calc,(1.0_rk-self%gutdiss)*ineff*sum(self%pu_ea*sprey*preylP))
+               if (self%isw_ledger == 1) then
+                  _SET_DIAGNOSTIC_(self%id_ledger_gutcal_L2c,  (1.0_rk-self%gutdiss)*ineff*sum(self%pu_ea*sprey*preylP))
+                  _SET_DIAGNOSTIC_(self%id_ledger_gutcal_O3c, -(1.0_rk-self%gutdiss)*ineff*sum(self%pu_ea*sprey*preylP)/CMass)
+                  _SET_DIAGNOSTIC_(self%id_ledger_gutcal_TA,-2*(1.0_rk-self%gutdiss)*ineff*sum(self%pu_ea*sprey*preylP)/CMass)
+               end if
             else
                _SET_DIAGNOSTIC_ (self%id_calc,0.0_rk)
+               if (self%isw_ledger == 1) then
+                  _SET_DIAGNOSTIC_(self%id_ledger_gutcal_L2c, 0.0_rk)
+                  _SET_DIAGNOSTIC_(self%id_ledger_gutcal_O3c, 0.0_rk)
+                  _SET_DIAGNOSTIC_(self%id_ledger_gutcal_TA, 0.0_rk)
+               end if
             end if
 
             ! Source equation for carbon in biomass (NB cannibalism is handled as part of predation formulation)
@@ -382,6 +443,10 @@ contains
             ! Account for CO2 production and oxygen consumption in respiration.
             _SET_ODE_(self%id_O3c, + fZIO3c/CMass)
             _SET_ODE_(self%id_O2o, - fZIO3c*self%urB1_O2)
+            if (self%isw_ledger == 1) then
+               _SET_DIAGNOSTIC_(self%id_ledger_resp_O3c, + fZIO3c/CMass)
+               _SET_DIAGNOSTIC_(self%id_ledger_resp_O2o, - fZIO3c*self%urB1_O2)
+            end if
 
             do iprey=1,self%nprey
                 _SET_DIAGNOSTIC_(self%id_fpreyc(iprey),sprey(iprey)*PreycP(iprey))
@@ -461,6 +526,16 @@ contains
             _SET_ODE_(self%id_N4n,excess_n)
             _SET_ODE_(self%id_N1p,excess_p)
             _SET_ODE_(self%id_TA,excess_n-excess_p)  ! Alkalinity contributions: +1 for NH4, -1 for PO4
+            if (self%isw_ledger == 1) then
+               _SET_DIAGNOSTIC_(self%id_ledger_excess_N4n, excess_n)
+               _SET_DIAGNOSTIC_(self%id_ledger_excess_N1p, excess_p)
+               _SET_DIAGNOSTIC_(self%id_ledger_excess_TA, excess_n-excess_p)
+               ! not overwintering: the overwintering terms are not applied
+               _SET_DIAGNOSTIC_(self%id_ledger_winter_O3c, 0.0_rk)
+               _SET_DIAGNOSTIC_(self%id_ledger_winter_N4n, 0.0_rk)
+               _SET_DIAGNOSTIC_(self%id_ledger_winter_N1p, 0.0_rk)
+               _SET_DIAGNOSTIC_(self%id_ledger_winter_TA, 0.0_rk)
+            end if
             _SET_DIAGNOSTIC_(self%id_fZINIn,excess_n)
             _SET_DIAGNOSTIC_(self%id_fZINIp,excess_p)
 
@@ -485,6 +560,21 @@ contains
             _SET_ODE_(self%id_N4n,fZIO3c*self%qnc)
             _SET_ODE_(self%id_N1p,fZIO3c*self%qpc)
             _SET_ODE_(self%id_TA, fZIO3c*(self%qnc-self%qpc))  ! Alkalinity contributions: +1 for NH4, -1 for PO4
+            if (self%isw_ledger == 1) then
+               _SET_DIAGNOSTIC_(self%id_ledger_winter_O3c, fZIO3c/CMass)
+               _SET_DIAGNOSTIC_(self%id_ledger_winter_N4n, fZIO3c*self%qnc)
+               _SET_DIAGNOSTIC_(self%id_ledger_winter_N1p, fZIO3c*self%qpc)
+               _SET_DIAGNOSTIC_(self%id_ledger_winter_TA, fZIO3c*(self%qnc-self%qpc))
+               ! overwintering: the feeding terms are not applied
+               _SET_DIAGNOSTIC_(self%id_ledger_gutcal_L2c, 0.0_rk)
+               _SET_DIAGNOSTIC_(self%id_ledger_gutcal_O3c, 0.0_rk)
+               _SET_DIAGNOSTIC_(self%id_ledger_gutcal_TA, 0.0_rk)
+               _SET_DIAGNOSTIC_(self%id_ledger_resp_O3c, 0.0_rk)
+               _SET_DIAGNOSTIC_(self%id_ledger_resp_O2o, 0.0_rk)
+               _SET_DIAGNOSTIC_(self%id_ledger_excess_N4n, 0.0_rk)
+               _SET_DIAGNOSTIC_(self%id_ledger_excess_N1p, 0.0_rk)
+               _SET_DIAGNOSTIC_(self%id_ledger_excess_TA, 0.0_rk)
+            end if
             _SET_DIAGNOSTIC_(self%id_fZINIn,fZIO3c*self%qnc)
             _SET_DIAGNOSTIC_(self%id_fZINIp,fZIO3c*self%qpc)
 

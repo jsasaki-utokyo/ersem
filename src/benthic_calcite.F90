@@ -26,6 +26,10 @@ module ersem_benthic_calcite
       real(rk) :: fdissmax, fdissmin, ndiss, KcalomX
       real(rk) :: K_prec, K_par_prec, n_prec
       integer  :: iswcal
+      ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
+      integer  :: isw_ledger
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_diss_c,id_ledger_diss_O3c,id_ledger_diss_TA
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_prec_c,id_ledger_prec_O3c,id_ledger_prec_TA
 
    contains
       procedure :: initialize
@@ -92,6 +96,37 @@ contains
       call self%register_state_dependency(self%id_TA,standard_variables%alkalinity_expressed_as_mole_equivalent)
       call self%register_diagnostic_variable(self%id_dissolution,'dissolution','mg C/m^2/d','dissolution',source=source_do_bottom)
 
+      ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
+      ! isw_ledger = 1 registers one diagnostic per source term this module
+      ! writes to a ledger target (DIC, TA, O2, NO3, NH4, N2, PO4, Si, H2S, S0,
+      ! CaCO3; organic matter only where it crosses between the water and the
+      ! bed). Each value is the expression passed to the _SET_ODE_ /
+      ! _SET_BOTTOM_ODE_ / _SET_BOTTOM_EXCHANGE_ call beside it, in this
+      ! module's time unit (per day), with the sign applied to the target, so
+      ! post-run gates can compare what the code applies against independently
+      ! specified stoichiometry and against the state changes. Diagnostics only:
+      ! never read by any reaction. isw_ledger = 0 (default) registers and
+      ! computes nothing, bit-identical to the legacy build.
+      ! The precipitation counters are registered whether or not K_prec > 0 and
+      ! read exactly zero while the precipitation block is inactive.
+      call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
+           'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_ledger == 1) then
+         call self%register_diagnostic_variable(self%id_ledger_diss_c, 'ledger_diss_c', 'mg C/m^2/d', &
+              'ledger: calcite dissolution -> benthic calcite', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_diss_O3c, 'ledger_diss_O3c', 'mmol C/m^2/d', &
+              'ledger: calcite dissolution -> pelagic dissolved inorganic carbon (bottom flux)', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_diss_TA, 'ledger_diss_TA', 'mmol eq/m^2/d', &
+              'ledger: calcite dissolution -> pelagic alkalinity (bottom flux)', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_prec_c, 'ledger_prec_c', 'mg C/m^2/d', &
+              'ledger: light-driven calcification -> benthic calcite', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_prec_O3c, 'ledger_prec_O3c', 'mmol C/m^2/d', &
+              'ledger: light-driven calcification -> pelagic dissolved inorganic carbon (bottom flux)', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_prec_TA, 'ledger_prec_TA', 'mmol eq/m^2/d', &
+              'ledger: light-driven calcification -> pelagic alkalinity (bottom flux)', source=source_do_bottom)
+      end if
+
    end subroutine
 
    subroutine do_bottom(self,_ARGUMENTS_DO_BOTTOM_)
@@ -126,9 +161,20 @@ contains
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_dissolution, -fdiss*bL2c)
          _SET_BOTTOM_EXCHANGE_(self%id_O3c, fdiss*bL2c/CMass)
          _SET_BOTTOM_EXCHANGE_(self%id_TA, 2*fdiss*bL2c/CMass)  ! Dissolution of CaCO3 increases alkalinity by 2 units
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_diss_c, -fdiss*bL2c)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_diss_O3c, fdiss*bL2c/CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_diss_TA, 2*fdiss*bL2c/CMass)
+         end if
 
          ! Light-driven mat calcification (docs/15; inert when K_prec = 0)
          F_prec = 0.0_rk
+         if (self%isw_ledger == 1) then
+            ! zero unless the precipitation block below applies its terms
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_prec_c, 0.0_rk)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_prec_O3c, 0.0_rk)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_prec_TA, 0.0_rk)
+         end if
          if (self%K_prec > 0.0_rk) then
             _GET_(self%id_par, par)
             F_prec = self%K_prec &
@@ -137,6 +183,11 @@ contains
             _SET_BOTTOM_ODE_(self%id_c, F_prec)
             _SET_BOTTOM_EXCHANGE_(self%id_O3c, -F_prec/CMass)
             _SET_BOTTOM_EXCHANGE_(self%id_TA, -2*F_prec/CMass)  ! Precipitation of CaCO3 removes 2 units of alkalinity
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_prec_c, F_prec)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_prec_O3c, -F_prec/CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_prec_TA, -2*F_prec/CMass)
+            end if
          end if
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_precipitation, F_prec)
 

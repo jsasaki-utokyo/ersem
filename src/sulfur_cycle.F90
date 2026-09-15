@@ -51,6 +51,11 @@ module ersem_sulfur_cycle
       real(rk) :: K_S0_disp     ! S0 disproportionation rate (1/d)
       integer  :: isw_ta        ! 1 = charge the alkalinity of S0 -> SO4 (docs/114, 2026-09-11); 0 = legacy
 
+      ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
+      integer  :: isw_ledger
+      type(type_diagnostic_variable_id) :: id_ledger_sulf_H2S, id_ledger_sulf_S0
+      type(type_diagnostic_variable_id) :: id_ledger_sulf_O2, id_ledger_sulf_TA
+
    contains
       procedure :: initialize
       procedure :: do
@@ -102,6 +107,33 @@ contains
            default=0, minimum=0, maximum=1)
       if (self%isw_ta == 1) &
          call self%register_state_dependency(self%id_TA, standard_variables%alkalinity_expressed_as_mole_equivalent)
+
+      ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
+      ! isw_ledger = 1 registers one diagnostic per source term this module
+      ! writes to a ledger target (DIC, TA, O2, NO3, NH4, N2, PO4, Si, H2S, S0,
+      ! CaCO3; organic matter only where it crosses between the water and the
+      ! bed). Each value is the expression passed to the _SET_ODE_ /
+      ! _SET_BOTTOM_ODE_ / _SET_BOTTOM_EXCHANGE_ call beside it, in this
+      ! module's time unit (per day), with the sign applied to the target, so
+      ! post-run gates can compare what the code applies against independently
+      ! specified stoichiometry and against the state changes. Diagnostics only:
+      ! never read by any reaction. isw_ledger = 0 (default) registers and
+      ! computes nothing, bit-identical to the legacy build.
+      call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
+           'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_ledger == 1) then
+         call self%register_diagnostic_variable(self%id_ledger_sulf_H2S, 'ledger_sulf_H2S', &
+              'mmol S/m^3/d', 'ledger: H2S oxidation and S0 disproportionation -> hydrogen sulfide', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_sulf_S0, 'ledger_sulf_S0', &
+              'mmol S/m^3/d', 'ledger: H2S oxidation, S0 oxidation, settling and disproportionation -> elemental sulfur', &
+              source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_sulf_O2, 'ledger_sulf_O2', &
+              'mmol O_2/m^3/d', 'ledger: H2S and S0 oxidation -> oxygen', source=source_do)
+         if (self%isw_ta == 1) &
+            call self%register_diagnostic_variable(self%id_ledger_sulf_TA, 'ledger_sulf_TA', &
+                 'mmol/m^3/d', 'ledger: S0 oxidation and disproportionation -> total alkalinity', source=source_do)
+      end if
 
       ! Register state variables
       call self%register_state_variable(self%id_H2S, 'H2S', 'mmol S/m^3', &
@@ -183,6 +215,14 @@ contains
 
          ! Alkalinity of sulfate regeneration (isw_ta = 1; see initialize)
          if (self%isw_ta == 1) _SET_ODE_(self%id_TA, -2.0_rk * R_S0_ox - 0.5_rk * R_S0_disp)
+
+         ! Ledger counters (isw_ledger = 1; see initialize): the terms passed above, verbatim
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_sulf_H2S, -R_H2S_ox + 0.75_rk * R_S0_disp)
+            _SET_DIAGNOSTIC_(self%id_ledger_sulf_S0, R_H2S_ox - R_S0_ox - R_S0_sink - R_S0_disp)
+            _SET_DIAGNOSTIC_(self%id_ledger_sulf_O2, -0.5_rk * R_H2S_ox - 1.5_rk * R_S0_ox)
+            if (self%isw_ta == 1) _SET_DIAGNOSTIC_(self%id_ledger_sulf_TA, -2.0_rk * R_S0_ox - 0.5_rk * R_S0_disp)
+         end if
 
          ! Set diagnostics
          _SET_DIAGNOSTIC_(self%id_R_H2S_ox, R_H2S_ox)

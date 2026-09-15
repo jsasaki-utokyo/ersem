@@ -28,6 +28,13 @@ module ersem_bacteria_docdyn
       type (type_diagnostic_variable_id) :: id_fR1B1c, id_fR2B1c, id_fR3B1c,id_fRPB1c,id_fB1R1c, id_fB1R2c, id_fB1R3c
       type (type_diagnostic_variable_id) :: id_fR1B1n,id_fB1R1n,id_fR1B1p,id_fB1R1p,id_fRPB1n,id_fRPB1p
       type (type_diagnostic_variable_id) :: id_minn,id_minp
+      ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
+      integer  :: isw_ledger
+      type (type_diagnostic_variable_id) :: id_ledger_denit_N3n, id_ledger_denit_N6
+      type (type_diagnostic_variable_id) :: id_ledger_resp_O3c, id_ledger_resp_O2o
+      type (type_diagnostic_variable_id) :: id_ledger_pexch_N1p, id_ledger_pexch_TA
+      type (type_diagnostic_variable_id) :: id_ledger_nexch_N4n, id_ledger_nexch_TA
+      type (type_diagnostic_variable_id) :: id_ledger_r1min_N1p, id_ledger_r1min_N4n, id_ledger_r1min_TA
       ! Parameters
       integer  :: nRP
       integer  :: iswBlimX
@@ -200,6 +207,47 @@ contains
 
       call self%register_diagnostic_variable(self%id_minn,'minn','mmol N/m^3/d','mineralisation of DON to DIN')
       call self%register_diagnostic_variable(self%id_minp,'minp','mmol P/m^3/d','mineralisation of DOP to DIP')
+
+      ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
+      ! isw_ledger = 1 registers one diagnostic per source term this module
+      ! writes to a ledger target (DIC, TA, O2, NO3, NH4, N2, PO4, Si, H2S, S0,
+      ! CaCO3; organic matter only where it crosses between the water and the
+      ! bed). Each value is the expression passed to the _SET_ODE_ /
+      ! _SET_BOTTOM_ODE_ / _SET_BOTTOM_EXCHANGE_ call beside it, in this
+      ! module's time unit (per day), with the sign applied to the target, so
+      ! post-run gates can compare what the code applies against independently
+      ! specified stoichiometry and against the state changes. Diagnostics only:
+      ! never read by any reaction. isw_ledger = 0 (default) registers and
+      ! computes nothing, bit-identical to the legacy build.
+      call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
+           'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_ledger == 1) then
+         if (self%denit == 1) then
+            call self%register_diagnostic_variable(self%id_ledger_denit_N3n, 'ledger_denit_N3n', 'mmol N/m^3/d', &
+                 'ledger: denitrification -> nitrate', source=source_do)
+            call self%register_diagnostic_variable(self%id_ledger_denit_N6, 'ledger_denit_N6', 'mmol HS-/m^3/d', &
+                 'ledger: anoxic formation minus reoxidation -> reduction equivalent', source=source_do)
+         end if
+         call self%register_diagnostic_variable(self%id_ledger_resp_O3c, 'ledger_resp_O3c', 'mmol C/m^3/d', &
+              'ledger: respiration -> dissolved inorganic carbon', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_resp_O2o, 'ledger_resp_O2o', 'mmol O_2/m^3/d', &
+              'ledger: respiration (and reoxidation of reduction equivalents if denit = 1) -> oxygen', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_pexch_N1p, 'ledger_pexch_N1p', 'mmol P/m^3/d', &
+              'ledger: phosphate release (+) or uptake (-) by bacteria -> phosphate', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_pexch_TA, 'ledger_pexch_TA', 'mmol/m^3/d', &
+              'ledger: phosphate release or uptake by bacteria -> alkalinity', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_nexch_N4n, 'ledger_nexch_N4n', 'mmol N/m^3/d', &
+              'ledger: ammonium release (+) or uptake (-) by bacteria -> ammonium', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_nexch_TA, 'ledger_nexch_TA', 'mmol/m^3/d', &
+              'ledger: ammonium release or uptake by bacteria -> alkalinity', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_r1min_N1p, 'ledger_r1min_N1p', 'mmol P/m^3/d', &
+              'ledger: mineralisation of labile DOP -> phosphate', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_r1min_N4n, 'ledger_r1min_N4n', 'mmol N/m^3/d', &
+              'ledger: mineralisation of labile DON -> ammonium', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_r1min_TA, 'ledger_r1min_TA', 'mmol/m^3/d', &
+              'ledger: mineralisation of labile DOP and DON -> alkalinity', source=source_do)
+      end if
    end subroutine
 
    subroutine do(self,_ARGUMENTS_DO_)
@@ -334,6 +382,9 @@ contains
 
         _SET_DIAGNOSTIC_(self%id_fdenit,fdenit)
         _SET_ODE_(self%id_N3n, -fdenit)
+        if (self%isw_ledger == 1) then
+           _SET_DIAGNOSTIC_(self%id_ledger_denit_N3n, -fdenit)
+        end if
 
 ! Reduced sulfur formation corresponds to eq.9 in Sankar et al. (2008)
         fanox = self%omroX * (self%urB1_O2X * (1._rk-o2state) * fB1O3c - self%omonX * fdenit)
@@ -343,6 +394,9 @@ contains
         _SET_DIAGNOSTIC_(self%id_freox,fanox)
 
         _SET_ODE_(self%id_N6, fanox - freox)
+        if (self%isw_ledger == 1) then
+           _SET_DIAGNOSTIC_(self%id_ledger_denit_N6, fanox - freox)
+        end if
      end if 
 
 !..net bacterial production
@@ -377,13 +431,22 @@ contains
          end do
 
          _SET_ODE_(self%id_O3c,+ fB1O3c/CMass)
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_resp_O3c, + fB1O3c/CMass)
+         end if
 
 !..oxygen consumption.....................................................
  
          if (self%denit == 1) then
          _SET_ODE_(self%id_O2o, -o2state*fB1O3c*self%urB1_O2X - freox/self%omroX) 
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_resp_O2o, -o2state*fB1O3c*self%urB1_O2X - freox/self%omroX)
+         end if
          else 
          _SET_ODE_(self%id_O2o, -fB1O3c*self%urB1_O2X)
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_resp_O2o, -fB1O3c*self%urB1_O2X)
+         end if
          end if
 
 !..Phosphorus dynamics in bacteria........................................
@@ -416,6 +479,10 @@ contains
          _SET_ODE_(self%id_N1p, + fB1N1p)
          _SET_ODE_(self%id_R1p, + fB1RDp - fR1B1p)
          _SET_ODE_(self%id_TA,  - fB1N1p)   ! Contribution to alkalinity: -1 for phosphate
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_pexch_N1p, + fB1N1p)
+            _SET_DIAGNOSTIC_(self%id_ledger_pexch_TA,  - fB1N1p)
+         end if
 
 !..Set diagnostics
          _SET_DIAGNOSTIC_(self%id_fB1N1p,fB1N1p)
@@ -452,6 +519,10 @@ contains
          _SET_ODE_(self%id_n,   + fR1B1n - fB1NIn - fB1RDn)
          _SET_ODE_(self%id_R1n, + fB1RDn   - fR1B1n)
          _SET_ODE_(self%id_TA,  + fB1NIn)   ! Contribution to alkalinity: +1 for ammonium
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_nexch_N4n, + fB1NIn)
+            _SET_DIAGNOSTIC_(self%id_ledger_nexch_TA,  + fB1NIn)
+         end if
 
 !..Set diagnostics
          _SET_DIAGNOSTIC_(self%id_fB1NIn,fB1NIn)
@@ -495,6 +566,11 @@ contains
          _SET_ODE_(self%id_N1p, + fR1N1p)
          _SET_ODE_(self%id_N4n, + fR1NIn)
          _SET_ODE_(self%id_TA,  - fR1N1p + fR1NIn)   ! Contributions to alkalinity: -1 for phosphate, +1 for ammonium
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_r1min_N1p, + fR1N1p)
+            _SET_DIAGNOSTIC_(self%id_ledger_r1min_N4n, + fR1NIn)
+            _SET_DIAGNOSTIC_(self%id_ledger_r1min_TA,  - fR1N1p + fR1NIn)
+         end if
 
          !.. set Diagnostics
          _SET_DIAGNOSTIC_(self%id_minn,fR1NIn)

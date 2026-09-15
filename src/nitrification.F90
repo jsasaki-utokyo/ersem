@@ -24,6 +24,12 @@ module ersem_nitrification
       real(rk) :: sN4N3X,chN3oX,chN4nX, N4O5minX
       integer  :: ISWphx
       logical  :: ISWn2o
+
+      ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
+      integer :: isw_ledger
+      type (type_diagnostic_variable_id) :: id_ledger_n2o_O5n, id_ledger_n2o_N3n
+      type (type_diagnostic_variable_id) :: id_ledger_nitrif_N3n, id_ledger_nitrif_N4n, id_ledger_nitrif_TA
+      type (type_diagnostic_variable_id) :: id_ledger_nitrif_O2o
    contains
 !     Model procedures
       procedure :: initialize
@@ -67,6 +73,38 @@ contains
       call self%register_state_dependency(self%id_O2o,'O2o','mmol O_2/m^3','oxygen')
       if (self%ISWn2o) call self%register_state_dependency(self%id_O5n,'O5n','mmol N/m^3','nitrous oxide')
       call self%register_state_dependency(self%id_TA,standard_variables%alkalinity_expressed_as_mole_equivalent)
+
+      ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
+      ! isw_ledger = 1 registers one diagnostic per source term this module
+      ! writes to a ledger target (DIC, TA, O2, NO3, NH4, N2, PO4, Si, H2S, S0,
+      ! CaCO3; organic matter only where it crosses between the water and the
+      ! bed). Each value is the expression passed to the _SET_ODE_ /
+      ! _SET_BOTTOM_ODE_ / _SET_BOTTOM_EXCHANGE_ call beside it, in this
+      ! module's time unit (per day), with the sign applied to the target, so
+      ! post-run gates can compare what the code applies against independently
+      ! specified stoichiometry and against the state changes. Diagnostics only:
+      ! never read by any reaction. isw_ledger = 0 (default) registers and
+      ! computes nothing, bit-identical to the legacy build.
+      call self%get_parameter(self%isw_ledger,'isw_ledger','', &
+           'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
+           default=0,minimum=0,maximum=1)
+      if (self%isw_ledger == 1) then
+         if (self%ISWn2o) then
+            call self%register_diagnostic_variable(self%id_ledger_n2o_O5n,'ledger_n2o_O5n','mmol N/m^3/d', &
+                 'ledger: N2O production during nitrification -> nitrous oxide',source=source_do)
+            call self%register_diagnostic_variable(self%id_ledger_n2o_N3n,'ledger_n2o_N3n','mmol N/m^3/d', &
+                 'ledger: N2O production during nitrification -> nitrate',source=source_do)
+         end if
+         call self%register_diagnostic_variable(self%id_ledger_nitrif_N3n,'ledger_nitrif_N3n','mmol N/m^3/d', &
+              'ledger: nitrification -> nitrate',source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_nitrif_N4n,'ledger_nitrif_N4n','mmol N/m^3/d', &
+              'ledger: nitrification -> ammonium',source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_nitrif_TA,'ledger_nitrif_TA','mmol/m^3/d', &
+              'ledger: nitrification -> total alkalinity',source=source_do)
+         if (.not.legacy_ersem_compatibility) &
+            call self%register_diagnostic_variable(self%id_ledger_nitrif_O2o,'ledger_nitrif_O2o','mmol O_2/m^3/d', &
+                 'ledger: nitrification -> oxygen',source=source_do)
+      end if
 
       ! Register environmental dependencies (temperature, pH)
       call self%register_dependency(self%id_ETW,standard_variables%temperature)
@@ -119,14 +157,26 @@ contains
          _SET_ODE_(self%id_O5n,fN4O5n)
          _SET_ODE_(self%id_N3n, -fN4O5n)
          _SET_DIAGNOSTIC_(self%id_fN4O5n,fN4O5n)
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_n2o_O5n,fN4O5n)
+            _SET_DIAGNOSTIC_(self%id_ledger_n2o_N3n, -fN4O5n)
+         end if
          end if
 
          _SET_ODE_(self%id_N3n, + fN4N3n)
          _SET_ODE_(self%id_N4n, - fN4N3n)
          _SET_ODE_(self%id_TA, -2*fN4N3n)  ! Alkalinity contributions: +1 for NH4, -1 for nitrate
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_nitrif_N3n, + fN4N3n)
+            _SET_DIAGNOSTIC_(self%id_ledger_nitrif_N4n, - fN4N3n)
+            _SET_DIAGNOSTIC_(self%id_ledger_nitrif_TA, -2*fN4N3n)
+         end if
 
          ! Legacy ERSEM did not account for oxygen removal by nitrification
          if (.not.legacy_ersem_compatibility) _SET_ODE_(self%id_O2o,-2*fN4N3n)
+         if (self%isw_ledger == 1) then
+            if (.not.legacy_ersem_compatibility) _SET_DIAGNOSTIC_(self%id_ledger_nitrif_O2o,-2*fN4N3n)
+         end if
 
          _SET_DIAGNOSTIC_(self%id_fN4N3n,fN4N3n)
 

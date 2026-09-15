@@ -32,6 +32,10 @@ module ersem_benthic_bacteria
       type (type_horizontal_diagnostic_variable_id) :: id_fHG3c
       type (type_horizontal_diagnostic_variable_id) :: id_fHKIn,id_fHK1p
       type (type_horizontal_diagnostic_variable_id) :: id_fHQ1c,id_fHQPc,id_fHQ1n,id_fHQPn,id_fHQ1p,id_fHQPp
+      ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
+      integer :: isw_ledger
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_resp_G2o,id_ledger_resp_G3c
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_nutr_K4n,id_ledger_nutr_K1p,id_ledger_nutr_benTA
       type (type_horizontal_dependency_id) :: id_Dm
 
       integer  :: nfood
@@ -207,6 +211,36 @@ contains
       call self%register_diagnostic_variable(self%id_fHQPn,'fHQPn','mmol N/m^2/d','production of particulate organic nitrogen',  domain=domain_bottom,source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_fHQPp,'fHQPp','mmol P/m^2/d','production of particulate organic phosphorus',domain=domain_bottom,source=source_do_bottom)
 
+      ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
+      ! isw_ledger = 1 registers one diagnostic per source term this module
+      ! writes to a ledger target (DIC, TA, O2, NO3, NH4, N2, PO4, Si, H2S, S0,
+      ! CaCO3; organic matter only where it crosses between the water and the
+      ! bed). Each value is the expression passed to the _SET_ODE_ /
+      ! _SET_BOTTOM_ODE_ / _SET_BOTTOM_EXCHANGE_ call beside it, in this
+      ! module's time unit (per day), with the sign applied to the target, so
+      ! post-run gates can compare what the code applies against independently
+      ! specified stoichiometry and against the state changes. Diagnostics only:
+      ! never read by any reaction. isw_ledger = 0 (default) registers and
+      ! computes nothing, bit-identical to the legacy build.
+      ! Note: G2o is whatever the instance couples it to -- for the sulfate
+      ! reducers (H2) that is ben_nit's K6 oxygen debt, not benthic oxygen.
+      call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
+           'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_ledger == 1) then
+         call self%register_diagnostic_variable(self%id_ledger_resp_G2o, 'ledger_resp_G2o', 'mmol O_2/m^2/d', &
+              'ledger: respiration (non-sulfate share) -> oxygen or oxygen debt (G2o coupling)', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_resp_G3c, 'ledger_resp_G3c', 'mmol C/m^2/d', &
+              'ledger: respiration -> benthic dissolved inorganic carbon', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_nutr_K4n, 'ledger_nutr_K4n', 'mmol N/m^2/d', &
+              'ledger: ammonium uptake and excess-nitrogen release -> benthic ammonium', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_nutr_K1p, 'ledger_nutr_K1p', 'mmol P/m^2/d', &
+              'ledger: phosphate uptake and excess-phosphorus release -> benthic phosphate', source=source_do_bottom)
+         if (.not.legacy_ersem_compatibility) &
+            call self%register_diagnostic_variable(self%id_ledger_nutr_benTA, 'ledger_nutr_benTA', 'mmol eq/m^2/d', &
+                 'ledger: ammonium and phosphate uptake/release -> benthic alkalinity', source=source_do_bottom)
+      end if
+
    end subroutine
 
    subroutine do_bottom(self,_ARGUMENTS_DO_BOTTOM_)
@@ -320,6 +354,10 @@ contains
          ! consequence is carried by the sulfur cycle (docs/14).
          _SET_BOTTOM_ODE_(self%id_G2o,-(1.0_rk-self%p_sulf)*fHG3c/CMass)  ! oxygen or reduction equivalent
          _SET_BOTTOM_ODE_(self%id_G3c, fHG3c/CMass)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_resp_G2o,-(1.0_rk-self%p_sulf)*fHG3c/CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_resp_G3c, fHG3c/CMass)
+         end if
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHG3c,fHG3c)
 
          ! Mortality (partition over dissolved and particulate organic pools according to coefficient pdQ1)
@@ -371,9 +409,16 @@ contains
          _SET_BOTTOM_ODE_(self%id_Q6c,excess_c/CMass)
          _SET_BOTTOM_ODE_(self%id_K4n,-fK4Hn + excess_n)
          _SET_BOTTOM_ODE_(self%id_K1p,-fK1Hp + excess_p)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_nutr_K4n,-fK4Hn + excess_n)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_nutr_K1p,-fK1Hp + excess_p)
+         end if
 
          ! Alkalinity contributions: +1 for NH4, -1 for PO4
          if (.not.legacy_ersem_compatibility) _SET_BOTTOM_ODE_(self%id_benTA,-fK4Hn + excess_n + fK1Hp -excess_p)
+         if (self%isw_ledger == 1) then
+            if (.not.legacy_ersem_compatibility) _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_nutr_benTA,-fK4Hn + excess_n + fK1Hp -excess_p)
+         end if
 
          _SET_BOTTOM_ODE_(self%id_Q1c,sum(fQc*self%food%pue)/CMass)
          _SET_BOTTOM_ODE_(self%id_Q1n,sum(fQn*self%food%pue))

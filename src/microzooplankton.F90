@@ -29,6 +29,12 @@ module ersem_microzooplankton
       type (type_diagnostic_variable_id) :: id_fZIRDn,id_fZIRPn,id_fZINIn
       type (type_diagnostic_variable_id) :: id_fZIRDp,id_fZIRPp,id_fZINIp
       type (type_diagnostic_variable_id), allocatable,dimension(:) :: id_fpreyc,id_fpreyn,id_fpreyp,id_fpreys
+      ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
+      integer  :: isw_ledger
+      type (type_diagnostic_variable_id) :: id_ledger_gutcal_L2c, id_ledger_gutcal_O3c, id_ledger_gutcal_TA
+      type (type_diagnostic_variable_id) :: id_ledger_resp_O3c, id_ledger_resp_O2o
+      type (type_diagnostic_variable_id) :: id_ledger_pexc_N1p, id_ledger_pexc_TA
+      type (type_diagnostic_variable_id) :: id_ledger_nexc_N4n, id_ledger_nexc_TA
       ! Parameters
       integer  :: nprey
       real(rk) :: qpc,qnc,stempn,stempp
@@ -191,6 +197,42 @@ contains
       call self%register_diagnostic_variable(self%id_fZIRDn,'fZIRDn','mmol N/m^3/d','loss to DON')
       call self%register_diagnostic_variable(self%id_fZIRDp,'fZIRDp','mmol P/m^3/d','loss to DOP')
 
+      ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
+      ! isw_ledger = 1 registers one diagnostic per source term this module
+      ! writes to a ledger target (DIC, TA, O2, NO3, NH4, N2, PO4, Si, H2S, S0,
+      ! CaCO3; organic matter only where it crosses between the water and the
+      ! bed). Each value is the expression passed to the _SET_ODE_ /
+      ! _SET_BOTTOM_ODE_ / _SET_BOTTOM_EXCHANGE_ call beside it, in this
+      ! module's time unit (per day), with the sign applied to the target, so
+      ! post-run gates can compare what the code applies against independently
+      ! specified stoichiometry and against the state changes. Diagnostics only:
+      ! never read by any reaction. isw_ledger = 0 (default) registers and
+      ! computes nothing, bit-identical to the legacy build.
+      call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
+           'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_ledger == 1) then
+         ! The gut-calcite counters are written 0 when no calcite pool is coupled (L2c not available).
+         call self%register_diagnostic_variable(self%id_ledger_gutcal_L2c, 'ledger_gutcal_L2c', 'mg C/m^3/d', &
+              'ledger: undissolved prey calcite released after ingestion -> calcite', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_gutcal_O3c, 'ledger_gutcal_O3c', 'mmol C/m^3/d', &
+              'ledger: undissolved prey calcite released after ingestion -> dissolved inorganic carbon', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_gutcal_TA, 'ledger_gutcal_TA', 'mmol/m^3/d', &
+              'ledger: undissolved prey calcite released after ingestion -> alkalinity', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_resp_O3c, 'ledger_resp_O3c', 'mmol C/m^3/d', &
+              'ledger: rest and activity respiration -> dissolved inorganic carbon', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_resp_O2o, 'ledger_resp_O2o', 'mmol O_2/m^3/d', &
+              'ledger: rest and activity respiration -> oxygen', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_pexc_N1p, 'ledger_pexc_N1p', 'mmol P/m^3/d', &
+              'ledger: excretion of excess phosphorus -> phosphate', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_pexc_TA, 'ledger_pexc_TA', 'mmol/m^3/d', &
+              'ledger: excretion of excess phosphorus -> alkalinity', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_nexc_N4n, 'ledger_nexc_N4n', 'mmol N/m^3/d', &
+              'ledger: excretion of excess nitrogen -> ammonium', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_nexc_TA, 'ledger_nexc_TA', 'mmol/m^3/d', &
+              'ledger: excretion of excess nitrogen -> alkalinity', source=source_do)
+      end if
+
    end subroutine
 
    subroutine do(self,_ARGUMENTS_DO_)
@@ -318,8 +360,18 @@ contains
             _SET_ODE_(self%id_O3c, -(1.0_rk-self%gutdiss)*ineff*self%pu_ea*sum(sprey*preylP)/CMass)
             _SET_ODE_(self%id_TA,-2*(1.0_rk-self%gutdiss)*ineff*sum(self%pu_ea*sprey*preylP)/CMass)   ! CaCO3 formation decreases alkalinity by 2 units
             _SET_DIAGNOSTIC_ (self%id_calc,(1.0_rk-self%gutdiss)*ineff*self%pu_ea*sum(sprey*preylP))
+            if (self%isw_ledger == 1) then
+               _SET_DIAGNOSTIC_(self%id_ledger_gutcal_L2c,  (1.0_rk-self%gutdiss)*ineff*self%pu_ea*sum(sprey*preylP))
+               _SET_DIAGNOSTIC_(self%id_ledger_gutcal_O3c, -(1.0_rk-self%gutdiss)*ineff*self%pu_ea*sum(sprey*preylP)/CMass)
+               _SET_DIAGNOSTIC_(self%id_ledger_gutcal_TA,-2*(1.0_rk-self%gutdiss)*ineff*sum(self%pu_ea*sprey*preylP)/CMass)
+            end if
          else
             _SET_DIAGNOSTIC_ (self%id_calc,0.0_rk)
+            if (self%isw_ledger == 1) then
+               _SET_DIAGNOSTIC_(self%id_ledger_gutcal_L2c, 0.0_rk)
+               _SET_DIAGNOSTIC_(self%id_ledger_gutcal_O3c, 0.0_rk)
+               _SET_DIAGNOSTIC_(self%id_ledger_gutcal_TA, 0.0_rk)
+            end if
          end if
 
          ! Source equation for carbon in biomass.
@@ -343,6 +395,10 @@ contains
          ! Account for CO2 production and oxygen consumption in respiration.
          _SET_ODE_(self%id_O3c, + fZIO3c/CMass)
          _SET_ODE_(self%id_O2o, - fZIO3c*self%urB1_O2)
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_resp_O3c, + fZIO3c/CMass)
+            _SET_DIAGNOSTIC_(self%id_ledger_resp_O2o, - fZIO3c*self%urB1_O2)
+         end if
 
          ! -------------------------------
          ! Phosphorus
@@ -366,6 +422,10 @@ contains
          ! Phosphate exudation
          _SET_ODE_(self%id_N1p,+ fZIN1p)
          _SET_ODE_(self%id_TA, - fZIN1p)  ! Alkalinity contributions: -1 for PO4
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_pexc_N1p, + fZIN1p)
+            _SET_DIAGNOSTIC_(self%id_ledger_pexc_TA, - fZIN1p)
+         end if
          _SET_DIAGNOSTIC_ (self%id_fZINIp,fZIN1p)
          _SET_DIAGNOSTIC_(self%id_fZIRDp,fZIRDp)
          _SET_DIAGNOSTIC_(self%id_fZIRPp,fZIRPp)
@@ -392,6 +452,10 @@ contains
          ! Ammonium exudation
          _SET_ODE_(self%id_N4n,+ fZINIn)
          _SET_ODE_(self%id_TA, + fZINIn)  ! Alkalinity contributions: +1 for NH4
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_nexc_N4n, + fZINIn)
+            _SET_DIAGNOSTIC_(self%id_ledger_nexc_TA, + fZINIn)
+         end if
          _SET_DIAGNOSTIC_ (self%id_fZINIn,fZINIn)
          _SET_DIAGNOSTIC_(self%id_fZIRDn,fZIRDn)
          _SET_DIAGNOSTIC_(self%id_fZIRPn,fZIRPn)

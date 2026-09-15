@@ -17,6 +17,11 @@ module ersem_benthic_nitrogen_cycle
       type (type_horizontal_dependency_id) :: id_D1m,id_K6_sms,id_layer2_thickness
       type (type_horizontal_diagnostic_variable_id) :: id_jM3M4n,id_jM3G4n
       type (type_horizontal_diagnostic_variable_id) :: id_nrate
+      ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
+      integer :: isw_ledger
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_nitrif_K3n,id_ledger_nitrif_K4n,id_ledger_nitrif_G2o,id_ledger_nitrif_benTA
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_denit_K4n2,id_ledger_denit_K3n2,id_ledger_denit_G4n,id_ledger_denit_benTA2
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_denit_G2o2
       real(rk) :: q10nit,Tref,hM4M3,sM4M3,xno3
       real(rk) :: pammon,pdenit,xn2,hM3G4
       integer :: ISWph
@@ -81,6 +86,46 @@ contains
       call self%register_diagnostic_variable(self%id_jM3M4n,'jM3M4n','mmol N/m^2/d','layer 2 ammonification flux',  source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_jM3G4n,'jM3G4n','mmol N/m^2/d','layer 2 de-nitrification flux',source=source_do_bottom)
 
+      ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
+      ! isw_ledger = 1 registers one diagnostic per source term this module
+      ! writes to a ledger target (DIC, TA, O2, NO3, NH4, N2, PO4, Si, H2S, S0,
+      ! CaCO3; organic matter only where it crosses between the water and the
+      ! bed). Each value is the expression passed to the _SET_ODE_ /
+      ! _SET_BOTTOM_ODE_ / _SET_BOTTOM_EXCHANGE_ call beside it, in this
+      ! module's time unit (per day), with the sign applied to the target, so
+      ! post-run gates can compare what the code applies against independently
+      ! specified stoichiometry and against the state changes. Diagnostics only:
+      ! never read by any reaction. isw_ledger = 0 (default) registers and
+      ! computes nothing, bit-identical to the legacy build.
+      ! The K6_calculator child writes no source terms of its own; the O2 debt
+      ! it collects is counted by the modules that write it (benthic_bacteria).
+      call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
+           'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_ledger == 1) then
+         call self%register_diagnostic_variable(self%id_ledger_nitrif_K3n, 'ledger_nitrif_K3n', 'mmol N/m^2/d', &
+              'ledger: benthic nitrification -> benthic nitrate, layer 1', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_nitrif_K4n, 'ledger_nitrif_K4n', 'mmol N/m^2/d', &
+              'ledger: benthic nitrification -> benthic ammonium, layer 1', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_nitrif_G2o, 'ledger_nitrif_G2o', 'mmol O_2/m^2/d', &
+              'ledger: benthic nitrification -> benthic oxygen, layer 1', source=source_do_bottom)
+         if (.not.legacy_ersem_compatibility) &
+            call self%register_diagnostic_variable(self%id_ledger_nitrif_benTA, 'ledger_nitrif_benTA', 'mmol eq/m^2/d', &
+                 'ledger: benthic nitrification -> benthic alkalinity, aerobic layer', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_denit_K4n2, 'ledger_denit_K4n2', 'mmol N/m^2/d', &
+              'ledger: nitrate reduction to ammonium (debt-driven) -> benthic ammonium, layer 2', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_denit_K3n2, 'ledger_denit_K3n2', 'mmol N/m^2/d', &
+              'ledger: nitrate reduction to ammonium and to N2 (debt-driven) -> benthic nitrate, layer 2', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_denit_G4n, 'ledger_denit_G4n', 'mmol N/m^2/d', &
+              'ledger: nitrate reduction to N2 (debt-driven) -> dinitrogen gas', source=source_do_bottom)
+         if (.not.legacy_ersem_compatibility) &
+            call self%register_diagnostic_variable(self%id_ledger_denit_benTA2, 'ledger_denit_benTA2', 'mmol eq/m^2/d', &
+                 'ledger: nitrate reduction to ammonium and to N2 -> benthic alkalinity, anaerobic layer', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_denit_G2o2, 'ledger_denit_G2o2', 'mmol O_2/m^2/d', &
+              'ledger: anaerobic O2 debt (K6 sources-sinks) net of nitrate reduction to ammonium and to N2 -> benthic oxygen, layer 2', &
+              source=source_do_bottom)
+      end if
+
       ! Create a child model that provides a K6 diagnostic. Other models (e.g., anaerobic bacteria) can attach to that to provide it with sink/source terms.
       ! In turn, these are then picked up by this model (type_ersem_benthic_nitrogen_cycle) and translated into chnages in NO3 and O2.
       allocate(child)
@@ -142,9 +187,17 @@ contains
          _SET_BOTTOM_ODE_(self%id_K3n,jM4M3n)
          _SET_BOTTOM_ODE_(self%id_K4n,-jM4M3n)
          _SET_BOTTOM_ODE_(self%id_G2o,-self%xno3*jM4M3n)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_nitrif_K3n,jM4M3n)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_nitrif_K4n,-jM4M3n)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_nitrif_G2o,-self%xno3*jM4M3n)
+         end if
 
          ! Alkalinity contributions: +1 for NH4, -1 for nitrate
          if (.not.legacy_ersem_compatibility) _SET_BOTTOM_ODE_(self%id_benTA,-2*jM4M3n)
+         if (self%isw_ledger == 1) then
+            if (.not.legacy_ersem_compatibility) _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_nitrif_benTA,-2*jM4M3n)
+         end if
 
          ! Retrieve oxygen debt to to anaerobic respiration, depth-integrated nitrate in oxidized layer, thickness of oxidized layer.
          _GET_HORIZONTAL_(self%id_K6_sms,K6_sms)
@@ -180,12 +233,23 @@ contains
          _SET_BOTTOM_ODE_(self%id_K4n2, jM3M4n)
          _SET_BOTTOM_ODE_(self%id_K3n2, -jM3M4n -jM3G4n)
          _SET_BOTTOM_ODE_(self%id_G4n, jM3G4n)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_denit_K4n2, jM3M4n)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_denit_K3n2, -jM3M4n -jM3G4n)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_denit_G4n, jM3G4n)
+         end if
 
          ! Alkalinity contributions: +1 for NH4, -1 for nitrate
          if (.not.legacy_ersem_compatibility) _SET_BOTTOM_ODE_(self%id_benTA2, 2*jM3M4n + jM3G4n)
+         if (self%isw_ledger == 1) then
+            if (.not.legacy_ersem_compatibility) _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_denit_benTA2, 2*jM3M4n + jM3G4n)
+         end if
 
          ! Oxygen dynamics: after denitrification is taken into account, use actual oxygen to pay off remaining oxygen debt.
          _SET_BOTTOM_ODE_(self%id_G2o2, K6_sms + self%xno3*jM3M4n + self%xn2*jM3G4n)
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_denit_G2o2, K6_sms + self%xno3*jM3M4n + self%xn2*jM3G4n)
+         end if
 
       _HORIZONTAL_LOOP_END_
 

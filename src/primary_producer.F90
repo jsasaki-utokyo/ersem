@@ -75,6 +75,14 @@ module ersem_primary_producer
       real(rk) :: pe_RP_lysis  ! minimum POM fraction of lysis products (jsasaki 2026-03-03)
       logical :: use_Si, calcify, docdyn, cenh
 
+      ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
+      integer :: isw_ledger
+      type (type_diagnostic_variable_id) :: id_ledger_calcify_L2c, id_ledger_calcify_O3c, id_ledger_calcify_TA
+      type (type_diagnostic_variable_id) :: id_ledger_growth_O3c, id_ledger_growth_O2o
+      type (type_diagnostic_variable_id) :: id_ledger_puptake_N1p, id_ledger_puptake_TA
+      type (type_diagnostic_variable_id) :: id_ledger_nuptake_N3n, id_ledger_nuptake_N4n, id_ledger_nuptake_TA
+      type (type_diagnostic_variable_id) :: id_ledger_suptake_N5s
+
    contains
 
       ! Model procedures
@@ -261,6 +269,48 @@ contains
          call self%register_diagnostic_variable(self%id_lD,'l','mg C/m^3','bound calcite',missing_value=0._rk,output=output_none)
          call self%register_diagnostic_variable(self%id_O3L2c,'calcification','mg C/m^3/d','calcification rate')
          call self%add_to_aggregate_variable(total_calcite_in_biota,self%id_lD)
+      end if
+
+      ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
+      ! isw_ledger = 1 registers one diagnostic per source term this module
+      ! writes to a ledger target (DIC, TA, O2, NO3, NH4, N2, PO4, Si, H2S, S0,
+      ! CaCO3; organic matter only where it crosses between the water and the
+      ! bed). Each value is the expression passed to the _SET_ODE_ /
+      ! _SET_BOTTOM_ODE_ / _SET_BOTTOM_EXCHANGE_ call beside it, in this
+      ! module's time unit (per day), with the sign applied to the target, so
+      ! post-run gates can compare what the code applies against independently
+      ! specified stoichiometry and against the state changes. Diagnostics only:
+      ! never read by any reaction. isw_ledger = 0 (default) registers and
+      ! computes nothing, bit-identical to the legacy build.
+      call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
+           'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_ledger == 1) then
+         if (self%calcify) then
+            call self%register_diagnostic_variable(self%id_ledger_calcify_L2c, 'ledger_calcify_L2c', 'mg C/m^3/d', &
+                 'ledger: calcite released by dying calcifiers -> free calcite', source=source_do)
+            call self%register_diagnostic_variable(self%id_ledger_calcify_O3c, 'ledger_calcify_O3c', 'mmol C/m^3/d', &
+                 'ledger: calcite formation by dying calcifiers -> dissolved inorganic carbon', source=source_do)
+            call self%register_diagnostic_variable(self%id_ledger_calcify_TA, 'ledger_calcify_TA', 'mmol/m^3/d', &
+                 'ledger: calcite formation by dying calcifiers -> total alkalinity', source=source_do)
+         end if
+         call self%register_diagnostic_variable(self%id_ledger_growth_O3c, 'ledger_growth_O3c', 'mmol C/m^3/d', &
+              'ledger: respiration minus gross photosynthesis -> dissolved inorganic carbon', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_growth_O2o, 'ledger_growth_O2o', 'mmol O_2/m^3/d', &
+              'ledger: gross photosynthesis minus respiration -> oxygen', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_puptake_N1p, 'ledger_puptake_N1p', 'mmol P/m^3/d', &
+              'ledger: net phosphate uptake -> phosphate', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_puptake_TA, 'ledger_puptake_TA', 'mmol/m^3/d', &
+              'ledger: net phosphate uptake -> total alkalinity', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_nuptake_N3n, 'ledger_nuptake_N3n', 'mmol N/m^3/d', &
+              'ledger: net nitrate uptake -> nitrate', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_nuptake_N4n, 'ledger_nuptake_N4n', 'mmol N/m^3/d', &
+              'ledger: net ammonium uptake -> ammonium', source=source_do)
+         call self%register_diagnostic_variable(self%id_ledger_nuptake_TA, 'ledger_nuptake_TA', 'mmol/m^3/d', &
+              'ledger: net nitrate and ammonium uptake -> total alkalinity', source=source_do)
+         if (self%use_Si) &
+            call self%register_diagnostic_variable(self%id_ledger_suptake_N5s, 'ledger_suptake_N5s', 'mmol Si/m^3/d', &
+                 'ledger: net silicate uptake -> silicate', source=source_do)
       end if
 
       ! Link to atmospheric CO2 (only if using CO2-enhanced primary production).
@@ -488,6 +538,11 @@ contains
             _SET_DIAGNOSTIC_(self%id_O3L2c,fPIRPc*RainR)
             _SET_ODE_(self%id_O3c,  -fPIRPc*RainR/Cmass)
             _SET_ODE_(self%id_TA, -2*fPIRPc*RainR/Cmass)   ! CaCO3 formation decreases alkalinity by 2 units
+            if (self%isw_ledger == 1) then
+               _SET_DIAGNOSTIC_(self%id_ledger_calcify_L2c,   fPIRPc*RainR)
+               _SET_DIAGNOSTIC_(self%id_ledger_calcify_O3c,  -fPIRPc*RainR/Cmass)
+               _SET_DIAGNOSTIC_(self%id_ledger_calcify_TA, -2*fPIRPc*RainR/Cmass)
+            end if
          end if
 
          ! Respiration..........................................................
@@ -529,6 +584,10 @@ contains
 
          _SET_ODE_(self%id_O3c,(fPIO3c - fO3PIc)/CMass)
          _SET_ODE_(self%id_O2o,(fO3PIc*self%uB1c_O2 - fPIO3c*self%urB1_O2))
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_growth_O3c,(fPIO3c - fO3PIc)/CMass)
+            _SET_DIAGNOSTIC_(self%id_ledger_growth_O2o,(fO3PIc*self%uB1c_O2 - fPIO3c*self%urB1_O2))
+         end if
 
          ! Save rates of photosynthesis (a.k.a., gross primary production) and respiration
          _SET_DIAGNOSTIC_(self%id_fPIO3c,fPIO3c)
@@ -566,6 +625,10 @@ contains
          _SET_ODE_(self%id_p,(fN1PIp-fPIRDp-fPIRPp))
          _SET_ODE_(self%id_N1p,-fN1PIp)
          _SET_ODE_(self%id_TA,  fN1PIp) ! Alkalinity contributions: -1 for PO4
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_puptake_N1p,-fN1PIp)
+            _SET_DIAGNOSTIC_(self%id_ledger_puptake_TA,  fN1PIp)
+         end if
          _SET_ODE_(self%id_RPp,fPIRPp)
          _SET_ODE_(self%id_R1p,fPIRDp)
 
@@ -622,6 +685,11 @@ contains
          _SET_ODE_(self%id_N3n,-fN3PIn)
          _SET_ODE_(self%id_N4n,-fN4PIn)
          _SET_ODE_(self%id_TA,  fN3PIn-fN4PIn) ! Alkalinity contributions: -1 for NO3, +1 for NH4
+         if (self%isw_ledger == 1) then
+            _SET_DIAGNOSTIC_(self%id_ledger_nuptake_N3n,-fN3PIn)
+            _SET_DIAGNOSTIC_(self%id_ledger_nuptake_N4n,-fN4PIn)
+            _SET_DIAGNOSTIC_(self%id_ledger_nuptake_TA,  fN3PIn-fN4PIn)
+         end if
          _SET_ODE_(self%id_RPn,fPIRPn)
          _SET_ODE_(self%id_R1n,fPIRDn)
 
@@ -648,6 +716,9 @@ contains
             ! Source equations  
             _SET_ODE_(self%id_s,(fN5PIs - fPIRPs))
             _SET_ODE_(self%id_N5s,-fN5PIs)
+            if (self%isw_ledger == 1) then
+               _SET_DIAGNOSTIC_(self%id_ledger_suptake_N5s,-fN5PIs)
+            end if
             _SET_ODE_(self%id_RPs, fPIRPs)
 
             _SET_DIAGNOSTIC_(self%id_fPIRPs,fPIRPs)
