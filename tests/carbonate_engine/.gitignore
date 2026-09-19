@@ -1,0 +1,7 @@
+# Build products of the Makefile / README recipe (`make clean` removes them)
+/test_driver
+/test_driver_*
+*.mod
+*.o
+!/test_driver_*.f90
+!/test_driver_*.F90
