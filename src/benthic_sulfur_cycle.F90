@@ -326,7 +326,7 @@ contains
       if (self%NO3_thr_sr > 0.0_rk) call self%register_state_dependency(self%id_NO3_1, 'NO3_1', 'mmol N/m^2', &
            'nitrate in layer 1 (SR2 exclusion)')
       if (self%O2_thr_sr > 0.0_rk .or. self%NO3_thr_sr > 0.0_rk) &
-           call self%register_dependency(self%id_poro, standard_variables%sediment_porosity)
+           call self%register_dependency(self%id_poro, sediment_porosity)
       if (self%sr2_on) call self%register_diagnostic_variable(self%id_sr_share_1, 'sr_share_1', '-', &
            'SR2: share of sulfate reduction placed in layer 1', domain=domain_bottom, source=source_do_bottom)
 
