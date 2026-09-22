@@ -27,7 +27,9 @@ module ersem_benthic_bacteria
       type (type_bottom_state_variable_id) :: id_Q6c,id_Q6n,id_Q6p
       type (type_bottom_state_variable_id) :: id_G2o,id_G3c,id_benTA
       type (type_state_variable_id)        :: id_O2o  ! pelagic oxygen for respiration Monod (jsasaki 2026-02-15)
-      type (type_horizontal_dependency_id) :: id_H2S_col  ! column free sulfide, read only (2026-09-10); a dependency since 2026-09-22 so SR3-B can couple a diagnostic total
+      type (type_bottom_state_variable_id) :: id_H2S_col  ! column free sulfide, read only (2026-09-10)
+      type (type_horizontal_dependency_id) :: id_H2S_col_diag  ! the same, coupled to a diagnostic total (SR3-B, 2026-09-23)
+      logical :: h2s_col_diag = .false.
       type (type_food), allocatable :: food(:)
       type (type_horizontal_diagnostic_variable_id) :: id_fHG3c
       type (type_horizontal_diagnostic_variable_id) :: id_fHKIn,id_fHK1p
@@ -156,6 +158,13 @@ contains
       call self%get_parameter(self%h_h2s_inh, 'h_h2s_inh', 'mmol S/m^2', &
          'half-saturation of free-sulfide inhibition of uptake (0 = off)', &
          default=0.0_rk, minimum=0.0_rk)
+      ! nippon-steel docs/127 s8 (2026-09-23): SR3-B replaces the G2_H2S column by sub-box states whose total is a
+      ! diagnostic, so H2S_col must then couple as a generic dependency. Default .false. keeps the state-variable
+      ! registration unchanged: with this change and the O2/NO3 columns' Dm_rate registered unconditionally, the
+      ! default-identity gate found the last bits of FABM's conserved-quantity integrals (int_change_in_total_*)
+      ! changed in 30 of 38 tanks while every state stayed bitwise identical (nippon-steel sr_gates, job 6911702).
+      call self%get_parameter(self%h2s_col_diag, 'h2s_col_diagnostic', '', &
+         'H2S_col couples to a diagnostic total (SR3-B) instead of a state variable', default=.false.)
 
       call self%get_parameter(self%p_sulf, 'p_sulf', '-', &
          'fraction of respiration whose electron acceptor is sulfate (no G2o draw)', &
@@ -181,8 +190,13 @@ contains
       ! retracted. Kept, default OFF. The dependency is registered
       ! unconditionally and read only; with h_h2s_inh = 0 the factor is exactly
       ! 1 and the result is bit-identical.
-      call self%register_dependency(self%id_H2S_col,'H2S_col','mmol S/m^2', &
-         'benthic column free sulfide (inhibition only)')
+      if (self%h2s_col_diag) then
+         call self%register_dependency(self%id_H2S_col_diag,'H2S_col','mmol S/m^2', &
+            'benthic column free sulfide (inhibition only)')
+      else
+         call self%register_state_dependency(self%id_H2S_col,'H2S_col','mmol S/m^2', &
+            'benthic column free sulfide (inhibition only)')
+      end if
       call self%register_state_dependency(self%id_G3c,'G3c','mmol C/m^2','dissolved inorganic carbon')
       if (.not.legacy_ersem_compatibility) call self%register_state_dependency(self%id_benTA,'benTA','mEq/m^2','benthic alkalinity')
       call self%register_state_dependency(self%id_Q1c,'Q1c','mmol C/m^2','dissolved organic carbon')
@@ -303,7 +317,11 @@ contains
          ! respiration that follows from it slow together as the bacteria's own
          ! product accumulates. h_h2s_inh = 0 leaves sfQ untouched.
          if (self%h_h2s_inh > 0.0_rk) then
-            _GET_HORIZONTAL_(self%id_H2S_col, H2S_col)
+            if (self%h2s_col_diag) then
+               _GET_HORIZONTAL_(self%id_H2S_col_diag, H2S_col)
+            else
+               _GET_HORIZONTAL_(self%id_H2S_col, H2S_col)
+            end if
             sfQ = sfQ * self%h_h2s_inh / (self%h_h2s_inh + max(H2S_col, 0.0_rk))
          end if
          ! Light suppression (docs/114 EQ); i_par = 0 leaves sfQ untouched.
