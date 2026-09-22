@@ -59,7 +59,41 @@ module ersem_benthic_sulfur_cycle
    implicit none
    private
 
+   ! SR3-B (jsasaki 2026-09-22; nippon-steel docs/127 s7.3 and s8, review rounds 38-39): the bed sulfide as
+   ! 3*n_sub dynamic sub-box inventories (n_sub equal sub-boxes per ERSEM layer, moving with the layer interfaces),
+   ! replacing the homogeneous G2_H2S column when isw_h2s_layers = 1. Three callbacks keep FABM's graph acyclic:
+   ! the parent's reactions read states only; a summary child sums the states (read by the H2 bacteria's H2S_col);
+   ! a transport child computes interlayer diffusion (ERSEM's convention: areal flux = diff * dc/dz with pore-water
+   ! c = m/(poro*dz)), the Robin surface exchange J = (c_1 - c_pel)/(cmix + dz_1/(2 diff_1)) with the uptake limiter
+   ! h_supply_h2s, and the donor-cell transfer of the sediment swept by the moving interfaces (the applied rates
+   ! exported by the O2 and NO3 columns as Dm_rate).
+   type, extends(type_base_model) :: type_h2s_bed_summary
+      integer :: nsub = 1
+      type(type_bottom_state_variable_id), allocatable :: id_m(:)
+      type(type_horizontal_diagnostic_variable_id) :: id_total
+      type(type_horizontal_diagnostic_variable_id) :: id_layer(3)
+   contains
+      procedure :: do_bottom => summary_do_bottom
+   end type
+
+   type, extends(type_base_model) :: type_h2s_bed_transport
+      integer  :: nsub = 1
+      real(rk) :: h_supply = 0.0_rk
+      type(type_bottom_state_variable_id), allocatable :: id_m(:)
+      type(type_state_variable_id) :: id_H2S_pel
+      type(type_horizontal_dependency_id) :: id_D1m, id_D2m, id_Dtot, id_poro, id_cmix, id_D1rate, id_D2rate
+      type(type_horizontal_dependency_id) :: id_diff(3)
+      type(type_horizontal_diagnostic_variable_id) :: id_J_req, id_J_app
+   contains
+      procedure :: do_bottom => transport_do_bottom
+   end type
+
    type, extends(type_base_model), public :: type_ersem_benthic_sulfur_cycle
+      integer  :: isw_h2s_layers = 0   ! 0: legacy homogeneous G2_H2S column; 1: SR3-B dynamic sub-boxes
+      integer  :: n_sub_h2s = 1
+      type(type_bottom_state_variable_id), allocatable :: id_h2s(:)
+      type(type_horizontal_dependency_id) :: id_D1rate, id_D2rate
+      type(type_horizontal_diagnostic_variable_id) :: id_k_h2s(3), id_P_h2s_1, id_P_h2s_3
       ! State variable dependencies (layer-specific via benthic_column_dissolved_matter)
       type(type_bottom_state_variable_id) :: id_H2S_1, id_H2S_2, id_H2S_3
       type(type_bottom_state_variable_id) :: id_S0_1
@@ -418,12 +452,18 @@ contains
 
       ! Register dependencies for layer-specific sulfur variables
       ! These link to variables created by benthic_column_dissolved_matter with composition 'h' and 'e'
-      call self%register_state_dependency(self%id_H2S_1, 'H2S_1', 'mmol S/m^2', &
-           'hydrogen sulfide in layer 1')
-      call self%register_state_dependency(self%id_H2S_2, 'H2S_2', 'mmol S/m^2', &
-           'hydrogen sulfide in layer 2')
-      call self%register_state_dependency(self%id_H2S_3, 'H2S_3', 'mmol S/m^2', &
-           'hydrogen sulfide in layer 3')
+      call self%get_parameter(self%isw_h2s_layers, 'isw_h2s_layers', '', &
+           'bed sulfide: 0 homogeneous G2_H2S column (legacy), 1 SR3-B dynamic sub-boxes', default=0, minimum=0, maximum=1)
+      if (self%isw_h2s_layers == 1) then
+         call register_h2s_layers(self)
+      else
+         call self%register_state_dependency(self%id_H2S_1, 'H2S_1', 'mmol S/m^2', &
+              'hydrogen sulfide in layer 1')
+         call self%register_state_dependency(self%id_H2S_2, 'H2S_2', 'mmol S/m^2', &
+              'hydrogen sulfide in layer 2')
+         call self%register_state_dependency(self%id_H2S_3, 'H2S_3', 'mmol S/m^2', &
+              'hydrogen sulfide in layer 3')
+      end if
       call self%register_state_dependency(self%id_S0_1, 'S0_1', 'mmol S/m^2', &
            'elemental sulfur in layer 1')
       call self%register_state_dependency(self%id_S0_2, 'S0_2', 'mmol S/m^2', &
@@ -527,15 +567,28 @@ contains
       real(rk) :: f_barrier, R_barrier_ox
       real(rk) :: par, f_par
       real(rk) :: share_1, poro, NO3_1, f_ex
+      real(rk), allocatable :: mh(:)
+      integer  :: ilay, jsub, kbox
+      real(rk) :: Pl, Sl, Ml
       real(rk) :: R_FeS_1, R_FeS_2, R_FeS_3, R_FeS_ben, R_FeS_pel
 
       _HORIZONTAL_LOOP_BEGIN_
 
          ! Get state variables
-         _GET_HORIZONTAL_(self%id_H2S_1, H2S_1)
-         _GET_HORIZONTAL_(self%id_H2S_2, H2S_2)
+         if (self%isw_h2s_layers == 1) then
+            if (.not. allocated(mh)) allocate(mh(3 * self%n_sub_h2s))
+            do kbox = 1, 3 * self%n_sub_h2s
+               _GET_HORIZONTAL_(self%id_h2s(kbox), mh(kbox))
+            end do
+            H2S_1 = sum(mh(1:self%n_sub_h2s))
+            H2S_2 = sum(mh(self%n_sub_h2s + 1:2 * self%n_sub_h2s))
+            H2S_3 = sum(mh(2 * self%n_sub_h2s + 1:))
+         else
+            _GET_HORIZONTAL_(self%id_H2S_1, H2S_1)
+            _GET_HORIZONTAL_(self%id_H2S_2, H2S_2)
+            _GET_HORIZONTAL_(self%id_H2S_3, H2S_3)
+         end if
          _GET_HORIZONTAL_(self%id_S0_2, S0_2)   ! only WRITTEN before K_S0_NO3_ox
-         _GET_HORIZONTAL_(self%id_H2S_3, H2S_3)
          if (self%isw_S0_solid == 1) then
             _GET_HORIZONTAL_(self%id_S0s, S0_1)
          else
@@ -743,7 +796,36 @@ contains
          ! Layer 3: H2S production from sulfate reduction, loss from FeS burial.
          ! A p_sr_1 fraction of the production is delivered at the interface
          ! (Layer 1) instead - see the p_sr_1 parameter note (docs/14).
-         _SET_BOTTOM_ODE_(self%id_H2S_3, (1.0_rk - share_1) * R_sulfate_red - R_FeS_3)
+         if (self%isw_h2s_layers == 1) then
+            ! SR3-B: each layer's production spread evenly over its sub-boxes, its first-order sinks in
+            ! proportion to each sub-box's inventory (exact for first-order kinetics)
+            do ilay = 1, 3
+               select case (ilay)
+               case (1)
+                  Pl = share_1 * R_sulfate_red; Sl = R_H2S_ox_1 + R_FeS_1; Ml = H2S_1
+               case (2)
+                  Pl = 0.0_rk; Sl = R_H2S_NO3_ox + R_FeS_2; Ml = H2S_2
+               case (3)
+                  Pl = (1.0_rk - share_1) * R_sulfate_red; Sl = R_FeS_3; Ml = H2S_3
+               end select
+               do jsub = 1, self%n_sub_h2s
+                  kbox = (ilay - 1) * self%n_sub_h2s + jsub
+                  if (Ml > 0.0_rk) then
+                     _SET_BOTTOM_ODE_(self%id_h2s(kbox), Pl / self%n_sub_h2s - Sl * mh(kbox) / Ml)
+                  else
+                     _SET_BOTTOM_ODE_(self%id_h2s(kbox), Pl / self%n_sub_h2s)
+                  end if
+               end do
+            end do
+            ! first-order constants and production, for the per-closure steady initialisation (docs/127 s8 item 4)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_k_h2s(1), self%K_H2S_ox * f_O2 + self%K_FeS_ben * 0.1_rk)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_k_h2s(2), self%K_H2S_NO3_ox * f_NO3 + self%K_FeS_ben * 0.5_rk)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_k_h2s(3), self%K_FeS_ben)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_P_h2s_1, share_1 * R_sulfate_red)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_P_h2s_3, (1.0_rk - share_1) * R_sulfate_red)
+         else
+            _SET_BOTTOM_ODE_(self%id_H2S_3, (1.0_rk - share_1) * R_sulfate_red - R_FeS_3)
+         end if
          if (self%isw_ledger == 1) then
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srfes_H2S_3, (1.0_rk - share_1) * R_sulfate_red - R_FeS_3)
          end if
@@ -762,7 +844,7 @@ contains
          !   DNRA route: 4 S0 + 3 NO3- + 7 H2O -> 4 SO4^2- + 3 NH4+ + 2 H+
          r_no3_S0 = 6.0_rk / (5.0_rk + 3.0_rk * self%f_DNRA)
 
-         _SET_BOTTOM_ODE_(self%id_H2S_2, -R_H2S_NO3_ox - R_FeS_2)
+         if (self%isw_h2s_layers == 0) _SET_BOTTOM_ODE_(self%id_H2S_2, -R_H2S_NO3_ox - R_FeS_2)
          _SET_BOTTOM_ODE_(self%id_NO3_2, -r_no3 * R_H2S_NO3_ox &
                                          - r_no3_S0 * R_S0_NO3_ox)
          if (self%isw_ledger == 1) then
@@ -811,7 +893,7 @@ contains
          ! Layer 1: H2S delivery from interface sulfate reduction (p_sr_1),
          !          consumption by oxidation and FeS precipitation,
          !          S0 production from H2S oxidation, loss from oxidation and burial
-         _SET_BOTTOM_ODE_(self%id_H2S_1, share_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
+         if (self%isw_h2s_layers == 0) _SET_BOTTOM_ODE_(self%id_H2S_1, share_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
          if (self%isw_ledger == 1) then
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srox_H2S_1, share_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
          end if
@@ -893,5 +975,177 @@ contains
       _HORIZONTAL_LOOP_END_
 
    end subroutine do_bottom
+
+   subroutine register_h2s_layers(self)
+      class(type_ersem_benthic_sulfur_cycle), intent(inout), target :: self
+      class(type_h2s_bed_summary),   pointer :: summ
+      class(type_h2s_bed_transport), pointer :: tran
+      integer :: ilay, jsub, k, n
+      character(len=16) :: nm
+      real(rk) :: h_supply
+
+      call self%get_parameter(self%n_sub_h2s, 'n_sub_h2s', '', 'SR3-B: sub-boxes per ERSEM layer', &
+           default=1, minimum=1, maximum=16)
+      call self%get_parameter(h_supply, 'h_supply_h2s', 'mmol S/m^3', &
+           'SR3-B: uptake limiter c_pel/(c_pel + h) on water-to-bed sulfide exchange (0: off)', default=0.0_rk, minimum=0.0_rk)
+      n = 3 * self%n_sub_h2s
+      allocate(self%id_h2s(n))
+      do ilay = 1, 3
+         do jsub = 1, self%n_sub_h2s
+            k = (ilay - 1) * self%n_sub_h2s + jsub
+            write(nm, '(a,i1,a,i0)') 'h2s_', ilay, '_', jsub
+            call self%register_state_variable(self%id_h2s(k), trim(nm), 'mmol S/m^2', &
+                 'bed sulfide, layer and sub-box', 0.0_rk, minimum=0.0_rk)
+         end do
+      end do
+      do ilay = 1, 3
+         write(nm, '(a,i1)') 'k_h2s_', ilay
+         call self%register_diagnostic_variable(self%id_k_h2s(ilay), trim(nm), '1/d', &
+              'SR3-B: first-order sulfide sink constant of the layer', domain=domain_bottom, source=source_do_bottom)
+      end do
+      call self%register_diagnostic_variable(self%id_P_h2s_1, 'P_h2s_1', 'mmol S/m^2/d', &
+           'SR3-B: sulfate reduction placed in layer 1', domain=domain_bottom, source=source_do_bottom)
+      call self%register_diagnostic_variable(self%id_P_h2s_3, 'P_h2s_3', 'mmol S/m^2/d', &
+           'SR3-B: sulfate reduction placed in layer 3', domain=domain_bottom, source=source_do_bottom)
+      call self%register_dependency(self%id_D1rate, 'D1_rate', 'm/d', 'applied rate of change of D1m (O2 column)')
+      call self%register_dependency(self%id_D2rate, 'D2_rate', 'm/d', 'applied rate of change of D2m (NO3 column)')
+
+      allocate(summ)
+      summ%dt = 86400._rk
+      summ%nsub = self%n_sub_h2s
+      call self%add_child(summ, 'h2s_summary', configunit=-1)
+      allocate(summ%id_m(n))
+      do k = 1, n
+         write(nm, '(a,i0)') 'm', k
+         call summ%register_state_dependency(summ%id_m(k), trim(nm), 'mmol S/m^2', 'bed sulfide sub-box')
+      end do
+      call summ%register_diagnostic_variable(summ%id_total, 'total', 'mmol S/m^2', 'bed sulfide, total', &
+           domain=domain_bottom, source=source_do_bottom)
+      do ilay = 1, 3
+         write(nm, '(a,i1)') 'layer', ilay
+         call summ%register_diagnostic_variable(summ%id_layer(ilay), trim(nm), 'mmol S/m^2', 'bed sulfide, ERSEM layer', &
+              domain=domain_bottom, source=source_do_bottom)
+      end do
+
+      allocate(tran)
+      tran%dt = 86400._rk
+      tran%nsub = self%n_sub_h2s
+      tran%h_supply = h_supply
+      call self%add_child(tran, 'h2s_transport', configunit=-1)
+      allocate(tran%id_m(n))
+      do k = 1, n
+         write(nm, '(a,i0)') 'm', k
+         call tran%register_state_dependency(tran%id_m(k), trim(nm), 'mmol S/m^2', 'bed sulfide sub-box')
+      end do
+      call tran%register_state_dependency(tran%id_H2S_pel, 'H2S_pel', 'mmol S/m^3', 'pelagic hydrogen sulfide')
+      call tran%register_dependency(tran%id_D1m, depth_of_bottom_interface_of_layer_1)
+      call tran%register_dependency(tran%id_D2m, depth_of_bottom_interface_of_layer_2)
+      call tran%register_dependency(tran%id_Dtot, depth_of_sediment_column)
+      call tran%register_dependency(tran%id_poro, sediment_porosity)
+      call tran%register_dependency(tran%id_cmix, pelagic_benthic_transfer_constant)
+      call tran%register_dependency(tran%id_diff(1), diffusivity_in_sediment_layer_1)
+      call tran%register_dependency(tran%id_diff(2), diffusivity_in_sediment_layer_2)
+      call tran%register_dependency(tran%id_diff(3), diffusivity_in_sediment_layer_3)
+      call tran%register_dependency(tran%id_D1rate, 'D1_rate', 'm/d', 'applied rate of change of D1m')
+      call tran%register_dependency(tran%id_D2rate, 'D2_rate', 'm/d', 'applied rate of change of D2m')
+      call tran%register_diagnostic_variable(tran%id_J_req, 'J_requested', 'mmol S/m^2/d', &
+           'bed-to-water sulfide exchange before the uptake limiter', domain=domain_bottom, source=source_do_bottom)
+      call tran%register_diagnostic_variable(tran%id_J_app, 'J_applied', 'mmol S/m^2/d', &
+           'bed-to-water sulfide exchange applied', domain=domain_bottom, source=source_do_bottom)
+      do ilay = 1, 3
+         do jsub = 1, self%n_sub_h2s
+            k = (ilay - 1) * self%n_sub_h2s + jsub
+            write(nm, '(a,i1,a,i0)') 'h2s_', ilay, '_', jsub
+            call summ%request_coupling(summ%id_m(k), '../'//trim(nm))
+            call tran%request_coupling(tran%id_m(k), '../'//trim(nm))
+         end do
+      end do
+      call tran%request_coupling(tran%id_H2S_pel, '../H2S_pel')
+      call tran%request_coupling(tran%id_D1rate, '../D1_rate')
+      call tran%request_coupling(tran%id_D2rate, '../D2_rate')
+   end subroutine register_h2s_layers
+
+   subroutine summary_do_bottom(self, _ARGUMENTS_DO_BOTTOM_)
+      class(type_h2s_bed_summary), intent(in) :: self
+      _DECLARE_ARGUMENTS_DO_BOTTOM_
+      integer :: k, ilay
+      real(rk) :: m, tot, lay(3)
+
+      _HORIZONTAL_LOOP_BEGIN_
+         tot = 0.0_rk
+         lay = 0.0_rk
+         do k = 1, 3 * self%nsub
+            _GET_HORIZONTAL_(self%id_m(k), m)
+            ilay = (k - 1) / self%nsub + 1
+            lay(ilay) = lay(ilay) + m
+            tot = tot + m
+         end do
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_total, tot)
+         do ilay = 1, 3
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_layer(ilay), lay(ilay))
+         end do
+      _HORIZONTAL_LOOP_END_
+   end subroutine summary_do_bottom
+
+   subroutine transport_do_bottom(self, _ARGUMENTS_DO_BOTTOM_)
+      class(type_h2s_bed_transport), intent(in) :: self
+      _DECLARE_ARGUMENTS_DO_BOTTOM_
+      integer :: k, n, ilay
+      real(rk) :: D1m, D2m, Dtot, poro, cmix, D1rate, D2rate, H2S_pel, diff(3), h(3)
+      real(rk) :: m(3 * self%nsub), c(3 * self%nsub), dz(3 * self%nsub), dk(3 * self%nsub), r(3 * self%nsub)
+      real(rk) :: F, J, Jreq, T, cp
+
+      n = 3 * self%nsub
+      _HORIZONTAL_LOOP_BEGIN_
+         _GET_HORIZONTAL_(self%id_D1m, D1m)
+         _GET_HORIZONTAL_(self%id_D2m, D2m)
+         _GET_HORIZONTAL_(self%id_Dtot, Dtot)
+         _GET_HORIZONTAL_(self%id_poro, poro)
+         _GET_HORIZONTAL_(self%id_cmix, cmix)
+         _GET_HORIZONTAL_(self%id_D1rate, D1rate)
+         _GET_HORIZONTAL_(self%id_D2rate, D2rate)
+         _GET_HORIZONTAL_(self%id_diff(1), diff(1))
+         _GET_HORIZONTAL_(self%id_diff(2), diff(2))
+         _GET_HORIZONTAL_(self%id_diff(3), diff(3))
+         _GET_(self%id_H2S_pel, H2S_pel)
+         ! fail fast on invalid geometry or transport coefficients (docs/127 s8 item 6)
+         if (.not. (D1m > 0.0_rk .and. D2m > D1m .and. Dtot > D2m)) &
+            call self%fatal_error('transport_do_bottom', 'SR3-B: bed interfaces not ordered (0 < D1m < D2m < Dtot)')
+         if (.not. (poro > 0.0_rk .and. minval(diff) > 0.0_rk .and. cmix >= 0.0_rk)) &
+            call self%fatal_error('transport_do_bottom', 'SR3-B: porosity, diffusivities or cmix invalid')
+         h = (/ D1m, D2m - D1m, Dtot - D2m /)
+         do k = 1, n
+            ilay = (k - 1) / self%nsub + 1
+            dz(k) = h(ilay) / self%nsub
+            dk(k) = diff(ilay)
+            _GET_HORIZONTAL_(self%id_m(k), m(k))
+            c(k) = max(0.0_rk, m(k)) / (poro * dz(k))
+         end do
+         r = 0.0_rk
+         do k = 1, n - 1
+            F = (c(k + 1) - c(k)) / (dz(k) / (2.0_rk * dk(k)) + dz(k + 1) / (2.0_rk * dk(k + 1)))
+            r(k) = r(k) + F
+            r(k + 1) = r(k + 1) - F
+         end do
+         cp = max(0.0_rk, H2S_pel)
+         Jreq = (c(1) - cp) / (cmix + dz(1) / (2.0_rk * dk(1)))
+         J = Jreq
+         if (J < 0.0_rk .and. self%h_supply > 0.0_rk) J = J * cp / (cp + self%h_supply)
+         r(1) = r(1) - J
+         ! sediment swept by the moving interfaces carries its sulfide (donor cell); positive into the upper layer
+         T = poro * D1rate * merge(c(self%nsub + 1), c(self%nsub), D1rate > 0.0_rk)
+         r(self%nsub) = r(self%nsub) + T
+         r(self%nsub + 1) = r(self%nsub + 1) - T
+         T = poro * D2rate * merge(c(2 * self%nsub + 1), c(2 * self%nsub), D2rate > 0.0_rk)
+         r(2 * self%nsub) = r(2 * self%nsub) + T
+         r(2 * self%nsub + 1) = r(2 * self%nsub + 1) - T
+         do k = 1, n
+            _SET_BOTTOM_ODE_(self%id_m(k), r(k))
+         end do
+         _SET_BOTTOM_EXCHANGE_(self%id_H2S_pel, J)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_J_req, Jreq)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_J_app, J)
+      _HORIZONTAL_LOOP_END_
+   end subroutine transport_do_bottom
 
 end module ersem_benthic_sulfur_cycle

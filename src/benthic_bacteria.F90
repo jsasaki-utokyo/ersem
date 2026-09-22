@@ -27,7 +27,7 @@ module ersem_benthic_bacteria
       type (type_bottom_state_variable_id) :: id_Q6c,id_Q6n,id_Q6p
       type (type_bottom_state_variable_id) :: id_G2o,id_G3c,id_benTA
       type (type_state_variable_id)        :: id_O2o  ! pelagic oxygen for respiration Monod (jsasaki 2026-02-15)
-      type (type_bottom_state_variable_id) :: id_H2S_col  ! column free sulfide, read only (2026-09-10)
+      type (type_horizontal_dependency_id) :: id_H2S_col  ! column free sulfide, read only (2026-09-10); a dependency since 2026-09-22 so SR3-B can couple a diagnostic total
       type (type_food), allocatable :: food(:)
       type (type_horizontal_diagnostic_variable_id) :: id_fHG3c
       type (type_horizontal_diagnostic_variable_id) :: id_fHKIn,id_fHK1p
@@ -181,7 +181,7 @@ contains
       ! retracted. Kept, default OFF. The dependency is registered
       ! unconditionally and read only; with h_h2s_inh = 0 the factor is exactly
       ! 1 and the result is bit-identical.
-      call self%register_state_dependency(self%id_H2S_col,'H2S_col','mmol S/m^2', &
+      call self%register_dependency(self%id_H2S_col,'H2S_col','mmol S/m^2', &
          'benthic column free sulfide (inhibition only)')
       call self%register_state_dependency(self%id_G3c,'G3c','mmol C/m^2','dissolved inorganic carbon')
       if (.not.legacy_ersem_compatibility) call self%register_state_dependency(self%id_benTA,'benTA','mEq/m^2','benthic alkalinity')

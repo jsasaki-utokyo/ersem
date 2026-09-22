@@ -33,6 +33,7 @@ module ersem_benthic_column_dissolved_matter
       type (type_horizontal_dependency_id) :: id_cmix           ! pelagic-benthic transfer in bottom boundary layer (height of BBL divided by diffusivity within BBL)
       type (type_horizontal_dependency_id) :: id_diff(nlayers)  ! effective diffusivity within individual layers [includes bioirrigation contribution, if any]
       type (type_bottom_state_variable_id) :: id_layer          ! depth of bottom interface of own layer (where own concentration drops to zero)
+      type (type_horizontal_diagnostic_variable_id) :: id_Dm_rate  ! applied rate of change of that interface (m/d), for SR3-B's swept-mass transfer
       type (type_horizontal_diagnostic_variable_id) :: id_conc_eq(nlayers)  ! mean equilibrium pore water concentration in individual layers
       type (type_horizontal_diagnostic_variable_id) :: id_conc_tot(nlayers) ! mean pore water concentration in individual layers
       real(rk) :: ads(nlayers)
@@ -146,6 +147,11 @@ contains
          write (index,'(i0)') self%last_layer
          standard_variable%name = 'depth_of_bottom_interface_of_layer_'//trim(index)
          call self%register_state_dependency(self%id_layer, standard_variable)
+         ! nippon-steel docs/127 s8 item 3 (2026-09-22): the interface tendency, exported (not written to output) so
+         ! SR3-B's transport can move the swept sediment's sulfide with it; changes no computed value
+         call self%register_diagnostic_variable(self%id_Dm_rate, 'Dm_rate', 'm/d', &
+              'applied rate of change of the bottom interface of the last layer', output=output_none, &
+              domain=domain_bottom, source=source_do_bottom)
       end if
       self%ads = 1.0_rk
       do ilayer=1,self%last_layer
@@ -429,6 +435,7 @@ contains
 
          ! Relax the depth of the bottom interface of the last layer towards equilibrium value
          _SET_BOTTOM_ODE_(self%id_layer, (d_top - Dm(self%last_layer)) / self%relax)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_Dm_rate, (d_top - Dm(self%last_layer)) / self%relax)
 
          if (.not.info%nonnegative) then
             ! Deeper source terms are allowed to be non-zero [typically negative].
