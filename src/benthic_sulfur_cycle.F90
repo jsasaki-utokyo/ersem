@@ -1093,7 +1093,7 @@ contains
       integer :: k, n, ilay
       real(rk) :: D1m, D2m, Dtot, poro, cmix, D1rate, D2rate, H2S_pel, diff(3), h(3)
       real(rk) :: m(3 * self%nsub), c(3 * self%nsub), dz(3 * self%nsub), dk(3 * self%nsub), r(3 * self%nsub)
-      real(rk) :: F, J, Jreq, T, cp
+      real(rk) :: F, J, Jreq, T, cp, w, wtop(3), wthk(3)
 
       n = 3 * self%nsub
       _HORIZONTAL_LOOP_BEGIN_
@@ -1132,13 +1132,18 @@ contains
          J = Jreq
          if (J < 0.0_rk .and. self%h_supply > 0.0_rk) J = J * cp / (cp + self%h_supply)
          r(1) = r(1) - J
-         ! sediment swept by the moving interfaces carries its sulfide (donor cell); positive into the upper layer
-         T = poro * D1rate * merge(c(self%nsub + 1), c(self%nsub), D1rate > 0.0_rk)
-         r(self%nsub) = r(self%nsub) + T
-         r(self%nsub + 1) = r(self%nsub + 1) - T
-         T = poro * D2rate * merge(c(2 * self%nsub + 1), c(2 * self%nsub), D2rate > 0.0_rk)
-         r(2 * self%nsub) = r(2 * self%nsub) + T
-         r(2 * self%nsub + 1) = r(2 * self%nsub + 1) - T
+         ! moving grid (ALE): EVERY sub-box boundary moves -- the ERSEM interfaces with the exported rates, the internal
+         ! boundaries proportionally with their layer -- and the pore water it sweeps carries its sulfide (donor cell),
+         ! positive into the upper box when the boundary deepens
+         wtop = (/ 0.0_rk, D1rate, D2rate /)
+         wthk = (/ D1rate, D2rate - D1rate, -D2rate /)
+         do k = 1, n - 1
+            ilay = (k - 1) / self%nsub + 1
+            w = wtop(ilay) + real(mod(k - 1, self%nsub) + 1, rk) / self%nsub * wthk(ilay)
+            T = poro * w * merge(c(k + 1), c(k), w > 0.0_rk)
+            r(k) = r(k) + T
+            r(k + 1) = r(k + 1) - T
+         end do
          do k = 1, n
             _SET_BOTTOM_ODE_(self%id_m(k), r(k))
          end do
