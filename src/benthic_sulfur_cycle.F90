@@ -1283,7 +1283,11 @@ contains
          do k = 1, self%n
             _SET_BOTTOM_ODE_(self%id_m(k), r(k))
          end do
-         _SET_BOTTOM_EXCHANGE_(self%id_H2S_pel, J)
+         ! in the frozen-coefficient test the water sulfide is prescribed, so the exchange is NOT applied to the
+         ! pelagic pool (it would drain a pool that does not hold what the test assumes); the cells still lose it
+         if (.not. self%test) then
+            _SET_BOTTOM_EXCHANGE_(self%id_H2S_pel, J)
+         end if
          _SET_BOTTOM_ODE_(self%id_cumJ, J)
          _SET_BOTTOM_ODE_(self%id_guard, real(nneg, rk))
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_J_req, Jreq)
