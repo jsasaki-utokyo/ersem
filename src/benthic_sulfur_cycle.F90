@@ -134,6 +134,14 @@ module ersem_benthic_sulfur_cycle
       real(rk) :: p_sr_1         ! fraction of sulfate reduction delivered at the interface / layer 1 (jsasaki 2026-08-15, docs/14)
       real(rk) :: K_O2_half_pel  ! bottom-water O2 half-saturation (cubic Hill) for interface oxidation; 0 = legacy layer-1 Monod (jsasaki 2026-08-15, docs/14)
       real(rk) :: K_par_ox       ! PAR half-saturation for light-driven interface oxidation (mat photosynthesis O2); 0 = off (jsasaki 2026-08-15, docs/14)
+      ! SR2 (nippon-steel docs/127 s7.2, s8 item 5): interface sulfate reduction excluded where an oxidant is available
+      real(rk) :: O2_thr_sr      ! O2 threshold (bottom water AND layer-1 pore water, mmol O2/m3); 0 = factor off
+      real(rk) :: NO3_thr_sr     ! layer-1 pore-water NO3 threshold (mmol N/m3); 0 = factor off
+      real(rk) :: PAR_thr_sr     ! light threshold (W/m2); 0 = factor off
+      logical  :: sr2_on         ! any threshold > 0
+      type(type_bottom_state_variable_id) :: id_NO3_1
+      type(type_horizontal_dependency_id) :: id_poro
+      type(type_horizontal_diagnostic_variable_id) :: id_sr_share_1
       real(rk) :: f_DNRA         ! Fraction of H2S-NO3 N going to NH4 (0-1)
 
    contains
@@ -301,6 +309,26 @@ contains
       call self%get_parameter(self%K_par_ox, 'K_par_ox', 'W/m^2', &
            'PAR half-saturation for light-driven interface oxidation (0: off)', &
            default=0.0_rk, minimum=0.0_rk)
+
+      ! SR2 (jsasaki 2026-09-22; nippon-steel docs/127 s7.2 and s8 item 5, review rounds 38-39). The layer-1 share of
+      ! sulfate reduction becomes p_sr_1 * product of linear exclusion ramps, each exactly zero at or above its
+      ! threshold: bottom-water O2, layer-1 PORE-WATER O2 (G2o/(poro*D1m)), layer-1 PORE-WATER NO3 (NO3_1/(poro*D1m))
+      ! and light. A threshold of 0 switches its factor off; all 0 = legacy (share = p_sr_1; bit-identical, no new
+      ! coupling, no new output). The same share is used for H2S, its +2 TA/S and every ledger counter; the remainder
+      ! goes to layer 3, so total sulfate reduction is unchanged.
+      call self%get_parameter(self%O2_thr_sr, 'O2_thr_sr', 'mmol O_2/m^3', &
+           'SR2: O2 availability threshold for interface sulfate reduction (0: off)', default=0.0_rk, minimum=0.0_rk)
+      call self%get_parameter(self%NO3_thr_sr, 'NO3_thr_sr', 'mmol N/m^3', &
+           'SR2: layer-1 pore-water NO3 availability threshold (0: off)', default=0.0_rk, minimum=0.0_rk)
+      call self%get_parameter(self%PAR_thr_sr, 'PAR_thr_sr', 'W/m^2', &
+           'SR2: light threshold excluding interface sulfate reduction (0: off)', default=0.0_rk, minimum=0.0_rk)
+      self%sr2_on = self%O2_thr_sr > 0.0_rk .or. self%NO3_thr_sr > 0.0_rk .or. self%PAR_thr_sr > 0.0_rk
+      if (self%NO3_thr_sr > 0.0_rk) call self%register_state_dependency(self%id_NO3_1, 'NO3_1', 'mmol N/m^2', &
+           'nitrate in layer 1 (SR2 exclusion)')
+      if (self%O2_thr_sr > 0.0_rk .or. self%NO3_thr_sr > 0.0_rk) &
+           call self%register_dependency(self%id_poro, standard_variables%sediment_porosity)
+      if (self%sr2_on) call self%register_diagnostic_variable(self%id_sr_share_1, 'sr_share_1', '-', &
+           'SR2: share of sulfate reduction placed in layer 1', domain=domain_bottom, source=source_do_bottom)
 
       ! LEDGER COUNTERS (2026-09-16, nippon-steel docs/119 §4.1 and §4.3 FC1).
       ! isw_ledger = 1 registers one diagnostic per source term this module
@@ -498,6 +526,7 @@ contains
       real(rk) :: r_no3, r_ta
       real(rk) :: f_barrier, R_barrier_ox
       real(rk) :: par, f_par
+      real(rk) :: share_1, poro, NO3_1, f_ex
       real(rk) :: R_FeS_1, R_FeS_2, R_FeS_3, R_FeS_ben, R_FeS_pel
 
       _HORIZONTAL_LOOP_BEGIN_
@@ -550,6 +579,29 @@ contains
          ! Stoichiometry: 53 SO4 per 106 C -> 0.5 mol S per mol C
          ! remin_rate is in mg C/m^2/d (from H2/fHG3c); convert to mmol C via CMass
          R_sulfate_red = self%K_H2S_prod * remin_rate / CMass
+
+         ! SR2: the layer-1 share (legacy: the constant p_sr_1)
+         share_1 = self%p_sr_1
+         if (self%sr2_on) then
+            f_ex = 1.0_rk
+            if (self%O2_thr_sr > 0.0_rk .or. self%NO3_thr_sr > 0.0_rk) then
+               _GET_HORIZONTAL_(self%id_poro, poro)
+               if (.not. (poro > 0.0_rk) .or. .not. (D1m > 0.0_rk)) &
+                  call self%fatal_error('do_bottom', 'SR2: porosity and D1m must be positive')
+            end if
+            if (self%O2_thr_sr > 0.0_rk) f_ex = f_ex * max(0.0_rk, 1.0_rk - max(0.0_rk, O2_pel) / self%O2_thr_sr) &
+                                                    * max(0.0_rk, 1.0_rk - max(0.0_rk, G2o) / (poro * D1m) / self%O2_thr_sr)
+            if (self%NO3_thr_sr > 0.0_rk) then
+               _GET_HORIZONTAL_(self%id_NO3_1, NO3_1)
+               f_ex = f_ex * max(0.0_rk, 1.0_rk - max(0.0_rk, NO3_1) / (poro * D1m) / self%NO3_thr_sr)
+            end if
+            if (self%PAR_thr_sr > 0.0_rk) then
+               _GET_(self%id_par, par)
+               f_ex = f_ex * max(0.0_rk, 1.0_rk - max(0.0_rk, par) / self%PAR_thr_sr)
+            end if
+            share_1 = self%p_sr_1 * min(1.0_rk, max(0.0_rk, f_ex))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_sr_share_1, share_1)
+         end if
 
          ! ============================================================
          ! LAYER 1: H2S and S0 oxidation (limited by O2 availability)
@@ -691,9 +743,9 @@ contains
          ! Layer 3: H2S production from sulfate reduction, loss from FeS burial.
          ! A p_sr_1 fraction of the production is delivered at the interface
          ! (Layer 1) instead - see the p_sr_1 parameter note (docs/14).
-         _SET_BOTTOM_ODE_(self%id_H2S_3, (1.0_rk - self%p_sr_1) * R_sulfate_red - R_FeS_3)
+         _SET_BOTTOM_ODE_(self%id_H2S_3, (1.0_rk - share_1) * R_sulfate_red - R_FeS_3)
          if (self%isw_ledger == 1) then
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srfes_H2S_3, (1.0_rk - self%p_sr_1) * R_sulfate_red - R_FeS_3)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srfes_H2S_3, (1.0_rk - share_1) * R_sulfate_red - R_FeS_3)
          end if
 
          ! Layer 2: H2S consumption by NO3 oxidation and FeS precipitation
@@ -759,9 +811,9 @@ contains
          ! Layer 1: H2S delivery from interface sulfate reduction (p_sr_1),
          !          consumption by oxidation and FeS precipitation,
          !          S0 production from H2S oxidation, loss from oxidation and burial
-         _SET_BOTTOM_ODE_(self%id_H2S_1, self%p_sr_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
+         _SET_BOTTOM_ODE_(self%id_H2S_1, share_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
          if (self%isw_ledger == 1) then
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srox_H2S_1, self%p_sr_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srox_H2S_1, share_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
          end if
          if (self%isw_S0_solid == 1) then
             _SET_BOTTOM_ODE_(self%id_S0s,  R_ox_to_S0 - R_S0_ox_1 - R_S0_burial)
@@ -782,17 +834,17 @@ contains
          ! Alkalinity, layer 1: interface sulfate reduction +2 TA per mol H2S;
          ! S0 + 1.5 O2 + H2O -> SO4^2- + 2H+ => -2 TA per mol S0
          if (.not.legacy_ersem_compatibility) &
-            _SET_BOTTOM_ODE_(self%id_benTA, 2.0_rk * self%p_sr_1 * R_sulfate_red - 2.0_rk * R_S0_ox_1 - 2.0_rk * R_ox_direct)
+            _SET_BOTTOM_ODE_(self%id_benTA, 2.0_rk * share_1 * R_sulfate_red - 2.0_rk * R_S0_ox_1 - 2.0_rk * R_ox_direct)
          if (self%isw_ledger == 1 .and. .not.legacy_ersem_compatibility) then
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srox_benTA, 2.0_rk * self%p_sr_1 * R_sulfate_red - 2.0_rk * R_S0_ox_1 - 2.0_rk * R_ox_direct)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srox_benTA, 2.0_rk * share_1 * R_sulfate_red - 2.0_rk * R_S0_ox_1 - 2.0_rk * R_ox_direct)
          end if
 
          ! Layer 3: sulfate reduction produces +2 TA per mol H2S
          ! SO4^2- + 2C_org -> H2S + 2HCO3- (net +2 mEq per mol H2S)
          if (.not.legacy_ersem_compatibility) &
-            _SET_BOTTOM_ODE_(self%id_benTA3, 2.0_rk * (1.0_rk - self%p_sr_1) * R_sulfate_red)
+            _SET_BOTTOM_ODE_(self%id_benTA3, 2.0_rk * (1.0_rk - share_1) * R_sulfate_red)
          if (self%isw_ledger == 1 .and. .not.legacy_ersem_compatibility) then
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_sr3_benTA3, 2.0_rk * (1.0_rk - self%p_sr_1) * R_sulfate_red)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_sr3_benTA3, 2.0_rk * (1.0_rk - share_1) * R_sulfate_red)
          end if
 
          ! Pelagic: H2S removal by oxic barrier oxidation and FeS scavenging
