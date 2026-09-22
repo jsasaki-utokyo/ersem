@@ -92,7 +92,6 @@ module ersem_benthic_sulfur_cycle
       integer  :: isw_h2s_layers = 0   ! 0: legacy homogeneous G2_H2S column; 1: SR3-B dynamic sub-boxes
       integer  :: n_sub_h2s = 1
       type(type_bottom_state_variable_id), allocatable :: id_h2s(:)
-      type(type_horizontal_dependency_id) :: id_D1rate, id_D2rate
       type(type_horizontal_diagnostic_variable_id) :: id_k_h2s(3), id_P_h2s_1, id_P_h2s_3
       ! State variable dependencies (layer-specific via benthic_column_dissolved_matter)
       type(type_bottom_state_variable_id) :: id_H2S_1, id_H2S_2, id_H2S_3
@@ -1007,8 +1006,9 @@ contains
            'SR3-B: sulfate reduction placed in layer 1', domain=domain_bottom, source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_P_h2s_3, 'P_h2s_3', 'mmol S/m^2/d', &
            'SR3-B: sulfate reduction placed in layer 3', domain=domain_bottom, source=source_do_bottom)
-      call self%register_dependency(self%id_D1rate, 'D1_rate', 'm/d', 'applied rate of change of D1m (O2 column)')
-      call self%register_dependency(self%id_D2rate, 'D2_rate', 'm/d', 'applied rate of change of D2m (NO3 column)')
+      ! the interface rates are dependencies of the TRANSPORT child only (the parent's reaction callback must not
+      ! depend on them: FABM would see G2 -> sulfur reactions -> G2/Dm_rate -> G2); couple them in the yaml as
+      ! h2s_transport/D1_rate: G2/Dm_rate and h2s_transport/D2_rate: K3/Dm_rate
 
       allocate(summ)
       summ%dt = 86400._rk
@@ -1061,8 +1061,6 @@ contains
          end do
       end do
       call tran%request_coupling(tran%id_H2S_pel, '../H2S_pel')
-      call tran%request_coupling(tran%id_D1rate, '../D1_rate')
-      call tran%request_coupling(tran%id_D2rate, '../D2_rate')
    end subroutine register_h2s_layers
 
    subroutine summary_do_bottom(self, _ARGUMENTS_DO_BOTTOM_)
