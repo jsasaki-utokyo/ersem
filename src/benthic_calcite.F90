@@ -26,6 +26,11 @@ module ersem_benthic_calcite
       real(rk) :: fdissmax, fdissmin, ndiss, KcalomX
       real(rk) :: K_prec, K_par_prec, n_prec
       integer  :: iswcal
+      ! E5 C1 (nippon-steel docs/125 s21): CO2*-promoted dissolution, default off
+      real(rk) :: k_co2diss, co2_ref_diss
+      type (type_dependency_id)                     :: id_CO2aq
+      type (type_horizontal_diagnostic_variable_id) :: id_co2_dissolution
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_co2diss_c,id_ledger_co2diss_O3c,id_ledger_co2diss_TA
       ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
       integer  :: isw_ledger
       type (type_horizontal_diagnostic_variable_id) :: id_ledger_diss_c,id_ledger_diss_O3c,id_ledger_diss_TA
@@ -89,6 +94,26 @@ contains
          call self%register_dependency(self%id_Om_Cal,'Om_Cal','-','calcite saturation')
       call self%register_dependency(self%id_par, standard_variables%downwelling_photosynthetic_radiative_flux)
       call self%register_diagnostic_variable(self%id_precipitation,'precipitation','mg C/m^2/d','light-driven calcification',source=source_do_bottom)
+      ! E5 C1 (2026-09-22, nippon-steel docs/125 s21, s21.9): acid-promoted
+      ! bed-carbonate dissolution, a restricted comparator. CaCO3 + CO2 + H2O ->
+      ! Ca2+ + 2HCO3-: per mol TA +2, DIC +1 (one carbon from the solid). Rate =
+      ! k_co2diss * bL2c * [CO2*]/co2_ref_diss (mg C/m^2/d), added to the Omega
+      ! law; the overlying water's CO2* is a declared proxy for pore-water
+      ! acidity. Reported in its own diagnostic (co2_dissolution) so the
+      ! Omega-law 'dissolution' is not double counted. k_co2diss = 0 (default)
+      ! skips the term, its coupling and its diagnostic: bit-identical.
+      call self%get_parameter(self%k_co2diss, 'k_co2diss', '1/d', &
+         'E5 C1: CO2*-promoted specific dissolution rate at co2_ref_diss (0: off)', &
+         default=0.0_rk, minimum=0.0_rk)
+      call self%get_parameter(self%co2_ref_diss, 'co2_ref_diss', 'mmol/m^3', &
+         'E5 C1: reference CO2* of the acid-promoted dissolution law', &
+         default=15.0_rk, minimum=1.0e-6_rk)
+      if (self%k_co2diss > 0.0_rk) then
+         call self%register_dependency(self%id_CO2aq, 'CO2aq', 'mmol/m^3', &
+            'carbonic acid concentration CO2* (E5 C1 driver)')
+         call self%register_diagnostic_variable(self%id_co2_dissolution, 'co2_dissolution', 'mg C/m^2/d', &
+            'E5 C1: CO2*-promoted dissolution', source=source_do_bottom)
+      end if
       call self%get_parameter(c0,'c0','mg C/m^2','background calcite concentration',default=0.0_rk)
 
       call self%add_constituent('c',0.0_rk,c0)
@@ -125,6 +150,13 @@ contains
               'ledger: light-driven calcification -> pelagic dissolved inorganic carbon (bottom flux)', source=source_do_bottom)
          call self%register_diagnostic_variable(self%id_ledger_prec_TA, 'ledger_prec_TA', 'mmol eq/m^2/d', &
               'ledger: light-driven calcification -> pelagic alkalinity (bottom flux)', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_co2diss_c, 'ledger_co2diss_c', 'mg C/m^2/d', &
+              'ledger: E5 C1 CO2*-promoted dissolution -> benthic calcite', source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_co2diss_O3c, 'ledger_co2diss_O3c', 'mmol C/m^2/d', &
+              'ledger: E5 C1 CO2*-promoted dissolution -> pelagic dissolved inorganic carbon (bottom flux)', &
+              source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_co2diss_TA, 'ledger_co2diss_TA', 'mmol eq/m^2/d', &
+              'ledger: E5 C1 CO2*-promoted dissolution -> pelagic alkalinity (bottom flux)', source=source_do_bottom)
       end if
 
    end subroutine
@@ -138,6 +170,7 @@ contains
       real(rk) :: Om_Cal
       real(rk) :: fdiss
       real(rk) :: par, F_prec
+      real(rk) :: co2aq, F_co2
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -190,6 +223,21 @@ contains
             end if
          end if
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_precipitation, F_prec)
+         ! E5 C1 acid-promoted dissolution (inert when k_co2diss = 0)
+         F_co2 = 0.0_rk
+         if (self%k_co2diss > 0.0_rk) then
+            _GET_(self%id_CO2aq, co2aq)
+            F_co2 = self%k_co2diss * bL2c * max(co2aq, 0.0_rk) / self%co2_ref_diss
+            _SET_BOTTOM_ODE_(self%id_c, -F_co2)
+            _SET_BOTTOM_EXCHANGE_(self%id_O3c, F_co2/CMass)
+            _SET_BOTTOM_EXCHANGE_(self%id_TA, 2*F_co2/CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_co2_dissolution, F_co2)
+         end if
+         if (self%isw_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_co2diss_c, -F_co2)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_co2diss_O3c, F_co2/CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_co2diss_TA, 2*F_co2/CMass)
+         end if
 
       _HORIZONTAL_LOOP_END_
 
