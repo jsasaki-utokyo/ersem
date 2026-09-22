@@ -80,6 +80,7 @@ contains
       character(len=16) :: index
       real(rk)          :: c0
       type (type_horizontal_standard_variable) :: standard_variable
+      type (type_horizontal_standard_variable) :: rate_standard_variable
 
       class (type_dissolved_matter_per_layer), pointer :: profile
 
@@ -149,9 +150,11 @@ contains
          call self%register_state_dependency(self%id_layer, standard_variable)
          ! nippon-steel docs/127 s8 item 3 (2026-09-22): the interface tendency, exported (not written to output) so
          ! SR3-B's transport can move the swept sediment's sulfide with it; changes no computed value
+         rate_standard_variable%name = 'rate_of_change_of_depth_of_bottom_interface_of_layer_'//trim(index)
+         rate_standard_variable%units = 'm/d'
          call self%register_diagnostic_variable(self%id_Dm_rate, 'Dm_rate', 'm/d', &
               'applied rate of change of the bottom interface of the last layer', output=output_none, &
-              domain=domain_bottom, source=source_do_bottom)
+              domain=domain_bottom, source=source_do_bottom, standard_variable=rate_standard_variable)
       end if
       self%ads = 1.0_rk
       do ilayer=1,self%last_layer

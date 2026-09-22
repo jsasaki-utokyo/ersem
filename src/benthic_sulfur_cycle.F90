@@ -1007,8 +1007,7 @@ contains
       call self%register_diagnostic_variable(self%id_P_h2s_3, 'P_h2s_3', 'mmol S/m^2/d', &
            'SR3-B: sulfate reduction placed in layer 3', domain=domain_bottom, source=source_do_bottom)
       ! the interface rates are dependencies of the TRANSPORT child only (the parent's reaction callback must not
-      ! depend on them: FABM would see G2 -> sulfur reactions -> G2/Dm_rate -> G2); couple them in the yaml as
-      ! h2s_transport/D1_rate: G2/Dm_rate and h2s_transport/D2_rate: K3/Dm_rate
+      ! depend on them: FABM would see G2 -> sulfur reactions -> G2/Dm_rate -> G2); coupled by standard name
 
       allocate(summ)
       summ%dt = 86400._rk
@@ -1046,8 +1045,11 @@ contains
       call tran%register_dependency(tran%id_diff(1), diffusivity_in_sediment_layer_1)
       call tran%register_dependency(tran%id_diff(2), diffusivity_in_sediment_layer_2)
       call tran%register_dependency(tran%id_diff(3), diffusivity_in_sediment_layer_3)
-      call tran%register_dependency(tran%id_D1rate, 'D1_rate', 'm/d', 'applied rate of change of D1m')
-      call tran%register_dependency(tran%id_D2rate, 'D2_rate', 'm/d', 'applied rate of change of D2m')
+      ! the applied interface rates, exported by the O2 (layer 1) and NO3 (layer 2) columns under these standard names
+      call tran%register_dependency(tran%id_D1rate, type_horizontal_standard_variable( &
+           name='rate_of_change_of_depth_of_bottom_interface_of_layer_1', units='m/d'))
+      call tran%register_dependency(tran%id_D2rate, type_horizontal_standard_variable( &
+           name='rate_of_change_of_depth_of_bottom_interface_of_layer_2', units='m/d'))
       call tran%register_diagnostic_variable(tran%id_J_req, 'J_requested', 'mmol S/m^2/d', &
            'bed-to-water sulfide exchange before the uptake limiter', domain=domain_bottom, source=source_do_bottom)
       call tran%register_diagnostic_variable(tran%id_J_app, 'J_applied', 'mmol S/m^2/d', &
