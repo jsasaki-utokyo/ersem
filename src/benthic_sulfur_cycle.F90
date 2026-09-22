@@ -91,6 +91,9 @@ module ersem_benthic_sulfur_cycle
       type(type_horizontal_dependency_id) :: id_D1m, id_D2m, id_Dtot, id_poro, id_cmix
       type(type_horizontal_dependency_id) :: id_diff(3)
       type(type_horizontal_diagnostic_variable_id) :: id_J_req, id_J_app
+      type(type_bottom_state_variable_id) :: id_cumJ, id_guard      ! accepted-step counters (docs/127 s10)
+      logical  :: test = .false.
+      real(rk) :: t_D1 = 0.0_rk, t_D2 = 0.0_rk, t_diff(3) = 0.0_rk, t_cpel = 0.0_rk
    contains
       procedure :: do_bottom => transport_do_bottom
    end type
@@ -101,6 +104,9 @@ module ersem_benthic_sulfur_cycle
       real(rk), allocatable :: z_h2s(:)   ! fixed-grid edges (m), 0 = sediment surface
       real(rk) :: minD_h2s = 0.0_rk, dtot_h2s = 0.0_rk
       type(type_bottom_state_variable_id), allocatable :: id_h2s(:)
+      type(type_bottom_state_variable_id) :: id_cumP, id_cumS, id_guard   ! accepted-step counters (docs/127 s10)
+      logical  :: h2s_test = .false.                                      ! frozen-coefficient operator test
+      real(rk) :: t_D1 = 0.0_rk, t_D2 = 0.0_rk, t_k(3) = 0.0_rk, t_P1 = 0.0_rk, t_P3 = 0.0_rk
       type(type_horizontal_diagnostic_variable_id) :: id_k_h2s(3), id_P_h2s_1, id_P_h2s_3
       ! State variable dependencies (layer-specific via benthic_column_dissolved_matter)
       type(type_bottom_state_variable_id) :: id_H2S_1, id_H2S_2, id_H2S_3
@@ -579,7 +585,7 @@ contains
       real(rk) :: share_1, poro, NO3_1, f_ex
       real(rk), allocatable :: mh(:), fr(:, :), ov(:, :)
       integer  :: kbox
-      real(rk) :: Dtot, hl(3), kl(3)
+      real(rk) :: Dtot, hl(3), kl(3), Pl1, Pl3, Sj, sumS
       real(rk) :: R_FeS_1, R_FeS_2, R_FeS_3, R_FeS_ben, R_FeS_pel
 
       _HORIZONTAL_LOOP_BEGIN_
@@ -597,10 +603,11 @@ contains
                _GET_HORIZONTAL_(self%id_h2s(kbox), mh(kbox))
                fr(:, kbox) = ov(:, kbox) / (self%z_h2s(kbox + 1) - self%z_h2s(kbox))
             end do
-            ! the ERSEM-layer inventories the kinetics act on (each cell weighted by its length in the layer)
-            H2S_1 = sum(fr(1, :) * mh)
-            H2S_2 = sum(fr(2, :) * mh)
-            H2S_3 = sum(fr(3, :) * mh)
+            ! the ERSEM-layer inventories the kinetics act on (each cell weighted by its length in the layer), clipped
+            ! per CELL so that the cell sinks below and the layer rates driving the products are the same sums
+            H2S_1 = sum(fr(1, :) * max(0.0_rk, mh))
+            H2S_2 = sum(fr(2, :) * max(0.0_rk, mh))
+            H2S_3 = sum(fr(3, :) * max(0.0_rk, mh))
          else
             _GET_HORIZONTAL_(self%id_H2S_1, H2S_1)
             _GET_HORIZONTAL_(self%id_H2S_2, H2S_2)
@@ -820,11 +827,27 @@ contains
             ! and R_FeS_3 above)
             kl = (/ self%K_H2S_ox * f_O2 + self%K_FeS_ben * 0.1_rk, self%K_H2S_NO3_ox * f_NO3 + self%K_FeS_ben * 0.5_rk, &
                     self%K_FeS_ben /)
+            Pl1 = share_1 * R_sulfate_red
+            Pl3 = (1.0_rk - share_1) * R_sulfate_red
+            if (self%h2s_test) then          ! frozen-coefficient operator test: the cell ODE only
+               kl = self%t_k
+               Pl1 = self%t_P1
+               Pl3 = self%t_P3
+               hl = (/ self%t_D1, self%t_D2 - self%t_D1, Dtot - self%t_D2 /)
+               call h2s_coverage(self%z_h2s, self%t_D1, self%t_D2, Dtot, ov)
+               do kbox = 1, self%n_h2s
+                  fr(:, kbox) = ov(:, kbox) / (self%z_h2s(kbox + 1) - self%z_h2s(kbox))
+               end do
+            end if
+            sumS = 0.0_rk
             do kbox = 1, self%n_h2s
-               _SET_BOTTOM_ODE_(self%id_h2s(kbox), share_1 * R_sulfate_red * ov(1, kbox) / hl(1) &
-                    + (1.0_rk - share_1) * R_sulfate_red * ov(3, kbox) / hl(3) &
-                    - sum(kl * fr(:, kbox)) * max(0.0_rk, mh(kbox)))
+               Sj = sum(kl * fr(:, kbox)) * max(0.0_rk, mh(kbox))
+               sumS = sumS + Sj
+               _SET_BOTTOM_ODE_(self%id_h2s(kbox), Pl1 * ov(1, kbox) / hl(1) + Pl3 * ov(3, kbox) / hl(3) - Sj)
             end do
+            _SET_BOTTOM_ODE_(self%id_cumP, Pl1 + Pl3)
+            _SET_BOTTOM_ODE_(self%id_cumS, sumS)
+            _SET_BOTTOM_ODE_(self%id_guard, real(count(mh < 0.0_rk), rk))
             ! first-order constants and production, for the per-closure steady initialisation (docs/127 s9)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_k_h2s(1), kl(1))
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_k_h2s(2), kl(2))
@@ -1001,7 +1024,8 @@ contains
       call self%get_parameter(self%dtot_h2s, 'h2s_grid_dtot', 'm', &
            'fixed grid: sediment column depth (must equal the column''s depth_of_sediment_column)', default=0.0_rk)
       call self%get_parameter(self%minD_h2s, 'minD_h2s', 'm', &
-           'fixed grid: smallest admissible ERSEM layer thickness (fatal below)', default=1.0e-4_rk, minimum=0.0_rk)
+           'fixed grid: smallest admissible ERSEM layer thickness (fatal below; > 0)', default=1.0e-4_rk, minimum=0.0_rk)
+      if (.not. (self%minD_h2s > 0.0_rk)) call self%fatal_error('register_h2s_grid', 'minD_h2s must be > 0')
       call self%get_parameter(h_supply, 'h_supply_h2s', 'mmol S/m^3', &
            'uptake limiter c_pel/(c_pel + h) on water-to-bed sulfide exchange (0: off)', default=0.0_rk, minimum=0.0_rk)
       if (.not. (self%dtot_h2s > 0.0_rk)) call self%fatal_error('register_h2s_grid', 'h2s_grid_dtot must be set (> 0)')
@@ -1024,6 +1048,25 @@ contains
            'sulfate reduction placed in layer 1', domain=domain_bottom, source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_P_h2s_3, 'P_h2s_3', 'mmol S/m^2/d', &
            'sulfate reduction placed in layer 3', domain=domain_bottom, source=source_do_bottom)
+      ! accepted-step counters: integrated by the driver with the same stages as the cells, restored with them on a
+      ! rejected attempt, so the cell balance and any guard activation are exact records (docs/127 s10, round 41)
+      call self%register_state_variable(self%id_cumP, 'h2s_cum_P', 'mmol S/m^2', &
+           'fixed grid: cumulative sulfate reduction placed in the cells', 0.0_rk)
+      call self%register_state_variable(self%id_cumS, 'h2s_cum_S', 'mmol S/m^2', &
+           'fixed grid: cumulative first-order removal from the cells', 0.0_rk)
+      call self%register_state_variable(self%id_guard, 'h2s_guard', 'd', &
+           'fixed grid: cell-days with a negative cell at a stage evaluation (0 = the max(0, m) guard never acted)', 0.0_rk)
+      ! frozen-coefficient operator test (default off): the cell ODE uses these constants instead of the model's
+      call self%get_parameter(self%h2s_test, 'h2s_test', '', 'fixed grid: frozen-coefficient operator test', default=.false.)
+      if (self%h2s_test) then
+         call self%get_parameter(self%t_D1, 'h2s_test_D1', 'm', 'test: depth of interface 1')
+         call self%get_parameter(self%t_D2, 'h2s_test_D2', 'm', 'test: depth of interface 2')
+         call self%get_parameter(self%t_k(1), 'h2s_test_k1', '1/d', 'test: sink constant, layer 1')
+         call self%get_parameter(self%t_k(2), 'h2s_test_k2', '1/d', 'test: sink constant, layer 2')
+         call self%get_parameter(self%t_k(3), 'h2s_test_k3', '1/d', 'test: sink constant, layer 3')
+         call self%get_parameter(self%t_P1, 'h2s_test_P1', 'mmol S/m^2/d', 'test: production in layer 1')
+         call self%get_parameter(self%t_P3, 'h2s_test_P3', 'mmol S/m^2/d', 'test: production in layer 3')
+      end if
 
       allocate(summ)
       summ%dt = 86400._rk
@@ -1053,6 +1096,15 @@ contains
       tran%h_supply = h_supply
       tran%minD = self%minD_h2s
       tran%dtot = self%dtot_h2s
+      tran%test = self%h2s_test
+      if (self%h2s_test) then
+         tran%t_D1 = self%t_D1
+         tran%t_D2 = self%t_D2
+         call self%get_parameter(tran%t_diff(1), 'h2s_test_diff1', 'm^2/d', 'test: diffusivity, layer 1')
+         call self%get_parameter(tran%t_diff(2), 'h2s_test_diff2', 'm^2/d', 'test: diffusivity, layer 2')
+         call self%get_parameter(tran%t_diff(3), 'h2s_test_diff3', 'm^2/d', 'test: diffusivity, layer 3')
+         call self%get_parameter(tran%t_cpel, 'h2s_test_cpel', 'mmol S/m^3', 'test: water sulfide seen by the exchange')
+      end if
       call self%add_child(tran, 'h2s_transport', configunit=-1)
       allocate(tran%id_m(n))
       do k = 1, n
@@ -1072,6 +1124,10 @@ contains
            'bed-to-water sulfide exchange before the uptake limiter', domain=domain_bottom, source=source_do_bottom)
       call tran%register_diagnostic_variable(tran%id_J_app, 'J_applied', 'mmol S/m^2/d', &
            'bed-to-water sulfide exchange applied', domain=domain_bottom, source=source_do_bottom)
+      call tran%register_state_variable(tran%id_cumJ, 'cum_J', 'mmol S/m^2', &
+           'cumulative bed-to-water sulfide exchange applied (accepted steps)', 0.0_rk)
+      call tran%register_state_variable(tran%id_guard, 'guard', 'd', &
+           'cell-days with a negative cell or negative water sulfide at a stage evaluation', 0.0_rk)
       do k = 1, n
          write(nm, '(a,i0)') 'h2s_c', k
          call summ%request_coupling(summ%id_m(k), '../'//trim(nm))
@@ -1172,6 +1228,7 @@ contains
       real(rk) :: D1m, D2m, Dtot, poro, cmix, H2S_pel, diff(3), cuts(4)
       real(rk) :: m(self%n), c(self%n), r(self%n), zc(self%n)
       real(rk) :: F, J, Jreq, cp, Rc, Rs
+      integer  :: nneg
 
       _HORIZONTAL_LOOP_BEGIN_
          _GET_HORIZONTAL_(self%id_D1m, D1m)
@@ -1183,12 +1240,21 @@ contains
          _GET_HORIZONTAL_(self%id_diff(2), diff(2))
          _GET_HORIZONTAL_(self%id_diff(3), diff(3))
          _GET_(self%id_H2S_pel, H2S_pel)
+         nneg = 0
+         if (H2S_pel < 0.0_rk) nneg = 1
+         if (self%test) then                 ! frozen-coefficient operator test
+            D1m = self%t_D1
+            D2m = self%t_D2
+            diff = self%t_diff
+            H2S_pel = self%t_cpel
+         end if
          call h2s_check_geometry(self, D1m, D2m, Dtot, self%minD, self%dtot)
          if (.not. (poro > 0.0_rk .and. minval(diff) > 0.0_rk .and. cmix >= 0.0_rk)) &
             call self%fatal_error('transport_do_bottom', 'fixed grid: porosity, diffusivities or cmix invalid')
          cuts = (/ 0.0_rk, D1m, D2m, Dtot /)
          do k = 1, self%n
             _GET_HORIZONTAL_(self%id_m(k), m(k))
+            if (m(k) < 0.0_rk) nneg = nneg + 1
             c(k) = max(0.0_rk, m(k)) / (poro * (self%z(k + 1) - self%z(k)))
             zc(k) = 0.5_rk * (self%z(k) + self%z(k + 1))
          end do
@@ -1215,6 +1281,8 @@ contains
             _SET_BOTTOM_ODE_(self%id_m(k), r(k))
          end do
          _SET_BOTTOM_EXCHANGE_(self%id_H2S_pel, J)
+         _SET_BOTTOM_ODE_(self%id_cumJ, J)
+         _SET_BOTTOM_ODE_(self%id_guard, real(nneg, rk))
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_J_req, Jreq)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_J_app, J)
       _HORIZONTAL_LOOP_END_
