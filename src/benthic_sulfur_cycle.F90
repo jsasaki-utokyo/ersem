@@ -104,7 +104,7 @@ module ersem_benthic_sulfur_cycle
       real(rk), allocatable :: z_h2s(:)   ! fixed-grid edges (m), 0 = sediment surface
       real(rk) :: minD_h2s = 0.0_rk, dtot_h2s = 0.0_rk
       type(type_bottom_state_variable_id), allocatable :: id_h2s(:)
-      type(type_bottom_state_variable_id) :: id_cumP, id_cumS, id_guard   ! accepted-step counters (docs/127 s10)
+      type(type_bottom_state_variable_id) :: id_cumP, id_cumS, id_cumJ, id_guard   ! accepted-step counters (docs/127 s10)
       logical  :: h2s_test = .false.                                      ! frozen-coefficient operator test
       real(rk) :: t_D1 = 0.0_rk, t_D2 = 0.0_rk, t_k(3) = 0.0_rk, t_P1 = 0.0_rk, t_P3 = 0.0_rk
       type(type_horizontal_diagnostic_variable_id) :: id_k_h2s(3), id_P_h2s_1, id_P_h2s_3
@@ -1054,8 +1054,11 @@ contains
            'fixed grid: cumulative sulfate reduction placed in the cells', 0.0_rk)
       call self%register_state_variable(self%id_cumS, 'h2s_cum_S', 'mmol S/m^2', &
            'fixed grid: cumulative first-order removal from the cells', 0.0_rk)
+      call self%register_state_variable(self%id_cumJ, 'h2s_cum_J', 'mmol S/m^2', &
+           'fixed grid: cumulative bed-to-water sulfide exchange applied (set by the transport child)', 0.0_rk)
       call self%register_state_variable(self%id_guard, 'h2s_guard', 'd', &
-           'fixed grid: cell-days with a negative cell at a stage evaluation (0 = the max(0, m) guard never acted)', 0.0_rk)
+           'fixed grid: cell-days with a negative cell (or negative water sulfide) at a stage evaluation; 0 = the &
+           &max(0, .) guards never acted', 0.0_rk)
       ! frozen-coefficient operator test (default off): the cell ODE uses these constants instead of the model's
       call self%get_parameter(self%h2s_test, 'h2s_test', '', 'fixed grid: frozen-coefficient operator test', default=.false.)
       if (self%h2s_test) then
@@ -1124,16 +1127,16 @@ contains
            'bed-to-water sulfide exchange before the uptake limiter', domain=domain_bottom, source=source_do_bottom)
       call tran%register_diagnostic_variable(tran%id_J_app, 'J_applied', 'mmol S/m^2/d', &
            'bed-to-water sulfide exchange applied', domain=domain_bottom, source=source_do_bottom)
-      call tran%register_state_variable(tran%id_cumJ, 'cum_J', 'mmol S/m^2', &
-           'cumulative bed-to-water sulfide exchange applied (accepted steps)', 0.0_rk)
-      call tran%register_state_variable(tran%id_guard, 'guard', 'd', &
-           'cell-days with a negative cell or negative water sulfide at a stage evaluation', 0.0_rk)
+      call tran%register_state_dependency(tran%id_cumJ, 'cum_J', 'mmol S/m^2', 'cumulative exchange counter')
+      call tran%register_state_dependency(tran%id_guard, 'guard', 'd', 'guard counter')
       do k = 1, n
          write(nm, '(a,i0)') 'h2s_c', k
          call summ%request_coupling(summ%id_m(k), '../'//trim(nm))
          call tran%request_coupling(tran%id_m(k), '../'//trim(nm))
       end do
       call tran%request_coupling(tran%id_H2S_pel, '../H2S_pel')
+      call tran%request_coupling(tran%id_cumJ, '../h2s_cum_J')
+      call tran%request_coupling(tran%id_guard, '../h2s_guard')
    end subroutine register_h2s_grid
 
    subroutine h2s_mesh(top, cap, growth, dtot, z)
