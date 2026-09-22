@@ -33,8 +33,6 @@ module ersem_benthic_column_dissolved_matter
       type (type_horizontal_dependency_id) :: id_cmix           ! pelagic-benthic transfer in bottom boundary layer (height of BBL divided by diffusivity within BBL)
       type (type_horizontal_dependency_id) :: id_diff(nlayers)  ! effective diffusivity within individual layers [includes bioirrigation contribution, if any]
       type (type_bottom_state_variable_id) :: id_layer          ! depth of bottom interface of own layer (where own concentration drops to zero)
-      type (type_horizontal_diagnostic_variable_id) :: id_Dm_rate  ! applied rate of change of that interface (m/d), for SR3-B's swept-mass transfer
-      logical :: export_rate = .false.
       type (type_horizontal_diagnostic_variable_id) :: id_conc_eq(nlayers)  ! mean equilibrium pore water concentration in individual layers
       type (type_horizontal_diagnostic_variable_id) :: id_conc_tot(nlayers) ! mean pore water concentration in individual layers
       real(rk) :: ads(nlayers)
@@ -81,7 +79,6 @@ contains
       character(len=16) :: index
       real(rk)          :: c0
       type (type_horizontal_standard_variable) :: standard_variable
-      type (type_horizontal_standard_variable) :: rate_standard_variable
 
       class (type_dissolved_matter_per_layer), pointer :: profile
 
@@ -149,19 +146,6 @@ contains
          write (index,'(i0)') self%last_layer
          standard_variable%name = 'depth_of_bottom_interface_of_layer_'//trim(index)
          call self%register_state_dependency(self%id_layer, standard_variable)
-         ! nippon-steel docs/127 s8 item 3 (2026-09-22): the interface tendency, exported (not written to output) so
-         ! SR3-B's transport can move the swept sediment's sulfide with it. Behind export_rate (default .false.,
-         ! 2026-09-23): registered unconditionally (together with the bacteria's H2S_col type change) it left every
-         ! state bitwise identical but changed the last bits of FABM's conserved-quantity integrals.
-         call self%get_parameter(self%export_rate,'export_rate','', &
-              'export the interface tendency by standard name (SR3-B)',default=.false.)
-         if (self%export_rate) then
-            rate_standard_variable%name = 'rate_of_change_of_depth_of_bottom_interface_of_layer_'//trim(index)
-            rate_standard_variable%units = 'm/d'
-            call self%register_diagnostic_variable(self%id_Dm_rate, 'Dm_rate', 'm/d', &
-                 'applied rate of change of the bottom interface of the last layer', output=output_none, &
-                 domain=domain_bottom, source=source_do_bottom, standard_variable=rate_standard_variable)
-         end if
       end if
       self%ads = 1.0_rk
       do ilayer=1,self%last_layer
@@ -445,9 +429,6 @@ contains
 
          ! Relax the depth of the bottom interface of the last layer towards equilibrium value
          _SET_BOTTOM_ODE_(self%id_layer, (d_top - Dm(self%last_layer)) / self%relax)
-         if (self%export_rate) then
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_Dm_rate, (d_top - Dm(self%last_layer)) / self%relax)
-         end if
 
          if (.not.info%nonnegative) then
             ! Deeper source terms are allowed to be non-zero [typically negative].

@@ -59,17 +59,23 @@ module ersem_benthic_sulfur_cycle
    implicit none
    private
 
-   ! SR3-B (jsasaki 2026-09-22; nippon-steel docs/127 s7.3 and s8, review rounds 38-39): the bed sulfide as
-   ! 3*n_sub dynamic sub-box inventories (n_sub equal sub-boxes per ERSEM layer, moving with the layer interfaces),
-   ! replacing the homogeneous G2_H2S column when isw_h2s_layers = 1. Three callbacks keep FABM's graph acyclic:
-   ! the parent's reactions read states only; a summary child sums the states (read by the H2 bacteria's H2S_col);
-   ! a transport child computes interlayer diffusion (ERSEM's convention: areal flux = diff * dc/dz with pore-water
-   ! c = m/(poro*dz)), the Robin surface exchange J = (c_1 - c_pel)/(cmix + dz_1/(2 diff_1)) with the uptake limiter
-   ! h_supply_h2s, and the donor-cell transfer of the sediment swept by the moving interfaces (the applied rates
-   ! exported by the O2 and NO3 columns as Dm_rate).
+   ! SR3 fixed grid (jsasaki 2026-09-23; nippon-steel docs/127 s9, review round 40): the bed sulfide as dynamic
+   ! pore-water inventories on a grid FIXED in absolute depth (isw_h2s_layers = 2), replacing the homogeneous G2_H2S
+   ! column. Cells: top width h2s_grid_top growing by h2s_grid_growth up to h2s_grid_cap, then equal cells no wider
+   ! than the cap down to the column base (tools/sr3_grid_reference.py mesh(), the frozen instrument). A cell cut by an
+   ! ERSEM interface takes each layer's first-order sink constant and sulfate-reduction placement in proportion to
+   ! the length of the cell inside that layer; the conductance between cell centres is 1/int(dz/diff) (ERSEM's
+   ! convention: areal flux = diff * dc/dz with pore-water c = m/(poro*dz)); the surface exchange is
+   ! J = (c_1 - c_pel)/(cmix + int_0^{zc_1} dz/diff) with the uptake limiter h_supply_h2s. Three callbacks keep FABM's
+   ! graph acyclic: the parent's reactions read states and interface depths only; a summary child reports the bed
+   ! total (read by the H2 bacteria's H2S_col) and the ERSEM-layer totals; a transport child computes the fluxes.
+   ! The moving-sub-box variant (isw_h2s_layers = 1, SR3-B) failed its registered transport gate (docs/127 s8.3)
+   ! and is retired.
    type, extends(type_base_model) :: type_h2s_bed_summary
-      integer :: nsub = 1
+      integer :: n = 0
+      real(rk), allocatable :: z(:)
       type(type_bottom_state_variable_id), allocatable :: id_m(:)
+      type(type_horizontal_dependency_id) :: id_D1m, id_D2m, id_Dtot
       type(type_horizontal_diagnostic_variable_id) :: id_total
       type(type_horizontal_diagnostic_variable_id) :: id_layer(3)
    contains
@@ -77,11 +83,12 @@ module ersem_benthic_sulfur_cycle
    end type
 
    type, extends(type_base_model) :: type_h2s_bed_transport
-      integer  :: nsub = 1
-      real(rk) :: h_supply = 0.0_rk
+      integer  :: n = 0
+      real(rk), allocatable :: z(:)
+      real(rk) :: h_supply = 0.0_rk, minD = 0.0_rk, dtot = 0.0_rk
       type(type_bottom_state_variable_id), allocatable :: id_m(:)
       type(type_state_variable_id) :: id_H2S_pel
-      type(type_horizontal_dependency_id) :: id_D1m, id_D2m, id_Dtot, id_poro, id_cmix, id_D1rate, id_D2rate
+      type(type_horizontal_dependency_id) :: id_D1m, id_D2m, id_Dtot, id_poro, id_cmix
       type(type_horizontal_dependency_id) :: id_diff(3)
       type(type_horizontal_diagnostic_variable_id) :: id_J_req, id_J_app
    contains
@@ -89,8 +96,10 @@ module ersem_benthic_sulfur_cycle
    end type
 
    type, extends(type_base_model), public :: type_ersem_benthic_sulfur_cycle
-      integer  :: isw_h2s_layers = 0   ! 0: legacy homogeneous G2_H2S column; 1: SR3-B dynamic sub-boxes
-      integer  :: n_sub_h2s = 1
+      integer  :: isw_h2s_layers = 0   ! 0: legacy homogeneous G2_H2S column; 2: fixed grid (1, SR3-B, retired)
+      integer  :: n_h2s = 0            ! fixed-grid cells
+      real(rk), allocatable :: z_h2s(:)   ! fixed-grid edges (m), 0 = sediment surface
+      real(rk) :: minD_h2s = 0.0_rk, dtot_h2s = 0.0_rk
       type(type_bottom_state_variable_id), allocatable :: id_h2s(:)
       type(type_horizontal_diagnostic_variable_id) :: id_k_h2s(3), id_P_h2s_1, id_P_h2s_3
       ! State variable dependencies (layer-specific via benthic_column_dissolved_matter)
@@ -452,9 +461,11 @@ contains
       ! Register dependencies for layer-specific sulfur variables
       ! These link to variables created by benthic_column_dissolved_matter with composition 'h' and 'e'
       call self%get_parameter(self%isw_h2s_layers, 'isw_h2s_layers', '', &
-           'bed sulfide: 0 homogeneous G2_H2S column (legacy), 1 SR3-B dynamic sub-boxes', default=0, minimum=0, maximum=1)
-      if (self%isw_h2s_layers == 1) then
-         call register_h2s_layers(self)
+           'bed sulfide: 0 homogeneous G2_H2S column (legacy), 2 fixed grid (1: retired SR3-B)', default=0, minimum=0, maximum=2)
+      if (self%isw_h2s_layers == 1) call self%fatal_error('initialize', &
+           'isw_h2s_layers = 1 (SR3-B moving sub-boxes) failed its transport gate and is retired (nippon-steel docs/127 s8.3); use 2')
+      if (self%isw_h2s_layers == 2) then
+         call register_h2s_grid(self)
       else
          call self%register_state_dependency(self%id_H2S_1, 'H2S_1', 'mmol S/m^2', &
               'hydrogen sulfide in layer 1')
@@ -566,22 +577,30 @@ contains
       real(rk) :: f_barrier, R_barrier_ox
       real(rk) :: par, f_par
       real(rk) :: share_1, poro, NO3_1, f_ex
-      real(rk), allocatable :: mh(:)
-      integer  :: ilay, jsub, kbox
-      real(rk) :: Pl, Sl, Ml
+      real(rk), allocatable :: mh(:), fr(:, :), ov(:, :)
+      integer  :: kbox
+      real(rk) :: Dtot, hl(3), kl(3)
       real(rk) :: R_FeS_1, R_FeS_2, R_FeS_3, R_FeS_ben, R_FeS_pel
 
       _HORIZONTAL_LOOP_BEGIN_
 
          ! Get state variables
-         if (self%isw_h2s_layers == 1) then
-            if (.not. allocated(mh)) allocate(mh(3 * self%n_sub_h2s))
-            do kbox = 1, 3 * self%n_sub_h2s
+         if (self%isw_h2s_layers == 2) then
+            if (.not. allocated(mh)) allocate(mh(self%n_h2s), fr(3, self%n_h2s), ov(3, self%n_h2s))
+            _GET_HORIZONTAL_(self%id_D1m, D1m)
+            _GET_HORIZONTAL_(self%id_D2m, D2m)
+            _GET_HORIZONTAL_(self%id_Dtot, Dtot)
+            call h2s_check_geometry(self, D1m, D2m, Dtot, self%minD_h2s, self%dtot_h2s)
+            hl = (/ D1m, D2m - D1m, Dtot - D2m /)
+            call h2s_coverage(self%z_h2s, D1m, D2m, Dtot, ov)
+            do kbox = 1, self%n_h2s
                _GET_HORIZONTAL_(self%id_h2s(kbox), mh(kbox))
+               fr(:, kbox) = ov(:, kbox) / (self%z_h2s(kbox + 1) - self%z_h2s(kbox))
             end do
-            H2S_1 = sum(mh(1:self%n_sub_h2s))
-            H2S_2 = sum(mh(self%n_sub_h2s + 1:2 * self%n_sub_h2s))
-            H2S_3 = sum(mh(2 * self%n_sub_h2s + 1:))
+            ! the ERSEM-layer inventories the kinetics act on (each cell weighted by its length in the layer)
+            H2S_1 = sum(fr(1, :) * mh)
+            H2S_2 = sum(fr(2, :) * mh)
+            H2S_3 = sum(fr(3, :) * mh)
          else
             _GET_HORIZONTAL_(self%id_H2S_1, H2S_1)
             _GET_HORIZONTAL_(self%id_H2S_2, H2S_2)
@@ -795,31 +814,21 @@ contains
          ! Layer 3: H2S production from sulfate reduction, loss from FeS burial.
          ! A p_sr_1 fraction of the production is delivered at the interface
          ! (Layer 1) instead - see the p_sr_1 parameter note (docs/14).
-         if (self%isw_h2s_layers == 1) then
-            ! SR3-B: each layer's production spread evenly over its sub-boxes, its first-order sinks in
-            ! proportion to each sub-box's inventory (exact for first-order kinetics)
-            do ilay = 1, 3
-               select case (ilay)
-               case (1)
-                  Pl = share_1 * R_sulfate_red; Sl = R_H2S_ox_1 + R_FeS_1; Ml = H2S_1
-               case (2)
-                  Pl = 0.0_rk; Sl = R_H2S_NO3_ox + R_FeS_2; Ml = H2S_2
-               case (3)
-                  Pl = (1.0_rk - share_1) * R_sulfate_red; Sl = R_FeS_3; Ml = H2S_3
-               end select
-               do jsub = 1, self%n_sub_h2s
-                  kbox = (ilay - 1) * self%n_sub_h2s + jsub
-                  if (Ml > 0.0_rk) then
-                     _SET_BOTTOM_ODE_(self%id_h2s(kbox), Pl / self%n_sub_h2s - Sl * mh(kbox) / Ml)
-                  else
-                     _SET_BOTTOM_ODE_(self%id_h2s(kbox), Pl / self%n_sub_h2s)
-                  end if
-               end do
+         if (self%isw_h2s_layers == 2) then
+            ! fixed grid: sulfate reduction placed by each cell's length in layers 1 and 3; the layers' first-order sink
+            ! constants weighted by the cell's fractions (their cell sums are R_H2S_ox_1 + R_FeS_1, R_H2S_NO3_ox + R_FeS_2
+            ! and R_FeS_3 above)
+            kl = (/ self%K_H2S_ox * f_O2 + self%K_FeS_ben * 0.1_rk, self%K_H2S_NO3_ox * f_NO3 + self%K_FeS_ben * 0.5_rk, &
+                    self%K_FeS_ben /)
+            do kbox = 1, self%n_h2s
+               _SET_BOTTOM_ODE_(self%id_h2s(kbox), share_1 * R_sulfate_red * ov(1, kbox) / hl(1) &
+                    + (1.0_rk - share_1) * R_sulfate_red * ov(3, kbox) / hl(3) &
+                    - sum(kl * fr(:, kbox)) * max(0.0_rk, mh(kbox)))
             end do
-            ! first-order constants and production, for the per-closure steady initialisation (docs/127 s8 item 4)
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_k_h2s(1), self%K_H2S_ox * f_O2 + self%K_FeS_ben * 0.1_rk)
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_k_h2s(2), self%K_H2S_NO3_ox * f_NO3 + self%K_FeS_ben * 0.5_rk)
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_k_h2s(3), self%K_FeS_ben)
+            ! first-order constants and production, for the per-closure steady initialisation (docs/127 s9)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_k_h2s(1), kl(1))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_k_h2s(2), kl(2))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_k_h2s(3), kl(3))
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_P_h2s_1, share_1 * R_sulfate_red)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_P_h2s_3, (1.0_rk - share_1) * R_sulfate_red)
          else
@@ -975,49 +984,60 @@ contains
 
    end subroutine do_bottom
 
-   subroutine register_h2s_layers(self)
+   subroutine register_h2s_grid(self)
       class(type_ersem_benthic_sulfur_cycle), intent(inout), target :: self
       class(type_h2s_bed_summary),   pointer :: summ
       class(type_h2s_bed_transport), pointer :: tran
-      integer :: ilay, jsub, k, n
+      integer :: ilay, k, n
       character(len=16) :: nm
-      real(rk) :: h_supply
+      real(rk) :: h_supply, top, cap, growth
 
-      call self%get_parameter(self%n_sub_h2s, 'n_sub_h2s', '', 'SR3-B: sub-boxes per ERSEM layer', &
-           default=1, minimum=1, maximum=16)
+      call self%get_parameter(top, 'h2s_grid_top', 'm', 'fixed grid: width of the top cell', default=1.0e-3_rk, &
+           minimum=1.0e-5_rk)
+      call self%get_parameter(cap, 'h2s_grid_cap', 'm', 'fixed grid: largest cell width', default=5.0e-3_rk, &
+           minimum=1.0e-5_rk)
+      call self%get_parameter(growth, 'h2s_grid_growth', '-', 'fixed grid: width ratio of successive cells up to the cap', &
+           default=1.25_rk, minimum=1.0_rk)
+      call self%get_parameter(self%dtot_h2s, 'h2s_grid_dtot', 'm', &
+           'fixed grid: sediment column depth (must equal the column''s depth_of_sediment_column)', default=0.0_rk)
+      call self%get_parameter(self%minD_h2s, 'minD_h2s', 'm', &
+           'fixed grid: smallest admissible ERSEM layer thickness (fatal below)', default=1.0e-4_rk, minimum=0.0_rk)
       call self%get_parameter(h_supply, 'h_supply_h2s', 'mmol S/m^3', &
-           'SR3-B: uptake limiter c_pel/(c_pel + h) on water-to-bed sulfide exchange (0: off)', default=0.0_rk, minimum=0.0_rk)
-      n = 3 * self%n_sub_h2s
+           'uptake limiter c_pel/(c_pel + h) on water-to-bed sulfide exchange (0: off)', default=0.0_rk, minimum=0.0_rk)
+      if (.not. (self%dtot_h2s > 0.0_rk)) call self%fatal_error('register_h2s_grid', 'h2s_grid_dtot must be set (> 0)')
+      if (cap < top) call self%fatal_error('register_h2s_grid', 'h2s_grid_cap must be >= h2s_grid_top')
+      call h2s_mesh(top, cap, growth, self%dtot_h2s, self%z_h2s)
+      n = size(self%z_h2s) - 1
+      self%n_h2s = n
       allocate(self%id_h2s(n))
-      do ilay = 1, 3
-         do jsub = 1, self%n_sub_h2s
-            k = (ilay - 1) * self%n_sub_h2s + jsub
-            write(nm, '(a,i1,a,i0)') 'h2s_', ilay, '_', jsub
-            call self%register_state_variable(self%id_h2s(k), trim(nm), 'mmol S/m^2', &
-                 'bed sulfide, layer and sub-box', 0.0_rk, minimum=0.0_rk)
-         end do
+      do k = 1, n
+         write(nm, '(a,i0)') 'h2s_c', k
+         call self%register_state_variable(self%id_h2s(k), trim(nm), 'mmol S/m^2', &
+              'bed sulfide, fixed-grid cell (pore water)', 0.0_rk, minimum=0.0_rk)
       end do
       do ilay = 1, 3
          write(nm, '(a,i1)') 'k_h2s_', ilay
          call self%register_diagnostic_variable(self%id_k_h2s(ilay), trim(nm), '1/d', &
-              'SR3-B: first-order sulfide sink constant of the layer', domain=domain_bottom, source=source_do_bottom)
+              'first-order sulfide sink constant of the ERSEM layer', domain=domain_bottom, source=source_do_bottom)
       end do
       call self%register_diagnostic_variable(self%id_P_h2s_1, 'P_h2s_1', 'mmol S/m^2/d', &
-           'SR3-B: sulfate reduction placed in layer 1', domain=domain_bottom, source=source_do_bottom)
+           'sulfate reduction placed in layer 1', domain=domain_bottom, source=source_do_bottom)
       call self%register_diagnostic_variable(self%id_P_h2s_3, 'P_h2s_3', 'mmol S/m^2/d', &
-           'SR3-B: sulfate reduction placed in layer 3', domain=domain_bottom, source=source_do_bottom)
-      ! the interface rates are dependencies of the TRANSPORT child only (the parent's reaction callback must not
-      ! depend on them: FABM would see G2 -> sulfur reactions -> G2/Dm_rate -> G2); coupled by standard name
+           'sulfate reduction placed in layer 3', domain=domain_bottom, source=source_do_bottom)
 
       allocate(summ)
       summ%dt = 86400._rk
-      summ%nsub = self%n_sub_h2s
+      summ%n = n
+      summ%z = self%z_h2s
       call self%add_child(summ, 'h2s_summary', configunit=-1)
       allocate(summ%id_m(n))
       do k = 1, n
          write(nm, '(a,i0)') 'm', k
-         call summ%register_state_dependency(summ%id_m(k), trim(nm), 'mmol S/m^2', 'bed sulfide sub-box')
+         call summ%register_state_dependency(summ%id_m(k), trim(nm), 'mmol S/m^2', 'bed sulfide cell')
       end do
+      call summ%register_dependency(summ%id_D1m, depth_of_bottom_interface_of_layer_1)
+      call summ%register_dependency(summ%id_D2m, depth_of_bottom_interface_of_layer_2)
+      call summ%register_dependency(summ%id_Dtot, depth_of_sediment_column)
       call summ%register_diagnostic_variable(summ%id_total, 'total', 'mmol S/m^2', 'bed sulfide, total', &
            domain=domain_bottom, source=source_do_bottom)
       do ilay = 1, 3
@@ -1028,13 +1048,16 @@ contains
 
       allocate(tran)
       tran%dt = 86400._rk
-      tran%nsub = self%n_sub_h2s
+      tran%n = n
+      tran%z = self%z_h2s
       tran%h_supply = h_supply
+      tran%minD = self%minD_h2s
+      tran%dtot = self%dtot_h2s
       call self%add_child(tran, 'h2s_transport', configunit=-1)
       allocate(tran%id_m(n))
       do k = 1, n
          write(nm, '(a,i0)') 'm', k
-         call tran%register_state_dependency(tran%id_m(k), trim(nm), 'mmol S/m^2', 'bed sulfide sub-box')
+         call tran%register_state_dependency(tran%id_m(k), trim(nm), 'mmol S/m^2', 'bed sulfide cell')
       end do
       call tran%register_state_dependency(tran%id_H2S_pel, 'H2S_pel', 'mmol S/m^3', 'pelagic hydrogen sulfide')
       call tran%register_dependency(tran%id_D1m, depth_of_bottom_interface_of_layer_1)
@@ -1045,106 +1068,150 @@ contains
       call tran%register_dependency(tran%id_diff(1), diffusivity_in_sediment_layer_1)
       call tran%register_dependency(tran%id_diff(2), diffusivity_in_sediment_layer_2)
       call tran%register_dependency(tran%id_diff(3), diffusivity_in_sediment_layer_3)
-      ! the applied interface rates, exported by the O2 (layer 1) and NO3 (layer 2) columns under these standard names
-      call tran%register_dependency(tran%id_D1rate, type_horizontal_standard_variable( &
-           name='rate_of_change_of_depth_of_bottom_interface_of_layer_1', units='m/d'))
-      call tran%register_dependency(tran%id_D2rate, type_horizontal_standard_variable( &
-           name='rate_of_change_of_depth_of_bottom_interface_of_layer_2', units='m/d'))
       call tran%register_diagnostic_variable(tran%id_J_req, 'J_requested', 'mmol S/m^2/d', &
            'bed-to-water sulfide exchange before the uptake limiter', domain=domain_bottom, source=source_do_bottom)
       call tran%register_diagnostic_variable(tran%id_J_app, 'J_applied', 'mmol S/m^2/d', &
            'bed-to-water sulfide exchange applied', domain=domain_bottom, source=source_do_bottom)
-      do ilay = 1, 3
-         do jsub = 1, self%n_sub_h2s
-            k = (ilay - 1) * self%n_sub_h2s + jsub
-            write(nm, '(a,i1,a,i0)') 'h2s_', ilay, '_', jsub
-            call summ%request_coupling(summ%id_m(k), '../'//trim(nm))
-            call tran%request_coupling(tran%id_m(k), '../'//trim(nm))
-         end do
+      do k = 1, n
+         write(nm, '(a,i0)') 'h2s_c', k
+         call summ%request_coupling(summ%id_m(k), '../'//trim(nm))
+         call tran%request_coupling(tran%id_m(k), '../'//trim(nm))
       end do
       call tran%request_coupling(tran%id_H2S_pel, '../H2S_pel')
-   end subroutine register_h2s_layers
+   end subroutine register_h2s_grid
+
+   subroutine h2s_mesh(top, cap, growth, dtot, z)
+      ! the frozen mesh rule of tools/sr3_grid_reference.py mesh(): widths top, top*growth, ... while below the cap
+      ! and inside the column, then the remaining depth in equal cells no wider than the cap
+      real(rk), intent(in) :: top, cap, growth, dtot
+      real(rk), allocatable, intent(out) :: z(:)
+      real(rk) :: w, e, step
+      integer :: ng, nr, i
+      ng = 0
+      w = top
+      e = 0.0_rk
+      do while (w < cap .and. e + w < dtot)
+         e = e + w
+         w = w * growth
+         ng = ng + 1
+      end do
+      nr = ceiling((dtot - e) / cap - 1.0e-12_rk)
+      allocate(z(ng + nr + 1))
+      z(1) = 0.0_rk
+      w = top
+      do i = 1, ng
+         z(i + 1) = z(i) + w
+         w = w * growth
+      end do
+      step = (dtot - z(ng + 1)) / nr
+      do i = 1, nr - 1
+         z(ng + 1 + i) = z(ng + 1) + i * step
+      end do
+      z(ng + nr + 1) = dtot
+   end subroutine h2s_mesh
+
+   pure real(rk) function h2s_overlap(a, b, lo, hi)
+      real(rk), intent(in) :: a, b, lo, hi
+      h2s_overlap = max(0.0_rk, min(b, hi) - max(a, lo))
+   end function h2s_overlap
+
+   pure subroutine h2s_coverage(z, D1m, D2m, Dtot, ov)
+      ! ov(l, j): length of cell j inside ERSEM layer l
+      real(rk), intent(in) :: z(:), D1m, D2m, Dtot
+      real(rk), intent(out) :: ov(:, :)
+      real(rk) :: cuts(4)
+      integer :: j, l
+      cuts = (/ 0.0_rk, D1m, D2m, Dtot /)
+      do j = 1, size(z) - 1
+         do l = 1, 3
+            ov(l, j) = h2s_overlap(z(j), z(j + 1), cuts(l), cuts(l + 1))
+         end do
+      end do
+   end subroutine h2s_coverage
+
+   subroutine h2s_check_geometry(model, D1m, D2m, Dtot, minD, dtot_grid)
+      ! fail fast (docs/127 s8 item 6, s9): ordered interfaces, every ERSEM layer at least minD thick, and the grid
+      ! built for this column depth
+      class(type_base_model), intent(in) :: model
+      real(rk), intent(in) :: D1m, D2m, Dtot, minD, dtot_grid
+      if (abs(Dtot - dtot_grid) > 1.0e-9_rk * dtot_grid) &
+         call model%fatal_error('h2s_check_geometry', 'fixed grid: h2s_grid_dtot differs from depth_of_sediment_column')
+      if (.not. (D1m >= minD .and. D2m - D1m >= minD .and. Dtot - D2m >= minD)) &
+         call model%fatal_error('h2s_check_geometry', 'fixed grid: an ERSEM layer is thinner than minD_h2s or unordered')
+   end subroutine h2s_check_geometry
 
    subroutine summary_do_bottom(self, _ARGUMENTS_DO_BOTTOM_)
       class(type_h2s_bed_summary), intent(in) :: self
       _DECLARE_ARGUMENTS_DO_BOTTOM_
-      integer :: k, ilay
-      real(rk) :: m, tot, lay(3)
+      integer :: k
+      real(rk) :: m, tot, lay(3), D1m, D2m, Dtot, ov(3, self%n)
 
       _HORIZONTAL_LOOP_BEGIN_
+         _GET_HORIZONTAL_(self%id_D1m, D1m)
+         _GET_HORIZONTAL_(self%id_D2m, D2m)
+         _GET_HORIZONTAL_(self%id_Dtot, Dtot)
+         call h2s_coverage(self%z, D1m, D2m, Dtot, ov)
          tot = 0.0_rk
          lay = 0.0_rk
-         do k = 1, 3 * self%nsub
+         do k = 1, self%n
             _GET_HORIZONTAL_(self%id_m(k), m)
-            ilay = (k - 1) / self%nsub + 1
-            lay(ilay) = lay(ilay) + m
+            lay = lay + ov(:, k) / (self%z(k + 1) - self%z(k)) * m
             tot = tot + m
          end do
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_total, tot)
-         do ilay = 1, 3
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_layer(ilay), lay(ilay))
-         end do
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_layer(1), lay(1))
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_layer(2), lay(2))
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_layer(3), lay(3))
       _HORIZONTAL_LOOP_END_
    end subroutine summary_do_bottom
 
    subroutine transport_do_bottom(self, _ARGUMENTS_DO_BOTTOM_)
       class(type_h2s_bed_transport), intent(in) :: self
       _DECLARE_ARGUMENTS_DO_BOTTOM_
-      integer :: k, n, ilay
-      real(rk) :: D1m, D2m, Dtot, poro, cmix, D1rate, D2rate, H2S_pel, diff(3), h(3)
-      real(rk) :: m(3 * self%nsub), c(3 * self%nsub), dz(3 * self%nsub), dk(3 * self%nsub), r(3 * self%nsub)
-      real(rk) :: F, J, Jreq, T, cp, w, wtop(3), wthk(3)
+      integer :: k, l
+      real(rk) :: D1m, D2m, Dtot, poro, cmix, H2S_pel, diff(3), cuts(4)
+      real(rk) :: m(self%n), c(self%n), r(self%n), zc(self%n)
+      real(rk) :: F, J, Jreq, cp, Rc, Rs
 
-      n = 3 * self%nsub
       _HORIZONTAL_LOOP_BEGIN_
          _GET_HORIZONTAL_(self%id_D1m, D1m)
          _GET_HORIZONTAL_(self%id_D2m, D2m)
          _GET_HORIZONTAL_(self%id_Dtot, Dtot)
          _GET_HORIZONTAL_(self%id_poro, poro)
          _GET_HORIZONTAL_(self%id_cmix, cmix)
-         _GET_HORIZONTAL_(self%id_D1rate, D1rate)
-         _GET_HORIZONTAL_(self%id_D2rate, D2rate)
          _GET_HORIZONTAL_(self%id_diff(1), diff(1))
          _GET_HORIZONTAL_(self%id_diff(2), diff(2))
          _GET_HORIZONTAL_(self%id_diff(3), diff(3))
          _GET_(self%id_H2S_pel, H2S_pel)
-         ! fail fast on invalid geometry or transport coefficients (docs/127 s8 item 6)
-         if (.not. (D1m > 0.0_rk .and. D2m > D1m .and. Dtot > D2m)) &
-            call self%fatal_error('transport_do_bottom', 'SR3-B: bed interfaces not ordered (0 < D1m < D2m < Dtot)')
+         call h2s_check_geometry(self, D1m, D2m, Dtot, self%minD, self%dtot)
          if (.not. (poro > 0.0_rk .and. minval(diff) > 0.0_rk .and. cmix >= 0.0_rk)) &
-            call self%fatal_error('transport_do_bottom', 'SR3-B: porosity, diffusivities or cmix invalid')
-         h = (/ D1m, D2m - D1m, Dtot - D2m /)
-         do k = 1, n
-            ilay = (k - 1) / self%nsub + 1
-            dz(k) = h(ilay) / self%nsub
-            dk(k) = diff(ilay)
+            call self%fatal_error('transport_do_bottom', 'fixed grid: porosity, diffusivities or cmix invalid')
+         cuts = (/ 0.0_rk, D1m, D2m, Dtot /)
+         do k = 1, self%n
             _GET_HORIZONTAL_(self%id_m(k), m(k))
-            c(k) = max(0.0_rk, m(k)) / (poro * dz(k))
+            c(k) = max(0.0_rk, m(k)) / (poro * (self%z(k + 1) - self%z(k)))
+            zc(k) = 0.5_rk * (self%z(k) + self%z(k + 1))
          end do
          r = 0.0_rk
-         do k = 1, n - 1
-            F = (c(k + 1) - c(k)) / (dz(k) / (2.0_rk * dk(k)) + dz(k + 1) / (2.0_rk * dk(k + 1)))
+         do k = 1, self%n - 1
+            Rc = 0.0_rk             ! resistance between the two centres, int dz/diff over the layers it crosses
+            do l = 1, 3
+               Rc = Rc + h2s_overlap(zc(k), zc(k + 1), cuts(l), cuts(l + 1)) / diff(l)
+            end do
+            F = (c(k + 1) - c(k)) / Rc                    ! upward flux from cell k+1 into cell k
             r(k) = r(k) + F
             r(k + 1) = r(k + 1) - F
          end do
+         Rs = cmix
+         do l = 1, 3
+            Rs = Rs + h2s_overlap(0.0_rk, zc(1), cuts(l), cuts(l + 1)) / diff(l)
+         end do
          cp = max(0.0_rk, H2S_pel)
-         Jreq = (c(1) - cp) / (cmix + dz(1) / (2.0_rk * dk(1)))
+         Jreq = (c(1) - cp) / Rs
          J = Jreq
          if (J < 0.0_rk .and. self%h_supply > 0.0_rk) J = J * cp / (cp + self%h_supply)
          r(1) = r(1) - J
-         ! moving grid (ALE): EVERY sub-box boundary moves -- the ERSEM interfaces with the exported rates, the internal
-         ! boundaries proportionally with their layer -- and the pore water it sweeps carries its sulfide (donor cell),
-         ! positive into the upper box when the boundary deepens
-         wtop = (/ 0.0_rk, D1rate, D2rate /)
-         wthk = (/ D1rate, D2rate - D1rate, -D2rate /)
-         do k = 1, n - 1
-            ilay = (k - 1) / self%nsub + 1
-            w = wtop(ilay) + real(mod(k - 1, self%nsub) + 1, rk) / self%nsub * wthk(ilay)
-            T = poro * w * merge(c(k + 1), c(k), w > 0.0_rk)
-            r(k) = r(k) + T
-            r(k + 1) = r(k + 1) - T
-         end do
-         do k = 1, n
+         do k = 1, self%n
             _SET_BOTTOM_ODE_(self%id_m(k), r(k))
          end do
          _SET_BOTTOM_EXCHANGE_(self%id_H2S_pel, J)
