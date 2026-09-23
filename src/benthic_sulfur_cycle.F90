@@ -94,6 +94,9 @@ module ersem_benthic_sulfur_cycle
       type(type_bottom_state_variable_id) :: id_cumJ, id_guard      ! accepted-step counters (docs/127 s10)
       logical  :: test = .false.
       real(rk) :: t_D1 = 0.0_rk, t_D2 = 0.0_rk, t_diff(3) = 0.0_rk, t_cpel = 0.0_rk
+      ! prescribed interface motion in the operator test (ramp <= 0: static, the legacy behaviour)
+      real(rk) :: t_D1e = 0.0_rk, t_D2e = 0.0_rk, t_ramp = 0.0_rk, t_yday0 = 0.0_rk
+      type(type_global_dependency_id) :: id_yday
    contains
       procedure :: do_bottom => transport_do_bottom
    end type
@@ -107,6 +110,8 @@ module ersem_benthic_sulfur_cycle
       type(type_bottom_state_variable_id) :: id_cumP, id_cumS, id_cumJ, id_guard   ! accepted-step counters (docs/127 s10)
       logical  :: h2s_test = .false.                                      ! frozen-coefficient operator test
       real(rk) :: t_D1 = 0.0_rk, t_D2 = 0.0_rk, t_k(3) = 0.0_rk, t_P1 = 0.0_rk, t_P3 = 0.0_rk
+      real(rk) :: t_D1e = 0.0_rk, t_D2e = 0.0_rk, t_ramp = 0.0_rk, t_yday0 = 0.0_rk
+      type(type_global_dependency_id) :: id_yday_test
       type(type_horizontal_diagnostic_variable_id) :: id_k_h2s(3), id_P_h2s_1, id_P_h2s_3
       ! State variable dependencies (layer-specific via benthic_column_dissolved_matter)
       type(type_bottom_state_variable_id) :: id_H2S_1, id_H2S_2, id_H2S_3
@@ -162,6 +167,11 @@ module ersem_benthic_sulfur_cycle
       type(type_horizontal_diagnostic_variable_id) :: id_ledger_barfes_H2S_pel, id_ledger_barrier_S0s
       type(type_horizontal_diagnostic_variable_id) :: id_ledger_barrier_S0_1, id_ledger_barrier_S0_pel
       type(type_horizontal_diagnostic_variable_id) :: id_ledger_barrier_O2_pel
+      ! The fixed grid applies its H2S source terms per CELL, so the legacy per-ERSEM-layer H2S ledger entries
+      ! describe expressions that are NOT applied under isw_h2s_layers = 2. They are registered only for the
+      ! legacy column; the grid gets its own, which are the applied terms summed over each layer's coverage
+      ! (nippon-steel docs/127 s13, round 42 item a5).
+      type(type_horizontal_diagnostic_variable_id) :: id_ledger_grid_H2S(3)
 
       ! Parameters
       real(rk) :: K_H2S_prod     ! H2S production rate per unit remineralization (mol S/mol C)
@@ -202,6 +212,9 @@ contains
    subroutine initialize(self, configunit)
       class(type_ersem_benthic_sulfur_cycle), intent(inout), target :: self
       integer, intent(in) :: configunit
+      integer :: ilay, kk
+      character(len=16) :: lab
+      real(rk), allocatable :: ovp(:, :)
 
       ! Set time unit to d-1 (ERSEM convention)
       self%dt = 86400._rk
@@ -391,16 +404,21 @@ contains
       ! computes nothing, bit-identical to the legacy build.
       ! Counters whose SET call depends on isw_S0_solid, isw_barrier_dest or
       ! legacy_ersem_compatibility are registered under the same condition.
+      ! read here, not below: the H2S entries of the ledger depend on which bed representation applies
+      call self%get_parameter(self%isw_h2s_layers, 'isw_h2s_layers', '', &
+           'bed sulfide: 0 homogeneous G2_H2S column (legacy), 2 fixed grid (1: retired SR3-B)', default=0, minimum=0, maximum=2)
       call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
            'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
            default=0, minimum=0, maximum=1)
       if (self%isw_ledger == 1) then
+       if (self%isw_h2s_layers == 0) then
          call self%register_diagnostic_variable(self%id_ledger_srfes_H2S_3, 'ledger_srfes_H2S_3', 'mmol S/m^2/d', &
               'ledger: sulfate reduction (layer-3 share) and FeS precipitation -> H2S layer 3', &
               domain=domain_bottom, source=source_do_bottom)
          call self%register_diagnostic_variable(self%id_ledger_no3fes_H2S_2, 'ledger_no3fes_H2S_2', 'mmol S/m^2/d', &
               'ledger: H2S oxidation by NO3 and FeS precipitation -> H2S layer 2', &
               domain=domain_bottom, source=source_do_bottom)
+       end if
          call self%register_diagnostic_variable(self%id_ledger_thio_NO3_2, 'ledger_thio_NO3_2', 'mmol N/m^2/d', &
               'ledger: thiodenitrification (H2S -> S0 and S0 -> SO4 by NO3) -> nitrate layer 2', &
               domain=domain_bottom, source=source_do_bottom)
@@ -413,9 +431,22 @@ contains
          call self%register_diagnostic_variable(self%id_ledger_thio_K4n2, 'ledger_thio_K4n2', 'mmol N/m^2/d', &
               'ledger: thiodenitrification DNRA share -> ammonium layer 2', &
               domain=domain_bottom, source=source_do_bottom)
-         call self%register_diagnostic_variable(self%id_ledger_srox_H2S_1, 'ledger_srox_H2S_1', 'mmol S/m^2/d', &
-              'ledger: sulfate reduction (layer-1 share), H2S oxidation and FeS precipitation -> H2S layer 1', &
-              domain=domain_bottom, source=source_do_bottom)
+         if (self%isw_h2s_layers == 0) then
+            call self%register_diagnostic_variable(self%id_ledger_srox_H2S_1, 'ledger_srox_H2S_1', 'mmol S/m^2/d', &
+                 'ledger: sulfate reduction (layer-1 share), H2S oxidation and FeS precipitation -> H2S layer 1', &
+                 domain=domain_bottom, source=source_do_bottom)
+         else if (self%isw_h2s_layers == 2) then
+            ! What the FIXED GRID applies, summed over each ERSEM layer's coverage of the cells: production placed
+            ! in that layer minus the first-order removal its own constant takes from the cells it covers. The sum
+            ! over the three equals the total source the cell ODEs apply, so dM = sum(ledger) - J_applied closes.
+            do ilay = 1, 3
+               write (lab, '(i0)') ilay
+               call self%register_diagnostic_variable(self%id_ledger_grid_H2S(ilay), &
+                    'ledger_grid_H2S_'//trim(lab), 'mmol S/m^2/d', &
+                    'ledger: fixed grid, net H2S source applied within ERSEM layer '//trim(lab), &
+                    domain=domain_bottom, source=source_do_bottom)
+            end do
+         end if
          if (self%isw_S0_solid == 1) then
             call self%register_diagnostic_variable(self%id_ledger_oxbur_S0s, 'ledger_oxbur_S0s', 'mmol S/m^2/d', &
                  'ledger: H2S oxidation to S0, S0 oxidation and S0 burial -> solid S0 layer 1', &
@@ -466,8 +497,6 @@ contains
 
       ! Register dependencies for layer-specific sulfur variables
       ! These link to variables created by benthic_column_dissolved_matter with composition 'h' and 'e'
-      call self%get_parameter(self%isw_h2s_layers, 'isw_h2s_layers', '', &
-           'bed sulfide: 0 homogeneous G2_H2S column (legacy), 2 fixed grid (1: retired SR3-B)', default=0, minimum=0, maximum=2)
       if (self%isw_h2s_layers == 1) call self%fatal_error('initialize', &
            'isw_h2s_layers = 1 (SR3-B moving sub-boxes) failed its transport gate and is retired (nippon-steel docs/127 s8.3); use 2')
       if (self%isw_h2s_layers == 2) then
@@ -585,7 +614,7 @@ contains
       real(rk) :: share_1, poro, NO3_1, f_ex
       real(rk), allocatable :: mh(:), fr(:, :), ov(:, :)
       integer  :: kbox
-      real(rk) :: Dtot, hl(3), kl(3), Pl1, Pl3, Sj, sumS
+      real(rk) :: Dtot, hl(3), kl(3), Slay(3), Pl1, Pl3, Sj, sumS, tD1, tD2, yday
       real(rk) :: R_FeS_1, R_FeS_2, R_FeS_3, R_FeS_ben, R_FeS_pel
 
       _HORIZONTAL_LOOP_BEGIN_
@@ -833,18 +862,33 @@ contains
                kl = self%t_k
                Pl1 = self%t_P1
                Pl3 = self%t_P3
-               hl = (/ self%t_D1, self%t_D2 - self%t_D1, Dtot - self%t_D2 /)
-               call h2s_coverage(self%z_h2s, self%t_D1, self%t_D2, Dtot, ov)
+               tD1 = self%t_D1
+               tD2 = self%t_D2
+               if (self%t_ramp > 0.0_rk) then
+                  _GET_GLOBAL_(self%id_yday_test, yday)
+                  call h2s_test_interfaces(self%t_D1, self%t_D1e, self%t_D2, self%t_D2e, self%t_ramp, &
+                                           self%t_yday0, yday, tD1, tD2)
+               end if
+               hl = (/ tD1, tD2 - tD1, Dtot - tD2 /)
+               call h2s_coverage(self%z_h2s, tD1, tD2, Dtot, ov)
                do kbox = 1, self%n_h2s
                   fr(:, kbox) = ov(:, kbox) / (self%z_h2s(kbox + 1) - self%z_h2s(kbox))
                end do
             end if
             sumS = 0.0_rk
+            Slay = 0.0_rk
             do kbox = 1, self%n_h2s
                Sj = sum(kl * fr(:, kbox)) * max(0.0_rk, mh(kbox))
                sumS = sumS + Sj
+               Slay = Slay + kl * fr(:, kbox) * max(0.0_rk, mh(kbox))
                _SET_BOTTOM_ODE_(self%id_h2s(kbox), Pl1 * ov(1, kbox) / hl(1) + Pl3 * ov(3, kbox) / hl(3) - Sj)
             end do
+            if (self%isw_ledger == 1) then
+               ! the applied terms, summed over each layer's coverage of the cells (docs/127 s13)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_grid_H2S(1), Pl1 - Slay(1))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_grid_H2S(2), -Slay(2))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_grid_H2S(3), Pl3 - Slay(3))
+            end if
             _SET_BOTTOM_ODE_(self%id_cumP, Pl1 + Pl3)
             _SET_BOTTOM_ODE_(self%id_cumS, sumS)
             _SET_BOTTOM_ODE_(self%id_guard, real(count(mh < 0.0_rk), rk))
@@ -857,7 +901,7 @@ contains
          else
             _SET_BOTTOM_ODE_(self%id_H2S_3, (1.0_rk - share_1) * R_sulfate_red - R_FeS_3)
          end if
-         if (self%isw_ledger == 1) then
+         if (self%isw_ledger == 1 .and. self%isw_h2s_layers == 0) then
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srfes_H2S_3, (1.0_rk - share_1) * R_sulfate_red - R_FeS_3)
          end if
 
@@ -879,7 +923,8 @@ contains
          _SET_BOTTOM_ODE_(self%id_NO3_2, -r_no3 * R_H2S_NO3_ox &
                                          - r_no3_S0 * R_S0_NO3_ox)
          if (self%isw_ledger == 1) then
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_no3fes_H2S_2, -R_H2S_NO3_ox - R_FeS_2)
+            if (self%isw_h2s_layers == 0) &
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_no3fes_H2S_2, -R_H2S_NO3_ox - R_FeS_2)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_thio_NO3_2, -r_no3 * R_H2S_NO3_ox &
                                          - r_no3_S0 * R_S0_NO3_ox)
          end if
@@ -925,7 +970,7 @@ contains
          !          consumption by oxidation and FeS precipitation,
          !          S0 production from H2S oxidation, loss from oxidation and burial
          if (self%isw_h2s_layers == 0) _SET_BOTTOM_ODE_(self%id_H2S_1, share_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
-         if (self%isw_ledger == 1) then
+         if (self%isw_ledger == 1 .and. self%isw_h2s_layers == 0) then
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srox_H2S_1, share_1 * R_sulfate_red - R_H2S_ox_1 - R_FeS_1)
          end if
          if (self%isw_S0_solid == 1) then
@@ -1069,6 +1114,39 @@ contains
          call self%get_parameter(self%t_k(3), 'h2s_test_k3', '1/d', 'test: sink constant, layer 3')
          call self%get_parameter(self%t_P1, 'h2s_test_P1', 'mmol S/m^2/d', 'test: production in layer 1')
          call self%get_parameter(self%t_P3, 'h2s_test_P3', 'mmol S/m^2/d', 'test: production in layer 3')
+         ! PRESCRIBED INTERFACE MOTION (round 42 item a3). The fixed grid has no swept-mass transfer: its only
+         ! response to a moving interface is the coverage recomputation, and a static test cannot show that it
+         ! happens. D1 and D2 ramp linearly from their static values to the *_end values over h2s_test_ramp_d days
+         ! from h2s_test_t0_yday, then hold. ramp <= 0 (the default) is the static test, unchanged.
+         call self%get_parameter(self%t_D1e, 'h2s_test_D1_end', 'm', 'test: depth of interface 1 after the ramp', &
+              default=self%t_D1)
+         call self%get_parameter(self%t_D2e, 'h2s_test_D2_end', 'm', 'test: depth of interface 2 after the ramp', &
+              default=self%t_D2)
+         call self%get_parameter(self%t_ramp, 'h2s_test_ramp_d', 'd', &
+              'test: duration of the prescribed interface ramp (0: static)', default=0.0_rk, minimum=0.0_rk)
+         call self%get_parameter(self%t_yday0, 'h2s_test_t0_yday', 'd', &
+              'test: day of year at which the ramp starts', default=0.0_rk)
+         if (self%t_ramp > 0.0_rk) call self%register_global_dependency(self%id_yday_test, &
+              standard_variables%number_of_days_since_start_of_the_year)
+         ! The COMPILED grid, written once. Round 42 item a3: the operator test compared trajectories but never
+         ! the edges and coverage the model actually uses -- only the mirror's own recomputation of the same rule.
+         ! Test runs only, so it adds nothing to a production log.
+         allocate(ovp(3, self%n_h2s))
+         write (*, '(a,i0)') 'h2s_grid_cells ', self%n_h2s
+         do kk = 1, self%n_h2s + 1
+            write (*, '(a,i0,1x,es24.17)') 'h2s_grid_edge ', kk, self%z_h2s(kk)
+         end do
+         call h2s_coverage(self%z_h2s, self%t_D1, self%t_D2, self%dtot_h2s, ovp)
+         do kk = 1, self%n_h2s
+            write (*, '(a,i0,3(1x,es24.17))') 'h2s_grid_cov0 ', kk, ovp(1, kk), ovp(2, kk), ovp(3, kk)
+         end do
+         if (self%t_ramp > 0.0_rk) then
+            call h2s_coverage(self%z_h2s, self%t_D1e, self%t_D2e, self%dtot_h2s, ovp)
+            do kk = 1, self%n_h2s
+               write (*, '(a,i0,3(1x,es24.17))') 'h2s_grid_cov1 ', kk, ovp(1, kk), ovp(2, kk), ovp(3, kk)
+            end do
+         end if
+         deallocate(ovp)
       end if
 
       allocate(summ)
@@ -1103,6 +1181,12 @@ contains
       if (self%h2s_test) then
          tran%t_D1 = self%t_D1
          tran%t_D2 = self%t_D2
+         tran%t_D1e = self%t_D1e
+         tran%t_D2e = self%t_D2e
+         tran%t_ramp = self%t_ramp
+         tran%t_yday0 = self%t_yday0
+         if (tran%t_ramp > 0.0_rk) call tran%register_global_dependency(tran%id_yday, &
+              standard_variables%number_of_days_since_start_of_the_year)
          call self%get_parameter(tran%t_diff(1), 'h2s_test_diff1', 'm^2/d', 'test: diffusivity, layer 1')
          call self%get_parameter(tran%t_diff(2), 'h2s_test_diff2', 'm^2/d', 'test: diffusivity, layer 2')
          call self%get_parameter(tran%t_diff(3), 'h2s_test_diff3', 'm^2/d', 'test: diffusivity, layer 3')
@@ -1174,6 +1258,23 @@ contains
       h2s_overlap = max(0.0_rk, min(b, hi) - max(a, lo))
    end function h2s_overlap
 
+   pure subroutine h2s_test_interfaces(D1_0, D1_1, D2_0, D2_1, ramp, yday0, yday, D1, D2)
+      ! The prescribed interface positions of the operator test: linear from (D1_0, D2_0) to (D1_1, D2_1) over
+      ! `ramp` days from `yday0`, held afterwards. ramp <= 0 keeps the static positions (docs/127 s13).
+      real(rk), intent(in)  :: D1_0, D1_1, D2_0, D2_1, ramp, yday0, yday
+      real(rk), intent(out) :: D1, D2
+      real(rk) :: f
+      if (ramp <= 0.0_rk) then
+         D1 = D1_0
+         D2 = D2_0
+         return
+      end if
+      f = min(1.0_rk, max(0.0_rk, (yday - yday0) / ramp))
+      D1 = D1_0 + f * (D1_1 - D1_0)
+      D2 = D2_0 + f * (D2_1 - D2_0)
+   end subroutine h2s_test_interfaces
+
+
    pure subroutine h2s_coverage(z, D1m, D2m, Dtot, ov)
       ! ov(l, j): length of cell j inside ERSEM layer l
       real(rk), intent(in) :: z(:), D1m, D2m, Dtot
@@ -1228,7 +1329,7 @@ contains
       class(type_h2s_bed_transport), intent(in) :: self
       _DECLARE_ARGUMENTS_DO_BOTTOM_
       integer :: k, l
-      real(rk) :: D1m, D2m, Dtot, poro, cmix, H2S_pel, diff(3), cuts(4)
+      real(rk) :: D1m, D2m, Dtot, poro, cmix, H2S_pel, diff(3), cuts(4), yday
       real(rk) :: m(self%n), c(self%n), r(self%n), zc(self%n)
       real(rk) :: F, J, Jreq, cp, Rc, Rs
       integer  :: nneg
@@ -1248,6 +1349,11 @@ contains
          if (self%test) then                 ! frozen-coefficient operator test
             D1m = self%t_D1
             D2m = self%t_D2
+            if (self%t_ramp > 0.0_rk) then
+               _GET_GLOBAL_(self%id_yday, yday)
+               call h2s_test_interfaces(self%t_D1, self%t_D1e, self%t_D2, self%t_D2e, self%t_ramp, &
+                                        self%t_yday0, yday, D1m, D2m)
+            end if
             diff = self%t_diff
             H2S_pel = self%t_cpel
          end if
