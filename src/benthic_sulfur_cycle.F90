@@ -212,9 +212,8 @@ contains
    subroutine initialize(self, configunit)
       class(type_ersem_benthic_sulfur_cycle), intent(inout), target :: self
       integer, intent(in) :: configunit
-      integer :: ilay, kk
+      integer :: ilay
       character(len=16) :: lab
-      real(rk), allocatable :: ovp(:, :)
 
       ! Set time unit to d-1 (ERSEM convention)
       self%dt = 86400._rk
@@ -1059,6 +1058,7 @@ contains
       integer :: ilay, k, n
       character(len=16) :: nm
       real(rk) :: h_supply, top, cap, growth
+      real(rk), allocatable :: ovp(:, :)
 
       call self%get_parameter(top, 'h2s_grid_top', 'm', 'fixed grid: width of the top cell', default=1.0e-3_rk, &
            minimum=1.0e-5_rk)
@@ -1133,17 +1133,17 @@ contains
          ! Test runs only, so it adds nothing to a production log.
          allocate(ovp(3, self%n_h2s))
          write (*, '(a,i0)') 'h2s_grid_cells ', self%n_h2s
-         do kk = 1, self%n_h2s + 1
-            write (*, '(a,i0,1x,es24.17)') 'h2s_grid_edge ', kk, self%z_h2s(kk)
+         do k = 1, self%n_h2s + 1
+            write (*, '(a,i0,1x,es24.17)') 'h2s_grid_edge ', k, self%z_h2s(k)
          end do
          call h2s_coverage(self%z_h2s, self%t_D1, self%t_D2, self%dtot_h2s, ovp)
-         do kk = 1, self%n_h2s
-            write (*, '(a,i0,3(1x,es24.17))') 'h2s_grid_cov0 ', kk, ovp(1, kk), ovp(2, kk), ovp(3, kk)
+         do k = 1, self%n_h2s
+            write (*, '(a,i0,3(1x,es24.17))') 'h2s_grid_cov0 ', k, ovp(1, k), ovp(2, k), ovp(3, k)
          end do
          if (self%t_ramp > 0.0_rk) then
             call h2s_coverage(self%z_h2s, self%t_D1e, self%t_D2e, self%dtot_h2s, ovp)
-            do kk = 1, self%n_h2s
-               write (*, '(a,i0,3(1x,es24.17))') 'h2s_grid_cov1 ', kk, ovp(1, kk), ovp(2, kk), ovp(3, kk)
+            do k = 1, self%n_h2s
+               write (*, '(a,i0,3(1x,es24.17))') 'h2s_grid_cov1 ', k, ovp(1, k), ovp(2, k), ovp(3, k)
             end do
          end if
          deallocate(ovp)
