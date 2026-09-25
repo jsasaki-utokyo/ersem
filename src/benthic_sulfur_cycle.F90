@@ -164,6 +164,9 @@ module ersem_benthic_sulfur_cycle
       type(type_horizontal_diagnostic_variable_id) :: id_ledger_thio_G4n, id_ledger_thio_K4n2, id_ledger_thio_benTA2
       type(type_horizontal_diagnostic_variable_id) :: id_ledger_srox_H2S_1, id_ledger_oxbur_S0s, id_ledger_oxbur_S0_1
       type(type_horizontal_diagnostic_variable_id) :: id_ledger_ox1_G2o, id_ledger_srox_benTA, id_ledger_sr3_benTA3
+      ! layer-1 acid production diagnostic for reoxidation-driven carbonate dissolution (nippon-steel docs/129, C2)
+      integer :: isw_acid_diag = 0
+      type(type_horizontal_diagnostic_variable_id) :: id_acid_1
       type(type_horizontal_diagnostic_variable_id) :: id_ledger_barfes_H2S_pel, id_ledger_barrier_S0s
       type(type_horizontal_diagnostic_variable_id) :: id_ledger_barrier_S0_1, id_ledger_barrier_S0_pel
       type(type_horizontal_diagnostic_variable_id) :: id_ledger_barrier_O2_pel
@@ -406,6 +409,14 @@ contains
       ! read here, not below: the H2S entries of the ledger depend on which bed representation applies
       call self%get_parameter(self%isw_h2s_layers, 'isw_h2s_layers', '', &
            'bed sulfide: 0 homogeneous G2_H2S column (legacy), 2 fixed grid (1: retired SR3-B)', default=0, minimum=0, maximum=2)
+      ! nippon-steel docs/129 C2: export the layer-1 acid production of sulfur reoxidation (2 H+ per S0 or directly
+      ! oxidised H2S), read by bL2's reoxidation-driven dissolution. 0 (default) registers nothing: bit-identical.
+      call self%get_parameter(self%isw_acid_diag, 'isw_acid_diag', '', &
+           'export the layer-1 sulfur-reoxidation acid production (docs/129 C2; 0: off, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_acid_diag == 1) call self%register_diagnostic_variable(self%id_acid_1, 'acid_1', 'mmol eq/m^2/d', &
+           'layer-1 acid production by sulfur reoxidation (2 per S0 oxidised or H2S directly oxidised)', &
+           source=source_do_bottom)
       call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
            'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
            default=0, minimum=0, maximum=1)
@@ -994,6 +1005,9 @@ contains
             _SET_BOTTOM_ODE_(self%id_benTA, 2.0_rk * share_1 * R_sulfate_red - 2.0_rk * R_S0_ox_1 - 2.0_rk * R_ox_direct)
          if (self%isw_ledger == 1 .and. .not.legacy_ersem_compatibility) then
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_srox_benTA, 2.0_rk * share_1 * R_sulfate_red - 2.0_rk * R_S0_ox_1 - 2.0_rk * R_ox_direct)
+         end if
+         if (self%isw_acid_diag == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_acid_1, 2.0_rk * R_S0_ox_1 + 2.0_rk * R_ox_direct)
          end if
 
          ! Layer 3: sulfate reduction produces +2 TA per mol H2S

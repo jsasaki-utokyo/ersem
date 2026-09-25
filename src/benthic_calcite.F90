@@ -31,6 +31,12 @@ module ersem_benthic_calcite
       type (type_dependency_id)                     :: id_CO2aq
       type (type_horizontal_diagnostic_variable_id) :: id_co2_dissolution
       type (type_horizontal_diagnostic_variable_id) :: id_ledger_co2diss_c,id_ledger_co2diss_O3c,id_ledger_co2diss_TA
+      ! nippon-steel docs/129 C2: reoxidation-driven dissolution in the oxic layer, default off
+      real(rk) :: f_neut, c_half_neut
+      type (type_horizontal_dependency_id)          :: id_acid_S, id_nrate
+      type (type_bottom_state_variable_id)          :: id_benTA1, id_benDIC1
+      type (type_horizontal_diagnostic_variable_id) :: id_acid_dissolution
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_acdiss_c, id_ledger_acdiss_benTA, id_ledger_acdiss_benDIC
       ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
       integer  :: isw_ledger
       type (type_horizontal_diagnostic_variable_id) :: id_ledger_diss_c,id_ledger_diss_O3c,id_ledger_diss_TA
@@ -114,6 +120,28 @@ contains
          call self%register_diagnostic_variable(self%id_co2_dissolution, 'co2_dissolution', 'mg C/m^2/d', &
             'E5 C1: CO2*-promoted dissolution', source=source_do_bottom)
       end if
+      ! nippon-steel docs/129 C2 (2026-09-25): reoxidation-driven carbonate dissolution. The acid that sulfur
+      ! reoxidation (2 H+ per S0 oxidised) and nitrification (2 H+ per NH4 oxidised) produce in the oxic layer is
+      ! partly neutralised by the bed's CaCO3 instead of by the pore water's alkalinity (Green & Aller 2001:
+      ! 40-100 % of coastal dissolution so driven). R = f_neut * (acid_S + 2 nrate) * c/(c + c_half_neut), in mmol
+      ! CaCO3 per m^2 per day, f_neut = mol CaCO3 dissolved per mol H+ (0.5: the CO2 endpoint, CaCO3 + 2H+ -> Ca2+ +
+      ! CO2, TA-neutral net; 1: the bicarbonate endpoint, CaCO3 + H+ -> Ca2+ + HCO3-, net +1 per H+). The solid
+      ! loses R (mg C: R*CMass); the oxic layer's alkalinity gains 2R and its DIC R (the acid itself is already
+      ! charged by the producing modules). f_neut = 0 (default) registers nothing: bit-identical.
+      call self%get_parameter(self%f_neut, 'f_neut', 'mol/mol', &
+         'C2: CaCO3 dissolved per mol of oxic-layer reoxidation acid (0: off; 0.5 CO2 endpoint, 1 HCO3 endpoint)', &
+         default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+      call self%get_parameter(self%c_half_neut, 'c_half_neut', 'mg C/m^2', &
+         'C2: calcite stock at which the reoxidation-driven dissolution is halved', default=100.0_rk, minimum=1.0e-6_rk)
+      if (self%f_neut > 0.0_rk) then
+         call self%register_dependency(self%id_acid_S, 'acid_S', 'mmol eq/m^2/d', &
+            'C2: oxic-layer acid production by sulfur reoxidation')
+         call self%register_dependency(self%id_nrate, 'nrate', 'mmol N/m^2/d', 'C2: benthic nitrification rate')
+         call self%register_state_dependency(self%id_benTA1, 'benTA1', 'mEq/m^2', 'C2: alkalinity of the oxic layer')
+         call self%register_state_dependency(self%id_benDIC1, 'benDIC1', 'mmol C/m^2', 'C2: DIC of the oxic layer')
+         call self%register_diagnostic_variable(self%id_acid_dissolution, 'acid_dissolution', 'mmol C/m^2/d', &
+            'C2: reoxidation-driven CaCO3 dissolution', source=source_do_bottom)
+      end if
       call self%get_parameter(c0,'c0','mg C/m^2','background calcite concentration',default=0.0_rk)
 
       call self%add_constituent('c',0.0_rk,c0)
@@ -157,6 +185,14 @@ contains
               source=source_do_bottom)
          call self%register_diagnostic_variable(self%id_ledger_co2diss_TA, 'ledger_co2diss_TA', 'mmol eq/m^2/d', &
               'ledger: E5 C1 CO2*-promoted dissolution -> pelagic alkalinity (bottom flux)', source=source_do_bottom)
+         if (self%f_neut > 0.0_rk) then
+            call self%register_diagnostic_variable(self%id_ledger_acdiss_c, 'ledger_acdiss_c', 'mg C/m^2/d', &
+                 'ledger: C2 reoxidation-driven dissolution -> benthic calcite', source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_acdiss_benTA, 'ledger_acdiss_benTA1', 'mmol eq/m^2/d', &
+                 'ledger: C2 reoxidation-driven dissolution -> benthic alkalinity, layer 1', source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_acdiss_benDIC, 'ledger_acdiss_benDIC1', 'mmol C/m^2/d', &
+                 'ledger: C2 reoxidation-driven dissolution -> benthic DIC, layer 1', source=source_do_bottom)
+         end if
       end if
 
    end subroutine
@@ -171,6 +207,7 @@ contains
       real(rk) :: fdiss
       real(rk) :: par, F_prec
       real(rk) :: co2aq, F_co2
+      real(rk) :: acid_S, nrate, R_ac
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -237,6 +274,22 @@ contains
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_co2diss_c, -F_co2)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_co2diss_O3c, F_co2/CMass)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_co2diss_TA, 2*F_co2/CMass)
+         end if
+         ! C2 reoxidation-driven dissolution (docs/129; inert when f_neut = 0)
+         if (self%f_neut > 0.0_rk) then
+            _GET_HORIZONTAL_(self%id_acid_S, acid_S)
+            _GET_HORIZONTAL_(self%id_nrate, nrate)
+            R_ac = self%f_neut * (max(acid_S, 0.0_rk) + 2.0_rk * max(nrate, 0.0_rk)) &
+                 * max(bL2c, 0.0_rk) / (max(bL2c, 0.0_rk) + self%c_half_neut)
+            _SET_BOTTOM_ODE_(self%id_c, -R_ac * CMass)
+            _SET_BOTTOM_ODE_(self%id_benTA1, 2.0_rk * R_ac)
+            _SET_BOTTOM_ODE_(self%id_benDIC1, R_ac)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_acid_dissolution, R_ac)
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_acdiss_c, -R_ac * CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_acdiss_benTA, 2.0_rk * R_ac)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_acdiss_benDIC, R_ac)
+            end if
          end if
 
       _HORIZONTAL_LOOP_END_
