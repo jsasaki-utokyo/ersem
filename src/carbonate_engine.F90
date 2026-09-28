@@ -27,8 +27,9 @@
 ! opt_k_NH3 = 1): phosphate KP1-KP3 and silicate KSi Yao & Millero (1995,
 ! SWS), H2S Yao & Millero (1995, Total), NH3 Clegg & Whitfield (1995, Total),
 ! converted to the target scale; no pressure correction for these (shallow
-! sediments). It is a separate routine so that the water-column path above is
-! untouched (bit-identical results). calcite_ksp: Mucci (1983) with the Millero
+! sediments), the complete acid side on the free scale (H, HSO4, HF), input
+! and output validation, and the CO2 fugacity as output. It is a separate
+! routine so that the water-column path above is untouched (bit-identical). calcite_ksp: Mucci (1983) with the Millero
 ! (1995) pressure correction, the formula of CaCO3_Saturation (carbonate.F90),
 ! for a variable calcium.
 !
@@ -62,6 +63,9 @@ module carbonate_engine
       real(rk) :: PT = 0.0_rk, SiT = 0.0_rk, H2ST = 0.0_rk, NH3T = 0.0_rk
       real(rk) :: KP1 = 1.0_rk, KP2 = 1.0_rk, KP3 = 1.0_rk, KSi = 1.0_rk
       real(rk) :: KH2S = 1.0_rk, KNH3 = 1.0_rk
+      ! the acid side on the free scale (PyCO2SYS): H_free = H / free2target,
+      ! HSO4 = ST / (1 + KS / H_free), HF = FT / (1 + KF / H_free)
+      real(rk) :: ST = 0.0_rk, FT = 0.0_rk, KS = 1.0_rk, KF = 1.0_rk, free2target = 1.0_rk
    end type
 
    public :: carbonate_engine_solve, convert_pH_scale
@@ -786,39 +790,59 @@ contains
    ! As carbonate_engine_solve (PyCO2SYS mode; no legacy mode), with the
    ! alkalinity of phosphate, silicate, sulfide and ammonia (totals in mol/kg)
    !-----------------------------------------------------------------------
+   ! fCO2_atm is the CO2 FUGACITY (CO2*/K0, atm), not the partial pressure.
+   ! Inputs are validated (finite; DIC and the nutrient totals >= 0; TA may be
+   ! signed; opt_pH_scale 1-3, i.e. not NBS); success also requires finite,
+   ! non-negative species.
    subroutine carbonate_engine_solve_porewater(T, S, Pbar, DIC_molkg, TA_molkg, &
                                      PT_molkg, SiT_molkg, H2ST_molkg, NH3T_molkg, &
                                      opt_pH_scale, opt_k_carbonic, opt_total_borate, &
-                                     pH, pCO2_atm, H2CO3, HCO3, CO3, K0, success)
+                                     pH, fCO2_atm, H2CO3, HCO3, CO3, K0, success)
       real(rk), intent(in)  :: T, S, Pbar, DIC_molkg, TA_molkg
       real(rk), intent(in)  :: PT_molkg, SiT_molkg, H2ST_molkg, NH3T_molkg
       integer,  intent(in)  :: opt_pH_scale, opt_k_carbonic, opt_total_borate
-      real(rk), intent(out) :: pH, pCO2_atm, H2CO3, HCO3, CO3, K0
+      real(rk), intent(out) :: pH, fCO2_atm, H2CO3, HCO3, CO3, K0
       logical,  intent(out) :: success
       real(rk) :: K1, K2, KB, KW, BT, ST, FT, H, Tclamp
-      real(rk) :: free2total, free2sws, fH
+      real(rk) :: free2total, free2sws, fH, KS, KF
       type(nut_system) :: nut
 
-      pH = 0.0_rk; pCO2_atm = 0.0_rk; H2CO3 = 0.0_rk; HCO3 = 0.0_rk; CO3 = 0.0_rk
+      pH = 0.0_rk; fCO2_atm = 0.0_rk; H2CO3 = 0.0_rk; HCO3 = 0.0_rk; CO3 = 0.0_rk; K0 = 0.0_rk
+      success = .false.
+      if (.not. (abs(T) < 100.0_rk .and. S >= 0.0_rk .and. S < 50.0_rk .and. Pbar >= 0.0_rk .and. Pbar < 2000.0_rk &
+                 .and. DIC_molkg >= 0.0_rk .and. DIC_molkg < 1.0_rk .and. abs(TA_molkg) < 1.0_rk &
+                 .and. PT_molkg >= 0.0_rk .and. PT_molkg < 1.0_rk .and. SiT_molkg >= 0.0_rk .and. SiT_molkg < 1.0_rk &
+                 .and. H2ST_molkg >= 0.0_rk .and. H2ST_molkg < 1.0_rk .and. NH3T_molkg >= 0.0_rk &
+                 .and. NH3T_molkg < 1.0_rk)) return
+      if (opt_pH_scale < 1 .or. opt_pH_scale > 3 .or. (opt_k_carbonic /= 10 .and. opt_k_carbonic /= 14) &
+          .or. opt_total_borate < 1 .or. opt_total_borate > 2) return
       Tclamp = max(T, -2.0_rk)
       call calc_total_concentrations(S, opt_total_borate, BT, ST, FT)
       call calc_equilibrium_constants(Tclamp, S, Pbar, opt_pH_scale, &
                                       opt_k_carbonic, .false., &
                                       ST, FT, K0, K1, K2, KB, KW)
-      call scale_factors(Tclamp, S, Pbar, ST, FT, free2total, free2sws, fH)
+      call scale_factors(Tclamp, S, Pbar, ST, FT, free2total, free2sws, fH, KS, KF)
       nut%PT = PT_molkg; nut%SiT = SiT_molkg; nut%H2ST = H2ST_molkg; nut%NH3T = NH3T_molkg
+      nut%ST = ST; nut%FT = FT; nut%KS = KS; nut%KF = KF
+      select case (opt_pH_scale)
+      case (1); nut%free2target = free2total
+      case (2); nut%free2target = free2sws
+      case default; nut%free2target = 1.0_rk
+      end select
       call calc_nutrient_constants(Tclamp, S, opt_pH_scale, free2total, free2sws, fH, nut)
       call solve_pH_brent_porewater(DIC_molkg, TA_molkg, K1, K2, KB, KW, BT, nut, H, success)
       if (.not. success) return
       pH = -log10(H)
-      call calc_carbonate_species(DIC_molkg, H, K0, K1, K2, H2CO3, HCO3, CO3, pCO2_atm)
+      call calc_carbonate_species(DIC_molkg, H, K0, K1, K2, H2CO3, HCO3, CO3, fCO2_atm)
+      if (.not. (H2CO3 >= 0.0_rk .and. HCO3 >= 0.0_rk .and. CO3 >= 0.0_rk .and. fCO2_atm >= 0.0_rk &
+                 .and. H2CO3 < 1.0_rk .and. HCO3 < 1.0_rk .and. CO3 < 1.0_rk)) success = .false.
    end subroutine carbonate_engine_solve_porewater
 
    ! the depth scale-conversion factors of calc_equilibrium_constants (same formulas)
-   subroutine scale_factors(T, S, Pbar, ST, FT, free2total, free2sws, fH)
+   subroutine scale_factors(T, S, Pbar, ST, FT, free2total, free2sws, fH, KS, KF)
       real(rk), intent(in)  :: T, S, Pbar, ST, FT
-      real(rk), intent(out) :: free2total, free2sws, fH
-      real(rk) :: TK, lnTK, invTK, sqrtS, IS, sqrtIS, KS, KF, delta, kappa
+      real(rk), intent(out) :: free2total, free2sws, fH, KS, KF
+      real(rk) :: TK, lnTK, invTK, sqrtS, IS, sqrtIS, delta, kappa
       TK = T + 273.15_rk
       lnTK = log(TK)
       invTK = 1.0_rk / TK
@@ -888,14 +912,17 @@ contains
    end subroutine calc_nutrient_constants
 
    ! alkalinity residual with the pore-water systems (PyCO2SYS terms:
-   ! HPO4 + 2 PO4 - H3PO4, H3SiO4, HS, NH3), OH - H included
+   ! HPO4 + 2 PO4 - H3PO4, H3SiO4, HS, NH3) and the complete acid side on the
+   ! free scale (- H_free - HSO4 - HF), consistent on every supported scale
    function alkalinity_residual_porewater(H, DIC, TA_input, K1, K2, KB, KW, BT, nut) result(F)
       real(rk), intent(in) :: H, DIC, TA_input, K1, K2, KB, KW, BT
       type(nut_system), intent(in) :: nut
-      real(rk) :: F, denom, dP
+      real(rk) :: F, denom, dP, Hf
       denom = H * H + K1 * H + K1 * K2
       dP = H**3 + nut%KP1 * H * H + nut%KP1 * nut%KP2 * H + nut%KP1 * nut%KP2 * nut%KP3
-      F = DIC * (K1 * H + 2.0_rk * K1 * K2) / denom + BT * KB / (KB + H) + KW / H - H &
+      Hf = H / nut%free2target
+      F = DIC * (K1 * H + 2.0_rk * K1 * K2) / denom + BT * KB / (KB + H) + KW / H - Hf &
+          - nut%ST / (1.0_rk + nut%KS / Hf) - nut%FT / (1.0_rk + nut%KF / Hf) &
           + nut%PT * (nut%KP1 * nut%KP2 * H + 2.0_rk * nut%KP1 * nut%KP2 * nut%KP3 - H**3) / dP &
           + nut%SiT * nut%KSi / (nut%KSi + H) &
           + nut%H2ST * nut%KH2S / (nut%KH2S + H) &
