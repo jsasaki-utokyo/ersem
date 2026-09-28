@@ -22,6 +22,16 @@
 !   Total boron: Uppstrom (1974) or Lee et al. (2010)
 !   fH: Takahashi-Williams-Benson (1982) for NBS scale
 !
+! carbonate_engine_solve_porewater (MUSE, 2026-09-28): the same solver with the
+! pore-water acid-base systems of PyCO2SYS (defaults opt_k_phosphate = 1,
+! opt_k_NH3 = 1): phosphate KP1-KP3 and silicate KSi Yao & Millero (1995,
+! SWS), H2S Yao & Millero (1995, Total), NH3 Clegg & Whitfield (1995, Total),
+! converted to the target scale; no pressure correction for these (shallow
+! sediments). It is a separate routine so that the water-column path above is
+! untouched (bit-identical results). calcite_ksp: Mucci (1983) with the Millero
+! (1995) pressure correction, the formula of CaCO3_Saturation (carbonate.F90),
+! for a variable calcium.
+!
 ! Author: Claude Code
 ! Date: 2026
 !-----------------------------------------------------------------------
@@ -46,7 +56,16 @@ module carbonate_engine
    ! Universal gas constant (cm3 bar / mol K)
    real(rk), parameter :: Rgas = 83.14472_rk
 
+   ! totals (mol/kg) and dissociation constants (target scale) of the
+   ! pore-water acid-base systems
+   type :: nut_system
+      real(rk) :: PT = 0.0_rk, SiT = 0.0_rk, H2ST = 0.0_rk, NH3T = 0.0_rk
+      real(rk) :: KP1 = 1.0_rk, KP2 = 1.0_rk, KP3 = 1.0_rk, KSi = 1.0_rk
+      real(rk) :: KH2S = 1.0_rk, KNH3 = 1.0_rk
+   end type
+
    public :: carbonate_engine_solve, convert_pH_scale
+   public :: carbonate_engine_solve_porewater, calcite_ksp
 
 contains
 
@@ -760,5 +779,183 @@ contains
       pH_out = pH_in + adj_from - adj_to
 
    end subroutine convert_pH_scale
+
+   !-----------------------------------------------------------------------
+   ! carbonate_engine_solve_porewater
+   !
+   ! As carbonate_engine_solve (PyCO2SYS mode; no legacy mode), with the
+   ! alkalinity of phosphate, silicate, sulfide and ammonia (totals in mol/kg)
+   !-----------------------------------------------------------------------
+   subroutine carbonate_engine_solve_porewater(T, S, Pbar, DIC_molkg, TA_molkg, &
+                                     PT_molkg, SiT_molkg, H2ST_molkg, NH3T_molkg, &
+                                     opt_pH_scale, opt_k_carbonic, opt_total_borate, &
+                                     pH, pCO2_atm, H2CO3, HCO3, CO3, K0, success)
+      real(rk), intent(in)  :: T, S, Pbar, DIC_molkg, TA_molkg
+      real(rk), intent(in)  :: PT_molkg, SiT_molkg, H2ST_molkg, NH3T_molkg
+      integer,  intent(in)  :: opt_pH_scale, opt_k_carbonic, opt_total_borate
+      real(rk), intent(out) :: pH, pCO2_atm, H2CO3, HCO3, CO3, K0
+      logical,  intent(out) :: success
+      real(rk) :: K1, K2, KB, KW, BT, ST, FT, H, Tclamp
+      real(rk) :: free2total, free2sws, fH
+      type(nut_system) :: nut
+
+      pH = 0.0_rk; pCO2_atm = 0.0_rk; H2CO3 = 0.0_rk; HCO3 = 0.0_rk; CO3 = 0.0_rk
+      Tclamp = max(T, -2.0_rk)
+      call calc_total_concentrations(S, opt_total_borate, BT, ST, FT)
+      call calc_equilibrium_constants(Tclamp, S, Pbar, opt_pH_scale, &
+                                      opt_k_carbonic, .false., &
+                                      ST, FT, K0, K1, K2, KB, KW)
+      call scale_factors(Tclamp, S, Pbar, ST, FT, free2total, free2sws, fH)
+      nut%PT = PT_molkg; nut%SiT = SiT_molkg; nut%H2ST = H2ST_molkg; nut%NH3T = NH3T_molkg
+      call calc_nutrient_constants(Tclamp, S, opt_pH_scale, free2total, free2sws, fH, nut)
+      call solve_pH_brent_porewater(DIC_molkg, TA_molkg, K1, K2, KB, KW, BT, nut, H, success)
+      if (.not. success) return
+      pH = -log10(H)
+      call calc_carbonate_species(DIC_molkg, H, K0, K1, K2, H2CO3, HCO3, CO3, pCO2_atm)
+   end subroutine carbonate_engine_solve_porewater
+
+   ! the depth scale-conversion factors of calc_equilibrium_constants (same formulas)
+   subroutine scale_factors(T, S, Pbar, ST, FT, free2total, free2sws, fH)
+      real(rk), intent(in)  :: T, S, Pbar, ST, FT
+      real(rk), intent(out) :: free2total, free2sws, fH
+      real(rk) :: TK, lnTK, invTK, sqrtS, IS, sqrtIS, KS, KF, delta, kappa
+      TK = T + 273.15_rk
+      lnTK = log(TK)
+      invTK = 1.0_rk / TK
+      sqrtS = sqrt(S)
+      IS = 19.924_rk * S / (1000.0_rk - 1.005_rk * S)
+      sqrtIS = sqrt(IS)
+      KS = exp(-4276.1_rk * invTK + 141.328_rk - 23.093_rk * lnTK &
+               + (-13856.0_rk * invTK + 324.57_rk - 47.986_rk * lnTK) * sqrtIS &
+               + (35474.0_rk * invTK - 771.54_rk + 114.723_rk * lnTK) * IS &
+               - 2698.0_rk * invTK * IS**1.5_rk + 1776.0_rk * invTK * IS**2.0_rk &
+               + log(1.0_rk - 0.001005_rk * S))
+      KF = exp(874.0_rk * invTK - 9.68_rk + 0.111_rk * sqrtS)
+      delta = -18.03_rk + 0.0466_rk * T + 0.000316_rk * T**2.0_rk
+      kappa = (-4.53_rk + 0.09_rk * T) / 1000.0_rk
+      KS = KS * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
+      delta = -9.78_rk - 0.009_rk * T - 0.000942_rk * T**2.0_rk
+      kappa = (-3.91_rk + 0.054_rk * T) / 1000.0_rk
+      KF = KF * exp((-delta + 0.5_rk * kappa * Pbar) * Pbar / (Rgas * TK))
+      free2total = 1.0_rk + ST / KS
+      free2sws = 1.0_rk + ST / KS + FT / KF
+      fH = calc_fH(TK, S)
+   end subroutine scale_factors
+
+   ! the pore-water acid-base constants (PyCO2SYS kH3PO4_SWS_YM95, kSi_SWS_YM95,
+   ! kH2S_TOT_YM95, kNH3_TOT_CW95), converted to the target scale
+   subroutine calc_nutrient_constants(T, S, opt_pH_scale, free2total, free2sws, fH, nut)
+      real(rk), intent(in) :: T, S, free2total, free2sws, fH
+      integer,  intent(in) :: opt_pH_scale
+      type(nut_system), intent(inout) :: nut
+      real(rk) :: TK, lnTK, sqrtS, IonS, pKNH3
+      TK = T + 273.15_rk
+      lnTK = log(TK)
+      sqrtS = sqrt(S)
+      nut%KP1 = exp(-4576.752_rk / TK + 115.54_rk - 18.453_rk * lnTK &
+                    + (-106.736_rk / TK + 0.69171_rk) * sqrtS &
+                    + (-0.65643_rk / TK - 0.01844_rk) * S)
+      nut%KP2 = exp(-8814.715_rk / TK + 172.1033_rk - 27.927_rk * lnTK &
+                    + (-160.34_rk / TK + 1.3566_rk) * sqrtS &
+                    + (0.37335_rk / TK - 0.05778_rk) * S)
+      nut%KP3 = exp(-3070.75_rk / TK - 18.126_rk &
+                    + (17.27039_rk / TK + 2.81197_rk) * sqrtS &
+                    + (-44.99486_rk / TK - 0.09984_rk) * S)
+      IonS = 19.924_rk * S / (1000.0_rk - 1.005_rk * S)
+      nut%KSi = exp(-8904.2_rk / TK + 117.4_rk - 19.334_rk * lnTK &
+                    + (-458.79_rk / TK + 3.5913_rk) * sqrt(IonS) &
+                    + (188.74_rk / TK - 1.5998_rk) * IonS &
+                    + (-12.1652_rk / TK + 0.07871_rk) * IonS**2) &
+                * (1.0_rk - 0.001005_rk * S)
+      nut%KH2S = exp(225.838_rk - 13275.3_rk / TK - 34.6435_rk * lnTK &
+                     + 0.3449_rk * sqrtS - 0.0274_rk * S)
+      pKNH3 = 9.244605_rk - 2729.33_rk * (1.0_rk / 298.15_rk - 1.0_rk / TK) &
+              + (0.04203362_rk - 11.24742_rk / TK) * S**0.25_rk &
+              + (-13.6416_rk + 1.176949_rk * TK**0.5_rk - 0.02860785_rk * TK &
+                 + 545.4834_rk / TK) * sqrtS &
+              + (-0.1462507_rk + 0.0090226468_rk * TK**0.5_rk &
+                 - 0.0001471361_rk * TK + 10.5425_rk / TK) * S**1.5_rk &
+              + (0.004669309_rk - 0.0001691742_rk * TK**0.5_rk &
+                 - 0.5677934_rk / TK) * S**2 &
+              + (-2.354039e-05_rk + 0.009698623_rk / TK) * S**2.5_rk
+      nut%KNH3 = 10.0_rk**(-pKNH3) * (1.0_rk - 0.001005_rk * S)
+      call convert_K(nut%KP1, 2, opt_pH_scale, free2total, free2sws, fH)
+      call convert_K(nut%KP2, 2, opt_pH_scale, free2total, free2sws, fH)
+      call convert_K(nut%KP3, 2, opt_pH_scale, free2total, free2sws, fH)
+      call convert_K(nut%KSi, 2, opt_pH_scale, free2total, free2sws, fH)
+      call convert_K(nut%KH2S, 1, opt_pH_scale, free2total, free2sws, fH)
+      call convert_K(nut%KNH3, 1, opt_pH_scale, free2total, free2sws, fH)
+   end subroutine calc_nutrient_constants
+
+   ! alkalinity residual with the pore-water systems (PyCO2SYS terms:
+   ! HPO4 + 2 PO4 - H3PO4, H3SiO4, HS, NH3), OH - H included
+   function alkalinity_residual_porewater(H, DIC, TA_input, K1, K2, KB, KW, BT, nut) result(F)
+      real(rk), intent(in) :: H, DIC, TA_input, K1, K2, KB, KW, BT
+      type(nut_system), intent(in) :: nut
+      real(rk) :: F, denom, dP
+      denom = H * H + K1 * H + K1 * K2
+      dP = H**3 + nut%KP1 * H * H + nut%KP1 * nut%KP2 * H + nut%KP1 * nut%KP2 * nut%KP3
+      F = DIC * (K1 * H + 2.0_rk * K1 * K2) / denom + BT * KB / (KB + H) + KW / H - H &
+          + nut%PT * (nut%KP1 * nut%KP2 * H + 2.0_rk * nut%KP1 * nut%KP2 * nut%KP3 - H**3) / dP &
+          + nut%SiT * nut%KSi / (nut%KSi + H) &
+          + nut%H2ST * nut%KH2S / (nut%KH2S + H) &
+          + nut%NH3T * nut%KNH3 / (nut%KNH3 + H) - TA_input
+   end function alkalinity_residual_porewater
+
+   ! the root in [H+] (pH 2..12, widened to 1..14 if needed): the residual is
+   ! monotone decreasing in H; bisection in log H to a relative width of 1e-12
+   subroutine solve_pH_brent_porewater(DIC, TA_input, K1, K2, KB, KW, BT, nut, H, success)
+      real(rk), intent(in)  :: DIC, TA_input, K1, K2, KB, KW, BT
+      type(nut_system), intent(in) :: nut
+      real(rk), intent(out) :: H
+      logical,  intent(out) :: success
+      real(rk) :: hlo, hhi, flo, fhi, fm
+      integer :: iter
+      success = .false.; H = 0.0_rk
+      hlo = 10.0_rk ** (-pH_hi_default); hhi = 10.0_rk ** (-pH_lo_default)
+      flo = alkalinity_residual_porewater(hlo, DIC, TA_input, K1, K2, KB, KW, BT, nut)
+      fhi = alkalinity_residual_porewater(hhi, DIC, TA_input, K1, K2, KB, KW, BT, nut)
+      if (.not. (flo >= 0.0_rk .and. fhi <= 0.0_rk)) then
+         hlo = 1.0e-14_rk; hhi = 1.0e-1_rk
+         flo = alkalinity_residual_porewater(hlo, DIC, TA_input, K1, K2, KB, KW, BT, nut)
+         fhi = alkalinity_residual_porewater(hhi, DIC, TA_input, K1, K2, KB, KW, BT, nut)
+         if (.not. (flo >= 0.0_rk .and. fhi <= 0.0_rk)) return
+      end if
+      do iter = 1, 200
+         H = sqrt(hlo * hhi)
+         fm = alkalinity_residual_porewater(H, DIC, TA_input, K1, K2, KB, KW, BT, nut)
+         if (fm > 0.0_rk) then
+            hlo = H
+         else
+            hhi = H
+         end if
+         if (hhi / hlo - 1.0_rk < 1.0e-12_rk) exit
+      end do
+      H = sqrt(hlo * hhi)
+      success = .true.
+   end subroutine solve_pH_brent_porewater
+
+   !-----------------------------------------------------------------------
+   ! calcite_ksp - stoichiometric solubility product of calcite (mol2/kg2),
+   ! Mucci (1983) with the Millero (1995) pressure correction (Pr in Pa): the
+   ! formula of CaCO3_Saturation in carbonate.F90 (which stays untouched)
+   !-----------------------------------------------------------------------
+   function calcite_ksp(Tc, S, Pr) result(Kspc)
+      real(rk), intent(in) :: Tc, S, Pr
+      real(rk) :: Kspc
+      real(rk) :: Tk, logKspc, tmp1, tmp2, tmp3, dV, dK, P
+      real(rk), parameter :: R = 83.131_rk, Kelvin = 273.15_rk
+      Tk = Tc + Kelvin
+      P = Pr * 1.e-5_rk
+      tmp1 = -171.9065_rk - (0.077993_rk*Tk) + (2839.319_rk/Tk) + 71.595_rk*log10(Tk)
+      tmp2 = + (-0.77712_rk + (0.0028426_rk*Tk) + (178.34_rk/Tk))*SQRT(S)
+      tmp3 = - (0.07711_rk*S) + (0.0041249_rk*(S**1.5_rk))
+      logKspc = tmp1 + tmp2 + tmp3
+      Kspc = 10._rk**logKspc
+      dV = -48.76_rk + 0.5304_rk*Tc
+      dK = -11.76_rk/1.e3_rk + (0.3692_rk/1.e3_rk) * Tc
+      tmp1 = -(dV/(R*Tk))*P + (0.5_rk*dK/(R*Tk))*P*P
+      Kspc = Kspc*exp(tmp1)
+   end function calcite_ksp
 
 end module carbonate_engine
