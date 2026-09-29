@@ -241,9 +241,9 @@ contains
          default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
 
       call self%get_parameter(self%srs_ag, 'srs_ag', '1/d', &
-         'AG basal respiration at Topt', default=0.015_rk, minimum=0.0_rk)
+         'AG basal respiration (at Tref_m with isw_fix = 1, at Topt with isw_fix = 0)', default=0.015_rk, minimum=0.0_rk)
       call self%get_parameter(self%srs_bg, 'srs_bg', '1/d', &
-         'BG basal respiration at Topt', default=0.006_rk, minimum=0.0_rk)
+         'BG basal respiration (at Tref_m with isw_fix = 1, at Topt with isw_fix = 0)', default=0.006_rk, minimum=0.0_rk)
       call self%get_parameter(self%r_nsc, 'r_nsc', '1/d', &
          'NSC maintenance respiration', default=0.002_rk, minimum=0.0_rk)
       call self%get_parameter(self%pu_ra, 'pu_ra', '-', &
@@ -298,6 +298,13 @@ contains
          minimum=0.0_rk)
       if (self%isw_fix == 1 .and. .not. (self%K_dic > 0.0_rk)) &
          call self%fatal_error('initialize', 'isw_fix = 1 requires K_dic > 0 (review p12 #8)')
+      ! positive O2 half-saturations (a zero one gives 0/0 in anoxia; review p13 #10), and finite values of the
+      ! corrected formulation's parameters (a NaN T_heat would silently disable the heat mortality; review p13 #11)
+      if (.not. (self%hO2 > 0.0_rk .and. self%hG2o > 0.0_rk)) &
+         call self%fatal_error('initialize', 'hO2 and hG2o must be positive')
+      if (self%isw_fix == 1 .and. .not. all(abs([self%q10_m, self%Tref_m, self%sd_heat, self%T_heat, self%f_bg1, &
+          self%K_dic]) <= huge(1.0_rk))) call self%fatal_error('initialize', 'isw_fix = 1: q10_m, Tref_m, sd_heat, '// &
+          'T_heat, f_bg1 and K_dic must be finite')
       if (self%isw_fix == 1 .and. (self%qn_min >= self%qn_max .or. self%qp_min >= self%qp_max)) &
          call self%fatal_error('initialize', 'isw_fix = 1 requires qn_min < qn_max and qp_min < qp_max')
       call self%get_parameter(self%k_bg, 'k_bg', '1/d', &
