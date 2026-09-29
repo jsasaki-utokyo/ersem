@@ -136,7 +136,10 @@ module ersem_seagrass
       ! of each uptake; reserve mobilisation only when AG is below its share of BG (no nightly light switch), limited by
       ! the leaf quotas
       integer  :: isw_fix
-      real(rk) :: q10_m, Tref_m, sd_heat, T_heat, f_bg1
+      real(rk) :: q10_m, Tref_m, sd_heat, T_heat, f_bg1, K_dic
+      type (type_horizontal_diagnostic_variable_id) :: id_ledger_bgresp_G3c1, id_ledger_bgresp_G3c2, &
+         id_ledger_bgresp_K4n1, id_ledger_bgresp_K4n2, id_ledger_bgresp_K1p1, id_ledger_bgresp_K1p2, &
+         id_ledger_bgresp_benTA, id_ledger_bgresp_benTA2, id_ledger_root_benTA2
       type (type_bottom_state_variable_id) :: id_G3c1, id_G3c2, id_benTA2
    contains
       procedure :: initialize
@@ -290,6 +293,11 @@ contains
          default=1.0_rk / 30.0_rk, minimum=0.0_rk)
       call self%get_parameter(self%f_bg1, 'f_bg1', '-', 'share of the below-ground actions in sediment layer 1 '// &
          '(isw_fix = 1; assumption)', default=0.2_rk, minimum=0.0_rk, maximum=1.0_rk)
+      call self%get_parameter(self%K_dic, 'K_dic', 'mmol C/m^3', 'half-saturation of gross fixation in the water DIC '// &
+         '(isw_fix = 1; a positivity guard: the fixation stops when the DIC is exhausted)', default=1.0_rk, &
+         minimum=0.0_rk)
+      if (self%isw_fix == 1 .and. (self%qn_min >= self%qn_max .or. self%qp_min >= self%qp_max)) &
+         call self%fatal_error('initialize', 'isw_fix = 1 requires qn_min < qn_max and qp_min < qp_max')
       call self%get_parameter(self%k_bg, 'k_bg', '1/d', &
          'BG structural growth rate from NSC', default=0.02_rk, minimum=0.0_rk)
       ! v2 allocation control (2026-08-14): the v1 balance let the BG pool
@@ -402,6 +410,33 @@ contains
          call self%register_diagnostic_variable(self%id_ledger_root_benTA, 'ledger_root_benTA', 'mmol eq/m^2/d', &
               'ledger: root N and P uptake -> benthic alkalinity layer 1', &
               domain=domain_bottom, source=source_do_bottom)
+         if (self%isw_fix == 1) then
+            ! the sediment-side sources of fix 2, each equal to the source applied (the BG respiration products per
+            ! layer, and the root-uptake alkalinity of layer 2)
+            call self%register_diagnostic_variable(self%id_ledger_bgresp_G3c1, 'ledger_bgresp_G3c1', 'mmol C/m^2/d', &
+                 'ledger: BG respiration -> benthic DIC layer 1', domain=domain_bottom, source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_bgresp_G3c2, 'ledger_bgresp_G3c2', 'mmol C/m^2/d', &
+                 'ledger: BG respiration -> benthic DIC layer 2', domain=domain_bottom, source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_bgresp_K4n1, 'ledger_bgresp_K4n1', 'mmol N/m^2/d', &
+                 'ledger: BG respiratory N -> porewater ammonium layer 1', domain=domain_bottom, source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_bgresp_K4n2, 'ledger_bgresp_K4n2', 'mmol N/m^2/d', &
+                 'ledger: BG respiratory N -> porewater ammonium layer 2', domain=domain_bottom, source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_bgresp_K1p1, 'ledger_bgresp_K1p1', 'mmol P/m^2/d', &
+                 'ledger: BG respiratory P -> porewater phosphate layer 1', domain=domain_bottom, &
+                 source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_bgresp_K1p2, 'ledger_bgresp_K1p2', 'mmol P/m^2/d', &
+                 'ledger: BG respiratory P -> porewater phosphate layer 2', domain=domain_bottom, &
+                 source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_bgresp_benTA, 'ledger_bgresp_benTA', &
+                 'mmol eq/m^2/d', 'ledger: BG respiratory N and P -> benthic alkalinity layer 1', &
+                 domain=domain_bottom, source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_bgresp_benTA2, 'ledger_bgresp_benTA2', &
+                 'mmol eq/m^2/d', 'ledger: BG respiratory N and P -> benthic alkalinity layer 2', &
+                 domain=domain_bottom, source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_ledger_root_benTA2, 'ledger_root_benTA2', 'mmol eq/m^2/d', &
+                 'ledger: root N and P uptake -> benthic alkalinity layer 2', domain=domain_bottom, &
+                 source=source_do_bottom)
+         end if
          call self%register_diagnostic_variable(self%id_ledger_exu_R2c, 'ledger_exu_R2c', 'mg C/m^2/d', &
               'ledger: exudation of gross fixation -> pelagic semi-labile DOC (exchange; 0 when f_exu = 0)', &
               domain=domain_bottom, source=source_do_bottom)
@@ -530,7 +565,7 @@ contains
       _DECLARE_ARGUMENTS_DO_BOTTOM_
 
       real(rk) :: AGc, AGn, AGp, BGc, BGn, BGp, NSCc
-      real(rk) :: O2o, N1p, N3n, N4n
+      real(rk) :: O2o, N1p, N3n, N4n, O3c, fK1, fK3, fP1
       real(rk) :: K1p1, K1p2, K3n1, K3n2, K4n1, K4n2, G2o
       real(rk) :: ETW, par
       real(rk) :: eT, lai, I_can, eI, qn, qp, eQ
@@ -563,6 +598,7 @@ contains
          _GET_HORIZONTAL_(self%id_K4n2, K4n2)
          _GET_HORIZONTAL_(self%id_G2o, G2o)
          _GET_(self%id_O2o, O2o)
+         _GET_(self%id_O3c, O3c)
          _GET_(self%id_N1p, N1p)
          _GET_(self%id_N3n, N3n)
          _GET_(self%id_N4n, N4n)
@@ -598,6 +634,8 @@ contains
 
          ! --- Production and respiration (mg C/m^2/d) ---------------------
          Pg = self%p_max * eT * eI * eQ * AGc
+         ! no fixation from exhausted water DIC (isw_fix = 1; review p11 #17)
+         if (self%isw_fix == 1) Pg = Pg * max(O3c, 0.0_rk) / (max(O3c, 0.0_rk) + self%K_dic)
          fO2ag = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
          fO2bg = max(0.0_rk, G2o) / (max(0.0_rk, G2o) + self%hG2o)
          Ra_act = self%pu_ra * Pg
@@ -623,8 +661,9 @@ contains
          if (self%isw_fix == 1) then
             ! mobilisation only while AG is below its share of BG, as far as the leaf quotas support new structure (fix 3)
             T_mb = 0.0_rk
-            if (BGc > 1.0e-8_rk) T_mb = self%tau_mob * NSCc * max(0.0_rk, 1.0_rk - AGc * self%rs_target / BGc) &
-               * min(1.0_rk, qn / self%qn_min, qp / self%qp_min)
+            ! the nutrient-surplus factor eQ is zero at the minimum quotas, so new structure never dilutes the leaf
+            ! quotas below them (review p11 #2)
+            if (BGc > 1.0e-8_rk) T_mb = self%tau_mob * NSCc * max(0.0_rk, 1.0_rk - AGc * self%rs_target / BGc) * eQ
          else
             T_mb = self%tau_mob * NSCc * max(0.0_rk, 1.0_rk - eI)
          end if
@@ -682,6 +721,13 @@ contains
          end if
          jP_leaf = (1.0_rk - self%f_root) * cap_p * N1p / (N1p + self%hP)
          jP_root = self%f_root * cap_p * (K1p1 + K1p2) / (K1p1 + K1p2 + self%hKp)
+         if (self%isw_fix == 1) then
+            ! each root uptake drawn from the two layers in proportion to their non-negative inventories; nothing is
+            ! taken from an empty pair, so the plant's gain always equals the porewater debit (review p11 #13)
+            call split2(K4n1, K4n2, jN4_root, fK1)
+            call split2(K3n1, K3n2, jN3_root, fK3)
+            call split2(K1p1, K1p2, jP_root, fP1)
+         end if
 
          ! --- Mortality ----------------------------------------------------
          starve = 0.0_rk
@@ -729,6 +775,16 @@ contains
             _SET_BOTTOM_ODE_(self%id_K1p2, (1.0_rk - f1) * rbp)
             _SET_BOTTOM_ODE_(self%id_benTA, f1 * (rbn - rbp))
             _SET_BOTTOM_ODE_(self%id_benTA2, (1.0_rk - f1) * (rbn - rbp))
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_bgresp_G3c1, f1 * Rb / CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_bgresp_G3c2, (1.0_rk - f1) * Rb / CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_bgresp_K4n1, f1 * rbn)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_bgresp_K4n2, (1.0_rk - f1) * rbn)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_bgresp_K1p1, f1 * rbp)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_bgresp_K1p2, (1.0_rk - f1) * rbp)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_bgresp_benTA, f1 * (rbn - rbp))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_bgresp_benTA2, (1.0_rk - f1) * (rbn - rbp))
+            end if
             rbw = 0.0_rk                                  ! nothing of the BG respiration reaches the water
          else
             rbw = 1.0_rk
@@ -763,26 +819,43 @@ contains
          end if
 
          ! Root uptake from the porewater pools (split by availability)
-         wsum = max(K4n1 + K4n2, 1.0e-8_rk)
-         _SET_BOTTOM_ODE_(self%id_K4n1, -jN4_root * K4n1 / wsum)
-         _SET_BOTTOM_ODE_(self%id_K4n2, -jN4_root * K4n2 / wsum)
-         if (self%isw_ledger == 1) then
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K4n1, -jN4_root * K4n1 / wsum)
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K4n2, -jN4_root * K4n2 / wsum)
-         end if
-         wsum = max(K3n1 + K3n2, 1.0e-8_rk)
-         _SET_BOTTOM_ODE_(self%id_K3n1, -jN3_root * K3n1 / wsum)
-         _SET_BOTTOM_ODE_(self%id_K3n2, -jN3_root * K3n2 / wsum)
-         if (self%isw_ledger == 1) then
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K3n1, -jN3_root * K3n1 / wsum)
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K3n2, -jN3_root * K3n2 / wsum)
-         end if
-         wsum = max(K1p1 + K1p2, 1.0e-8_rk)
-         _SET_BOTTOM_ODE_(self%id_K1p1, -jP_root * K1p1 / wsum)
-         _SET_BOTTOM_ODE_(self%id_K1p2, -jP_root * K1p2 / wsum)
-         if (self%isw_ledger == 1) then
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K1p1, -jP_root * K1p1 / wsum)
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K1p2, -jP_root * K1p2 / wsum)
+         if (self%isw_fix == 1) then
+            _SET_BOTTOM_ODE_(self%id_K4n1, -jN4_root * fK1)
+            _SET_BOTTOM_ODE_(self%id_K4n2, -jN4_root * (1.0_rk - fK1))
+            _SET_BOTTOM_ODE_(self%id_K3n1, -jN3_root * fK3)
+            _SET_BOTTOM_ODE_(self%id_K3n2, -jN3_root * (1.0_rk - fK3))
+            _SET_BOTTOM_ODE_(self%id_K1p1, -jP_root * fP1)
+            _SET_BOTTOM_ODE_(self%id_K1p2, -jP_root * (1.0_rk - fP1))
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K4n1, -jN4_root * fK1)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K4n2, -jN4_root * (1.0_rk - fK1))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K3n1, -jN3_root * fK3)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K3n2, -jN3_root * (1.0_rk - fK3))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K1p1, -jP_root * fP1)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K1p2, -jP_root * (1.0_rk - fP1))
+            end if
+         else
+            wsum = max(K4n1 + K4n2, 1.0e-8_rk)
+            _SET_BOTTOM_ODE_(self%id_K4n1, -jN4_root * K4n1 / wsum)
+            _SET_BOTTOM_ODE_(self%id_K4n2, -jN4_root * K4n2 / wsum)
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K4n1, -jN4_root * K4n1 / wsum)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K4n2, -jN4_root * K4n2 / wsum)
+            end if
+            wsum = max(K3n1 + K3n2, 1.0e-8_rk)
+            _SET_BOTTOM_ODE_(self%id_K3n1, -jN3_root * K3n1 / wsum)
+            _SET_BOTTOM_ODE_(self%id_K3n2, -jN3_root * K3n2 / wsum)
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K3n1, -jN3_root * K3n1 / wsum)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K3n2, -jN3_root * K3n2 / wsum)
+            end if
+            wsum = max(K1p1 + K1p2, 1.0e-8_rk)
+            _SET_BOTTOM_ODE_(self%id_K1p1, -jP_root * K1p1 / wsum)
+            _SET_BOTTOM_ODE_(self%id_K1p2, -jP_root * K1p2 / wsum)
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K1p1, -jP_root * K1p1 / wsum)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_K1p2, -jP_root * K1p2 / wsum)
+            end if
          end if
 
          ! Alkalinity bookkeeping: +1 per NO3, -1 per NH4, +1 per PO4 taken up;
@@ -792,11 +865,10 @@ contains
             + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn &
             - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - rbw * rbp)
          if (self%isw_fix == 1) then
-            ! the root-uptake alkalinity in the layer of each uptake (fix 2)
-            _SET_BOTTOM_ODE_(self%id_benTA, jN3_root * K3n1 / max(K3n1 + K3n2, 1.0e-8_rk) &
-               - jN4_root * K4n1 / max(K4n1 + K4n2, 1.0e-8_rk) + jP_root * K1p1 / max(K1p1 + K1p2, 1.0e-8_rk))
-            _SET_BOTTOM_ODE_(self%id_benTA2, jN3_root * K3n2 / max(K3n1 + K3n2, 1.0e-8_rk) &
-               - jN4_root * K4n2 / max(K4n1 + K4n2, 1.0e-8_rk) + jP_root * K1p2 / max(K1p1 + K1p2, 1.0e-8_rk))
+            ! the root-uptake alkalinity in the layer of each uptake (fix 2), each ledger equal to its source (p11 #6)
+            _SET_BOTTOM_ODE_(self%id_benTA, jN3_root * fK3 - jN4_root * fK1 + jP_root * fP1)
+            _SET_BOTTOM_ODE_(self%id_benTA2, jN3_root * (1.0_rk - fK3) - jN4_root * (1.0_rk - fK1) &
+               + jP_root * (1.0_rk - fP1))
          else
             _SET_BOTTOM_ODE_(self%id_benTA, jN3_root - jN4_root + jP_root)
          end if
@@ -804,7 +876,13 @@ contains
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_leaf_TA, jN3_leaf - jN4_leaf + jP_leaf &
             + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn &
             - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - rbw * rbp)
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_benTA, jN3_root - jN4_root + jP_root)
+            if (self%isw_fix == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_benTA, jN3_root * fK3 - jN4_root * fK1 + jP_root * fP1)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_benTA2, jN3_root * (1.0_rk - fK3) &
+                  - jN4_root * (1.0_rk - fK1) + jP_root * (1.0_rk - fP1))
+            else
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_benTA, jN3_root - jN4_root + jP_root)
+            end if
          end if
 
          ! Exudate: the diverted share of gross fixation, carbon only
@@ -893,5 +971,20 @@ contains
       _HORIZONTAL_LOOP_END_
 
    end subroutine do_bottom
+
+   ! the layer-1 share f1 of an uptake j from two layers with inventories a, b (clipped at zero); j = 0 when both
+   ! are empty
+   pure subroutine split2(a, b, j, f1)
+      real(rk), intent(in) :: a, b
+      real(rk), intent(inout) :: j
+      real(rk), intent(out) :: f1
+      real(rk) :: t
+      t = max(a, 0.0_rk) + max(b, 0.0_rk)
+      if (t > 0.0_rk) then
+         f1 = max(a, 0.0_rk) / t
+      else
+         f1 = 0.0_rk; j = 0.0_rk
+      end if
+   end subroutine
 
 end module ersem_seagrass
