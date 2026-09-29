@@ -30,6 +30,10 @@
 !   - mortality/sloughing: AG split between pelagic POM (R6) and the
 !     plant detritus layer (seagrass_Q6); BG to the detritus layer
 !
+! 2026-09-29 (isw_fix = 1, default): the three accepted fixes of
+! nippon-steel docs/21 s4.3 (Q10 maintenance with heat mortality; BG
+! respiration products and root-uptake alkalinity in the sediment layers;
+! no nightly light-coded mobilisation). isw_fix = 0: the equations below.
 ! v1 simplifications (documented in the design doc, section 6):
 !   - all respired CO2 is returned to pelagic DIC (no porewater DIC)
 !   - no epiphytes, no shoot demography, no root oxygen loss
@@ -125,6 +129,15 @@ module ersem_seagrass
       real(rk) :: rs_target, k_alloc, q_nsc
       real(rk) :: sd_ag, sd_bg, sd_anx, nsc_starve, sd_starve, f_pel
       real(rk) :: g_max, h_ag, pe_gr
+      ! the three accepted fixes of nippon-steel docs/21 s4.3 (isw_fix = 1, the default since 2026-09-29; 0 = the former
+      ! equations, bit for bit): maintenance respiration on a Q10 law (q10_m, Tref_m) instead of the growth CTMI, with
+      ! heat mortality sd_heat above T_heat; below-ground respiration products into the sediment layers (DIC to G3c1/2,
+      ! NH4 to K4n1/2, PO4 to K1p1/2, TA to benTA/benTA2, split f_bg1 : 1 - f_bg1) and root-uptake alkalinity in the layer
+      ! of each uptake; reserve mobilisation only when AG is below its share of BG (no nightly light switch), limited by
+      ! the leaf quotas
+      integer  :: isw_fix
+      real(rk) :: q10_m, Tref_m, sd_heat, T_heat, f_bg1
+      type (type_bottom_state_variable_id) :: id_G3c1, id_G3c2, id_benTA2
    contains
       procedure :: initialize
       procedure :: do_bottom
@@ -157,6 +170,8 @@ contains
          'CTMI optimal temperature for growth', default=18.0_rk)
       call self%get_parameter(self%Tmax, 'Tmax', 'degrees_Celsius', &
          'CTMI maximum temperature for growth', default=30.0_rk)
+      call self%get_parameter(self%T_heat, 'T_heat', 'degrees_Celsius', 'temperature above which heat mortality '// &
+         'acts (isw_fix = 1)', default=self%Tmax)
       if (self%Tmin >= self%Topt) call self%fatal_error('initialize','CTMI requires Tmin < Topt')
       if (self%Topt >= self%Tmax) call self%fatal_error('initialize','CTMI requires Topt < Tmax')
       a = self%Topt - self%Tmin
@@ -262,7 +277,19 @@ contains
       call self%get_parameter(self%f_exu, 'f_exu', '-', &
            'fraction of gross production exuded as DOC to pelagic R2', default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
       call self%get_parameter(self%tau_mob, 'tau_mob', '1/d', &
-         'NSC remobilisation rate under light limitation', default=0.05_rk, minimum=0.0_rk)
+         'NSC remobilisation rate (isw_fix = 0: under light limitation; 1: when AG is below its share)', &
+         default=0.05_rk, minimum=0.0_rk)
+      call self%get_parameter(self%isw_fix, 'isw_fix', '', &
+         'docs/21 s4.3 fixes (0: former equations, 1: Q10 maintenance, BG products in the sediment, no light-coded '// &
+         'mobilisation)', default=1, minimum=0, maximum=1)
+      call self%get_parameter(self%q10_m, 'q10_m', '-', 'Q10 of maintenance respiration (isw_fix = 1; Marsh et al. '// &
+         '1986)', default=2.4_rk, minimum=1.0_rk)
+      call self%get_parameter(self%Tref_m, 'Tref_m', 'degrees_Celsius', 'reference temperature of the maintenance '// &
+         'rates (isw_fix = 1)', default=20.0_rk)
+      call self%get_parameter(self%sd_heat, 'sd_heat', '1/d', 'heat mortality above T_heat (isw_fix = 1; assumption)', &
+         default=1.0_rk / 30.0_rk, minimum=0.0_rk)
+      call self%get_parameter(self%f_bg1, 'f_bg1', '-', 'share of the below-ground actions in sediment layer 1 '// &
+         '(isw_fix = 1; assumption)', default=0.2_rk, minimum=0.0_rk, maximum=1.0_rk)
       call self%get_parameter(self%k_bg, 'k_bg', '1/d', &
          'BG structural growth rate from NSC', default=0.02_rk, minimum=0.0_rk)
       ! v2 allocation control (2026-08-14): the v1 balance let the BG pool
@@ -443,6 +470,16 @@ contains
       call self%register_state_dependency(self%id_K4n2, 'K4n2', 'mmol N/m^2', 'porewater ammonium, layer 2')
       call self%register_state_dependency(self%id_G2o, 'G2o', 'mmol O_2/m^2', 'benthic oxygen, layer 1')
       call self%register_state_dependency(self%id_benTA, 'benTA', 'mEq/m^2', 'benthic alkalinity, layer 1')
+      if (self%isw_fix == 1) then
+         ! the sediment side of the below-ground respiration and of the layer-2 root uptake (default couplings to the
+         ! standard ERSEM benthic column; an ERSEM configuration without it fails explicitly)
+         call self%register_state_dependency(self%id_G3c1, 'G3c1', 'mmol C/m^2', 'benthic DIC, layer 1')
+         call self%register_state_dependency(self%id_G3c2, 'G3c2', 'mmol C/m^2', 'benthic DIC, layer 2')
+         call self%register_state_dependency(self%id_benTA2, 'benTA2', 'mEq/m^2', 'benthic alkalinity, layer 2')
+         call self%request_coupling(self%id_G3c1, 'G3/per_layer/c1')
+         call self%request_coupling(self%id_G3c2, 'G3/per_layer/c2')
+         call self%request_coupling(self%id_benTA2, 'G5/per_layer/a2')
+      end if
       call self%register_state_dependency(self%id_Q6c, 'Q6c', 'mg C/m^2', 'plant detritus carbon')
       call self%register_state_dependency(self%id_Q6n, 'Q6n', 'mmol N/m^2', 'plant detritus nitrogen')
       call self%register_state_dependency(self%id_Q6p, 'Q6p', 'mmol P/m^2', 'plant detritus phosphorus')
@@ -507,6 +544,7 @@ contains
       real(rk) :: M_ag, M_bg, starve
       real(rk) :: dAGc, dAGn, dAGp, dBGc, dBGn, dBGp, dNSC
       real(rk) :: gr1c, gr2c, F_gr, resp_gr, eges_gr
+      real(rk) :: gTm, rbn, rbp, f1, rbw
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -563,9 +601,15 @@ contains
          fO2ag = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
          fO2bg = max(0.0_rk, G2o) / (max(0.0_rk, G2o) + self%hG2o)
          Ra_act = self%pu_ra * Pg
-         Ra_bas = self%srs_ag * eT * AGc * fO2ag
-         Rn = self%r_nsc * eT * NSCc * fO2ag
-         Rb = self%srs_bg * eT * BGc * fO2bg
+         if (self%isw_fix == 1) then
+            ! maintenance on a Q10 law, never switched off by the growth cardinal temperatures (fix 1)
+            gTm = self%q10_m**((ETW - self%Tref_m) / 10.0_rk)
+         else
+            gTm = eT
+         end if
+         Ra_bas = self%srs_ag * gTm * AGc * fO2ag
+         Rn = self%r_nsc * gTm * NSCc * fO2ag
+         Rb = self%srs_bg * gTm * BGc * fO2bg
 
          ! --- Translocation and BG growth (v2 allocation control) ---------
          Pnet_ag = Pg - Ra_act - Ra_bas
@@ -576,7 +620,14 @@ contains
          ! target fraction of BG structure
          nsc_gap = max(0.0_rk, 1.0_rk - NSCc / max(self%q_nsc * BGc, 1.0e-8_rk))
          T_st = self%tau_store * max(0.0_rk, Pnet_ag) * nsc_gap
-         T_mb = self%tau_mob * NSCc * max(0.0_rk, 1.0_rk - eI)
+         if (self%isw_fix == 1) then
+            ! mobilisation only while AG is below its share of BG, as far as the leaf quotas support new structure (fix 3)
+            T_mb = 0.0_rk
+            if (BGc > 1.0e-8_rk) T_mb = self%tau_mob * NSCc * max(0.0_rk, 1.0_rk - AGc * self%rs_target / BGc) &
+               * min(1.0_rk, qn / self%qn_min, qp / self%qp_min)
+         else
+            T_mb = self%tau_mob * NSCc * max(0.0_rk, 1.0_rk - eI)
+         end if
          ! BG growth, driven by the deficit: direct allocation of net
          ! production (carbon from AG) plus reserve-fed growth (carbon from NSC)
          G_alloc = relE * self%k_alloc * max(0.0_rk, Pnet_ag)
@@ -637,6 +688,9 @@ contains
          if (NSCc < self%nsc_starve * max(BGc, 1.0e-8_rk)) starve = self%sd_starve
          M_ag = (self%sd_ag + starve) * AGc
          M_bg = (self%sd_bg + self%sd_anx * (1.0_rk - fO2bg)) * BGc
+         if (self%isw_fix == 1 .and. ETW > self%T_heat) then            ! heat injury (fix 1, second half)
+            M_ag = M_ag + self%sd_heat * AGc; M_bg = M_bg + self%sd_heat * BGc
+         end if
 
          ! --- State ODEs (per day) ----------------------------------------
          dAGc = Pg - Ra_act - Ra_bas - T_st + T_mb - M_ag - G_alloc - self%f_exu * Pg
@@ -663,15 +717,32 @@ contains
          _SET_BOTTOM_ODE_(self%id_BGp, dBGp)
          _SET_BOTTOM_ODE_(self%id_NSCc, dNSC)
 
+         ! below-ground respiration products: to the water (isw_fix = 0) or into sediment layers 1 and 2 (fix 2)
+         rbn = BGn / max(BGc, 1.0e-8_rk) * Rb; rbp = BGp / max(BGc, 1.0e-8_rk) * Rb
+         f1 = self%f_bg1
+         if (self%isw_fix == 1) then
+            _SET_BOTTOM_ODE_(self%id_G3c1, f1 * Rb / CMass)
+            _SET_BOTTOM_ODE_(self%id_G3c2, (1.0_rk - f1) * Rb / CMass)
+            _SET_BOTTOM_ODE_(self%id_K4n1, f1 * rbn)
+            _SET_BOTTOM_ODE_(self%id_K4n2, (1.0_rk - f1) * rbn)
+            _SET_BOTTOM_ODE_(self%id_K1p1, f1 * rbp)
+            _SET_BOTTOM_ODE_(self%id_K1p2, (1.0_rk - f1) * rbp)
+            _SET_BOTTOM_ODE_(self%id_benTA, f1 * (rbn - rbp))
+            _SET_BOTTOM_ODE_(self%id_benTA2, (1.0_rk - f1) * (rbn - rbp))
+            rbw = 0.0_rk                                  ! nothing of the BG respiration reaches the water
+         else
+            rbw = 1.0_rk
+         end if
+
          ! --- Exchanges with the water column -----------------------------
          ! Carbon and oxygen. Carbon is carbon; the oxygen carries the two
          ! quotients (pq, rq_o2c), both 1 by default, which reproduces the
          ! former "PQ = 1" line term by term.
-         _SET_BOTTOM_EXCHANGE_(self%id_O3c, (-Pg + Ra_act + Ra_bas + Rn + Rb) / CMass)
+         _SET_BOTTOM_EXCHANGE_(self%id_O3c, (-Pg + Ra_act + Ra_bas + Rn + rbw * Rb) / CMass)
          _SET_BOTTOM_EXCHANGE_(self%id_O2o, (self%pq * Pg - self%rq_o2c * Ra_act &
                                              - self%rq_o2c * Ra_bas - self%rq_o2c * Rn) / CMass)
          if (self%isw_ledger == 1) then
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_growth_O3c, (-Pg + Ra_act + Ra_bas + Rn + Rb) / CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_growth_O3c, (-Pg + Ra_act + Ra_bas + Rn + rbw * Rb) / CMass)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_growth_O2o, (self%pq * Pg - self%rq_o2c * Ra_act &
                                              - self%rq_o2c * Ra_bas - self%rq_o2c * Rn) / CMass)
          end if
@@ -682,13 +753,13 @@ contains
          end if
 
          ! Leaf nutrient uptake and respiratory return
-         _SET_BOTTOM_EXCHANGE_(self%id_N4n, -jN4_leaf + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb)
+         _SET_BOTTOM_EXCHANGE_(self%id_N4n, -jN4_leaf + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn)
          _SET_BOTTOM_EXCHANGE_(self%id_N3n, -jN3_leaf)
-         _SET_BOTTOM_EXCHANGE_(self%id_N1p, -jP_leaf + (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) + BGp / max(BGc, 1.0e-8_rk) * Rb)
+         _SET_BOTTOM_EXCHANGE_(self%id_N1p, -jP_leaf + (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) + rbw * rbp)
          if (self%isw_ledger == 1) then
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_leaf_N4n, -jN4_leaf + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_leaf_N4n, -jN4_leaf + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_leaf_N3n, -jN3_leaf)
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_leaf_N1p, -jP_leaf + (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) + BGp / max(BGc, 1.0e-8_rk) * Rb)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_leaf_N1p, -jP_leaf + (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) + rbw * rbp)
          end if
 
          ! Root uptake from the porewater pools (split by availability)
@@ -718,13 +789,21 @@ contains
          ! respiratory NH4/PO4 return reverses the sign. Leaf terms on pelagic
          ! TA, root terms on the benthic alkalinity pool.
          _SET_BOTTOM_EXCHANGE_(self%id_TA, jN3_leaf - jN4_leaf + jP_leaf &
-            + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb &
-            - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - BGp / max(BGc, 1.0e-8_rk) * Rb)
-         _SET_BOTTOM_ODE_(self%id_benTA, jN3_root - jN4_root + jP_root)
+            + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn &
+            - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - rbw * rbp)
+         if (self%isw_fix == 1) then
+            ! the root-uptake alkalinity in the layer of each uptake (fix 2)
+            _SET_BOTTOM_ODE_(self%id_benTA, jN3_root * K3n1 / max(K3n1 + K3n2, 1.0e-8_rk) &
+               - jN4_root * K4n1 / max(K4n1 + K4n2, 1.0e-8_rk) + jP_root * K1p1 / max(K1p1 + K1p2, 1.0e-8_rk))
+            _SET_BOTTOM_ODE_(self%id_benTA2, jN3_root * K3n2 / max(K3n1 + K3n2, 1.0e-8_rk) &
+               - jN4_root * K4n2 / max(K4n1 + K4n2, 1.0e-8_rk) + jP_root * K1p2 / max(K1p1 + K1p2, 1.0e-8_rk))
+         else
+            _SET_BOTTOM_ODE_(self%id_benTA, jN3_root - jN4_root + jP_root)
+         end if
          if (self%isw_ledger == 1) then
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_leaf_TA, jN3_leaf - jN4_leaf + jP_leaf &
-            + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb &
-            - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - BGp / max(BGc, 1.0e-8_rk) * Rb)
+            + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn &
+            - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - rbw * rbp)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_root_benTA, jN3_root - jN4_root + jP_root)
          end if
 
@@ -807,7 +886,7 @@ contains
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN3l, jN3_leaf)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN4l, jN4_leaf)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_relN4, &
-            (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + BGn / max(BGc, 1.0e-8_rk) * Rb)
+            (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN3r, jN3_root)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN4r, jN4_root)
 
