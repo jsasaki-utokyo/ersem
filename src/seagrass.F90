@@ -296,6 +296,8 @@ contains
       call self%get_parameter(self%K_dic, 'K_dic', 'mmol C/m^3', 'half-saturation of gross fixation in the water DIC '// &
          '(isw_fix = 1; a positivity guard: the fixation stops when the DIC is exhausted)', default=1.0_rk, &
          minimum=0.0_rk)
+      if (self%isw_fix == 1 .and. .not. (self%K_dic > 0.0_rk)) &
+         call self%fatal_error('initialize', 'isw_fix = 1 requires K_dic > 0 (review p12 #8)')
       if (self%isw_fix == 1 .and. (self%qn_min >= self%qn_max .or. self%qp_min >= self%qp_max)) &
          call self%fatal_error('initialize', 'isw_fix = 1 requires qn_min < qn_max and qp_min < qp_max')
       call self%get_parameter(self%k_bg, 'k_bg', '1/d', &
@@ -576,7 +578,7 @@ contains
       real(rk) :: cap_n, cap_p, upt_leaf, upt_root
       real(rk) :: jN4_leaf, jN3_leaf, jP_leaf
       real(rk) :: jN4_root, jN3_root, jP_root, wsum, pot_n, nscale
-      real(rk) :: M_ag, M_bg, starve
+      real(rk) :: M_ag, M_bg, starve, M_nsc
       real(rk) :: dAGc, dAGn, dAGp, dBGc, dBGn, dBGp, dNSC
       real(rk) :: gr1c, gr2c, F_gr, resp_gr, eges_gr
       real(rk) :: gTm, rbn, rbp, f1, rbw
@@ -671,13 +673,24 @@ contains
          ! production (carbon from AG) plus reserve-fed growth (carbon from NSC)
          G_alloc = relE * self%k_alloc * max(0.0_rk, Pnet_ag)
          G_res = relE * self%k_bg * eT * NSCc
+         ! BG structure takes AG N, P at its own quotas: only from the leaves' surplus above their minimum quotas
+         ! (isw_fix = 1; eQ is zero at the minimum quotas, so the leaves never cross them; review p12 #5)
+         if (self%isw_fix == 1) then
+            G_alloc = G_alloc * eQ; G_res = G_res * eQ
+         end if
          G_bg = G_alloc + G_res
          ! BG structural growth needs N and P from the AG pools at fixed quota;
          ! scale it down when the AG pools cannot pay.
          G_bg_c = min(G_bg, &
                       0.5_rk * AGn / max(self%qn_bg, 1.0e-12_rk), &
                       0.5_rk * AGp / max(self%qp_bg, 1.0e-12_rk))
-         gscale = G_bg_c / max(G_bg, 1.0e-12_rk)
+         if (self%isw_fix == 1) then
+            ! the donors lose exactly what BG gains, also for trace growth (review p12 #7)
+            gscale = 0.0_rk
+            if (G_bg > 0.0_rk) gscale = G_bg_c / G_bg
+         else
+            gscale = G_bg_c / max(G_bg, 1.0e-12_rk)
+         end if
          G_alloc = G_alloc * gscale
          G_res = G_res * gscale
 
@@ -737,10 +750,13 @@ contains
          if (self%isw_fix == 1 .and. ETW > self%T_heat) then            ! heat injury (fix 1, second half)
             M_ag = M_ag + self%sd_heat * AGc; M_bg = M_bg + self%sd_heat * BGc
          end if
+         ! the reserve of the dying rhizomes dies with them, to plant detritus (isw_fix = 1; review p12 #6)
+         M_nsc = 0.0_rk
+         if (self%isw_fix == 1 .and. BGc > 0.0_rk) M_nsc = M_bg / BGc * NSCc
 
          ! --- State ODEs (per day) ----------------------------------------
          dAGc = Pg - Ra_act - Ra_bas - T_st + T_mb - M_ag - G_alloc - self%f_exu * Pg
-         dNSC = T_st - T_mb - G_res - Rn
+         dNSC = T_st - T_mb - G_res - Rn - M_nsc
          dBGc = G_bg_c - Rb - M_bg
          dAGn = jN4_leaf + jN3_leaf + jN4_root + jN3_root &
                 - self%qn_bg * G_bg_c - qn * M_ag
@@ -904,7 +920,7 @@ contains
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_slough_R6n, self%f_pel * qn * M_ag)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_slough_R6p, self%f_pel * qp * M_ag)
          end if
-         _SET_BOTTOM_ODE_(self%id_Q6c, (1.0_rk - self%f_pel) * M_ag + M_bg)
+         _SET_BOTTOM_ODE_(self%id_Q6c, (1.0_rk - self%f_pel) * M_ag + M_bg + M_nsc)
          _SET_BOTTOM_ODE_(self%id_Q6n, (1.0_rk - self%f_pel) * qn * M_ag &
             + BGn / max(BGc, 1.0e-8_rk) * M_bg)
          _SET_BOTTOM_ODE_(self%id_Q6p, (1.0_rk - self%f_pel) * qp * M_ag &
