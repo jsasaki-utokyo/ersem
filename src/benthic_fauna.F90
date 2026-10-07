@@ -130,6 +130,7 @@ contains
       call self%get_parameter(self%isw_osupply,'isw_osupply','','1: respiration extent limited by the O2 supply (shared law with MUSE); 0: off',default=0,minimum=0,maximum=1)
       call self%get_parameter(self%tau_o2,'tau_o2','d','turnover time of the oxic O2 inventory as a supply (isw_osupply = 1)',default=0.05_rk,minimum=0.0_rk)
       call self%get_parameter(self%osup_share,'osup_share','-','share of the O2 supply that this fauna group can draw (shares of all groups sum to <= 1; MUSE f_osup_share)',default=1.0_rk/3.0_rk,minimum=0.0_rk,maximum=1.0_rk)
+      if (.not.(self%osup_share >= 0.0_rk .and. self%osup_share <= 1.0_rk)) call self%fatal_error('initialize','osup_share must be a number in [0,1]')   ! NaN fails both comparisons
       if (self%isw_osupply == 1) then
          if (.not.(self%tau_o2 > 0.0_rk .and. self%tau_o2 < huge(1.0_rk))) call self%fatal_error('initialize','tau_o2 must be positive and finite')
          call self%register_dependency(self%id_cmix,pelagic_benthic_transfer_constant)
@@ -504,11 +505,9 @@ contains
             supply_ = max(0.0_rk,G2o_)/self%tau_o2
             if (cmix_ > 0.0_rk) then
                supply_ = supply_ + max(0.0_rk,O2o)/cmix_
-            else if (O2o > 0.0_rk .or. G2o_ > 0.0_rk) then
-               supply_ = 1.0e30_rk     ! no interface resistance and some O2 present: the interface does not limit the supply
-            else
-               supply_ = 0.0_rk        ! no O2 anywhere (also for a NaN resistance)
-            end if
+            else if (O2o > 0.0_rk) then
+               supply_ = 1.0e30_rk     ! no interface resistance and bottom water O2 present: the interface does not limit the supply
+            end if                      ! (cmix <= 0 or NaN without bottom-water O2: the finite inventory term alone)
             supply_ = self%osup_share/max(1.0_rk,tot_) * supply_
             fYG3c = realised_resp(fYG3c, supply_)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_osupply,supply_)
