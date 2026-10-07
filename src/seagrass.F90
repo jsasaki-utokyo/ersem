@@ -42,7 +42,7 @@
 !
 ! 2026-10-07 (isw_uni = 1): the unified eelgrass formulation shared with MUSE (muse docs/EELGRASS_UNIFIED_SPEC_20261007.md):
 ! one law set and ONE parameter table in both models (tissue-specific uptake kinetics on pore-water concentration over the
-! shared root profile, NSC-first maintenance on water O2, EMS allocation, resorption, leaf and root exudation, ...). The
+! shared root profile, NSC-share maintenance on water O2, EMS allocation, resorption, leaf and root exudation, ...). The
 ! equivalence of the rate terms with MUSE is tested by muse/tests/eelgrass_equiv. isw_uni = 0 (default) is the module as it
 ! was, bit for bit (muse/tests/eelgrass_equiv/regress_isw0.py).
 ! Deactivation contract: if no instance of this model appears in
@@ -64,6 +64,21 @@ module ersem_seagrass
    character(len=12), parameter :: uni_name(nuni) = [character(len=12) :: 'Pg', 'Ract', 'RmA', 'RmB', 'phi', 'Tst', 'Alloc', 'Mob', &
       'ExuL', 'ExuR', 'MA', 'MB', 'MN', 'dAGc', 'dBGc', 'dNSC', 'L4', 'L3', 'LP', 'U4', 'U3', 'UP', 'w1', 'c4_1', 'c4_2', 'c3_1', &
       'c3_2', 'cP_1', 'cP_2', 'dic_w', 'o2_w', 'ta_w', 'nh4_w', 'po4_w', 'dic_pw', 'ta_pw', 'par_in', 'dAGn', 'dAGp', 'dBGn', 'dBGp', 'detN', 'detP', 'nh4_pw', 'po4_pw']
+
+   ! units of the unified diagnostics (mg C or mmol m-2 d-1 as noted in docs/EELGRASS_UNIFIED_SPEC_20261007.md s7)
+   character(len=16), parameter :: uni_unit(nuni) = [character(len=16) :: &
+      'mg C/m^2/d', 'mg C/m^2/d', 'mg C/m^2/d', 'mg C/m^2/d', &
+      '-', 'mg C/m^2/d', 'mg C/m^2/d', 'mg C/m^2/d', &
+      'mg C/m^2/d', 'mg C/m^2/d', 'mg C/m^2/d', 'mg C/m^2/d', &
+      'mg C/m^2/d', 'mg C/m^2/d', 'mg C/m^2/d', 'mg C/m^2/d', &
+      'mmol N/m^2/d', 'mmol N/m^2/d', 'mmol P/m^2/d', 'mmol N/m^2/d', &
+      'mmol N/m^2/d', 'mmol P/m^2/d', '-', 'mmol N/m^3', &
+      'mmol N/m^3', 'mmol N/m^3', 'mmol N/m^3', 'mmol P/m^3', &
+      'mmol P/m^3', 'mmol C/m^2/d', 'mmol O2/m^2/d', 'mmol eq/m^2/d', &
+      'mmol N/m^2/d', 'mmol P/m^2/d', 'mmol C/m^2/d', 'mmol eq/m^2/d', &
+      'W/m^2', 'mmol N/m^2/d', 'mmol P/m^2/d', 'mmol N/m^2/d', &
+      'mmol P/m^2/d', 'mmol N/m^2/d', 'mmol P/m^2/d', 'mmol N/m^2/d', &
+      'mmol P/m^2/d']
 
    type,extends(type_base_model),public :: type_ersem_seagrass
       ! Own bottom state variables
@@ -155,7 +170,7 @@ module ersem_seagrass
       ! jsasaki 2026-10-07: unified eelgrass formulation shared with MUSE (muse docs/EELGRASS_UNIFIED_SPEC_20261007.md).
       ! isw_uni = 1 replaces the process laws by the unified set U1-U20 (needs isw_fix = 1); isw_uni = 0 (default) is the former module.
       integer  :: isw_uni
-      real(rk) :: q10, Tref, k_tr, rs, k_mob, K_nsc, e_exu, e_leaf, f_recl, sd_hyp, z_p, z_max
+      real(rk) :: q10, Tref, k_tr, rs, k_mob, K_nsc, e_exu = 0.0_rk, e_leaf = 0.0_rk, f_recl, sd_hyp, z_p, z_max
       real(rk) :: V_l4, V_l3, V_lP, V_r4, V_r3, V_rP, K_l4, K_l3, K_lP, K_r4, K_r3, K_rP
       logical  :: no3_red
       type (type_bottom_state_variable_id) :: id_Q1c
@@ -372,8 +387,7 @@ contains
       ! the MUSE value per mmol C divided by CMass = 12.011 wherever carbon is in the unit denominator)
       if (uni) then
          if (self%isw_fix /= 1) call self%fatal_error('initialize', 'isw_uni = 1 requires isw_fix = 1')
-         if (self%isw_ledger == 1) call self%fatal_error('initialize', 'isw_uni = 1 has its own diagnostics; use isw_ledger = 0')
-         call self%get_parameter(self%q10, 'q10', '-', 'Q10 of maintenance respiration, nutrient uptake demand and root exudation', &
+         call self%get_parameter(self%q10, 'q10', '-', 'Q10 of maintenance respiration and nutrient uptake demand (not of exudation)', &
             default=2.4_rk, minimum=1.0_rk)
          call self%get_parameter(self%Tref, 'Tref', 'degrees_Celsius', 'reference temperature of q10', default=20.0_rk)
          call self%get_parameter(self%k_tr, 'k_tr', '1/d', 'relaxation rate of AG -> BG allocation to the BG:AG target', &
@@ -391,14 +405,14 @@ contains
             default=0.2_rk, minimum=0.0_rk, maximum=1.0_rk)
          call self%get_parameter(self%sd_hyp, 'sd_hyp', '1/d', 'extra BG mortality per unit water-O2 deficit (1 - fO2)', &
             default=0.0_rk, minimum=0.0_rk)
-         call self%get_parameter(self%z_p, 'z_p', 'm', 'depth of the root-profile maximum', default=0.03_rk, minimum=1.0e-4_rk)
-         call self%get_parameter(self%z_max, 'z_max', 'm', 'root depth', default=0.15_rk, minimum=1.0e-3_rk)
+         call self%get_parameter(self%z_p, 'z_p', 'm', 'depth of the root-profile maximum', default=0.03_rk, minimum=1.0e-4_rk, maximum=10.0_rk)
+         call self%get_parameter(self%z_max, 'z_max', 'm', 'root depth', default=0.15_rk, minimum=1.0e-3_rk, maximum=100.0_rk)
          call self%get_parameter(self%V_l4, 'V_l4', 'mmol N/mg C/d', 'maximum leaf NH4 uptake', default=0.038_rk / CMass, minimum=0.0_rk)
          call self%get_parameter(self%V_l3, 'V_l3', 'mmol N/mg C/d', 'maximum leaf NO3 uptake', default=0.027_rk / CMass, minimum=0.0_rk)
          call self%get_parameter(self%V_lP, 'V_lP', 'mmol P/mg C/d', 'maximum leaf PO4 uptake', default=0.014_rk / CMass, minimum=0.0_rk)
-         call self%get_parameter(self%V_r4, 'V_r4', 'mmol N/mg C/d', 'maximum root NH4 uptake', default=0.014_rk / CMass, minimum=0.0_rk)
-         call self%get_parameter(self%V_r3, 'V_r3', 'mmol N/mg C/d', 'maximum root NO3 uptake', default=0.023_rk / CMass, minimum=0.0_rk)
-         call self%get_parameter(self%V_rP, 'V_rP', 'mmol P/mg C/d', 'maximum root PO4 uptake', default=0.0023_rk / CMass, minimum=0.0_rk)
+         call self%get_parameter(self%V_r4, 'V_r4', 'mmol N/mg C/d', 'maximum root NH4 uptake', default=0.0161_rk / CMass, minimum=0.0_rk)
+         call self%get_parameter(self%V_r3, 'V_r3', 'mmol N/mg C/d', 'maximum root NO3 uptake', default=0.02645_rk / CMass, minimum=0.0_rk)
+         call self%get_parameter(self%V_rP, 'V_rP', 'mmol P/mg C/d', 'maximum root PO4 uptake', default=0.002645_rk / CMass, minimum=0.0_rk)
          call self%get_parameter(self%K_l4, 'K_l4', 'mmol N/m^3', 'leaf NH4 half-saturation', default=9.2_rk, minimum=1.0e-6_rk)
          call self%get_parameter(self%K_l3, 'K_l3', 'mmol N/m^3', 'leaf NO3 half-saturation', default=23.0_rk, minimum=1.0e-6_rk)
          call self%get_parameter(self%K_lP, 'K_lP', 'mmol P/m^3', 'leaf PO4 half-saturation', default=1.5_rk, minimum=1.0e-6_rk)
@@ -411,7 +425,8 @@ contains
          call self%get_parameter(self%no3_red, 'no3_red', '', 'nitrate assimilation oxidises 2 C per N (leaves: water DIC; roots: pore DIC)', &
             default=.false.)
          if (.not. (self%Tmin < self%Topt .and. self%Topt < self%Tmax)) call self%fatal_error('initialize', 'CTMI order')
-         if (.not. (self%K_nsc > 0.0_rk .and. self%rs > 0.0_rk)) call self%fatal_error('initialize', 'K_nsc and rs must be positive')
+         if (.not. (self%K_nsc > 0.0_rk .and. self%rs > 0.0_rk .and. self%qn_bg > 0.0_rk .and. self%qp_bg > 0.0_rk .and. self%q_nsc > 0.0_rk)) &
+            call self%fatal_error('initialize', 'isw_uni = 1: K_nsc, rs, qn_bg, qp_bg and q_nsc must be positive')
       end if
 
       ! --- Optional grazing closure on AG (docs/13, 2026-08-15) ----------
@@ -452,6 +467,7 @@ contains
       call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
            'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
            default=0, minimum=0, maximum=1)
+      if (uni .and. self%isw_ledger == 1) call self%fatal_error('initialize', 'isw_uni = 1 has its own diagnostics; use isw_ledger = 0')
       if (self%isw_ledger == 1) then
          call self%register_diagnostic_variable(self%id_ledger_growth_O3c, 'ledger_growth_O3c', 'mmol C/m^2/d', &
               'ledger: gross fixation and AG, NSC and BG respiration -> pelagic DIC (exchange)', &
@@ -577,8 +593,12 @@ contains
       call self%register_state_dependency(self%id_N3n, 'N3n', 'mmol N/m^3', 'pelagic nitrate')
       call self%register_state_dependency(self%id_N4n, 'N4n', 'mmol N/m^3', 'pelagic ammonium')
       call self%register_state_dependency(self%id_R6c, 'R6c', 'mg C/m^3', 'pelagic POM carbon')
-      if (self%f_exu > 0.0_rk .or. (uni .and. self%e_leaf > 0.0_rk)) &
+      if (self%f_exu > 0.0_rk) &
          call self%register_state_dependency(self%id_R2c, 'R2c', 'mg C/m^3', 'pelagic semi-labile DOC carbon')
+      if (uni) then
+         if (self%e_leaf > 0.0_rk .and. .not. self%f_exu > 0.0_rk) &
+            call self%register_state_dependency(self%id_R2c, 'R2c', 'mg C/m^3', 'pelagic semi-labile DOC carbon')
+      end if
       call self%register_state_dependency(self%id_R6n, 'R6n', 'mmol N/m^3', 'pelagic POM nitrogen')
       call self%register_state_dependency(self%id_R6p, 'R6p', 'mmol P/m^3', 'pelagic POM phosphorus')
 
@@ -657,7 +677,7 @@ contains
          if (self%e_exu > 0.0_rk) call self%register_state_dependency(self%id_Q1c, 'Q1c', 'mg C/m^2', &
             'benthic dissolved organic carbon (root exudate)')
          do iu = 1, nuni
-            call self%register_diagnostic_variable(self%id_u(iu), 'uni_'//trim(uni_name(iu)), '-', &
+            call self%register_diagnostic_variable(self%id_u(iu), 'uni_'//trim(uni_name(iu)), trim(uni_unit(iu)), &
                'unified-formulation term '//trim(uni_name(iu)), domain=domain_bottom, source=source_do_bottom)
          end do
       end if
@@ -1112,6 +1132,7 @@ contains
       real(rk) :: dAGc, dBGc, dNSC, dAGn, dAGp, dBGn, dBGp, qlost
       real(rk) :: red3l, red3r, rbn, rbp
       integer :: k
+      real(rk), parameter :: epsC = 1.0e-8_rk * CMass      ! the MUSE carbon floor 1e-8 mmol C, in mg C
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -1131,20 +1152,22 @@ contains
          AGc = max(AGc, 0.0_rk); BGc = max(BGc, 0.0_rk); NSCc = max(NSCc, 0.0_rk)
 
          ! U1, U2: temperature
+         ! the cardinal-temperature model of Rosso et al. (1993, n = 2), as MUSE (review r2 #1); the cubic of the legacy path can have an interior cutoff
          if (ETW <= self%Tmin .or. ETW >= self%Tmax) then
             eT = 0.0_rk
          else
-            eT = (ETW - self%Tmin) * (ETW - self%Tmax) * (self%ctmi_a * ETW + self%ctmi_b)
+            eT = (ETW - self%Tmax) * (ETW - self%Tmin)**2 / ((self%Topt - self%Tmin) * ((self%Topt - self%Tmin) * (ETW - self%Topt) &
+                 - (self%Topt - self%Tmax) * (self%Topt + self%Tmin - 2.0_rk * ETW)))
             eT = max(0.0_rk, min(1.0_rk, eT))
          end if
          gT = self%q10**((ETW - self%Tref) / 10.0_rk)
          ! U3: light with canopy self-shading
          tau = self%k_can * self%a_lai * AGc
          I_can = max(0.0_rk, par)
-         if (tau > 1.0e-8_rk) I_can = I_can * (1.0_rk - exp(-tau)) / tau
+         if (tau > epsC) I_can = I_can * (1.0_rk - exp(-tau)) / tau
          eI = tanh(self%alpha * I_can)
          ! U4: quota; U5: DIC and water O2
-         qn = max(AGn, 0.0_rk) / max(AGc, 1.0e-8_rk); qp = max(AGp, 0.0_rk) / max(AGc, 1.0e-8_rk)
+         qn = max(AGn, 0.0_rk) / max(AGc, epsC); qp = max(AGp, 0.0_rk) / max(AGc, epsC)
          eQ = min(max(0.0_rk, (qn - self%qn_min) / (self%qn_max - self%qn_min)), &
                   max(0.0_rk, (qp - self%qp_min) / (self%qp_max - self%qp_min)), 1.0_rk)
          fC = max(O3c, 0.0_rk) / (max(O3c, 0.0_rk) + self%K_dic)
@@ -1156,7 +1179,7 @@ contains
          RmA = self%srs_ag * gT * AGc * fO2
          RmB = self%srs_bg * gT * BGc * fO2
          phi = 0.0_rk
-         if (NSCc > 0.0_rk) phi = NSCc / (NSCc + self%K_nsc * max(BGc, 1.0e-8_rk))
+         if (NSCc > 0.0_rk) phi = NSCc / (NSCc + self%K_nsc * max(BGc, epsC))
          ExuL = self%e_leaf * AGc                                            ! U12 (light- and temperature-independent)
          Pnet = Pg - Ract - (1.0_rk - phi) * RmA - ExuL
 
@@ -1235,7 +1258,7 @@ contains
 
          ! U16, U17: respiratory return (structural share, times 1 - f_rspn); BG at the BG quotas
          RmAr = (1.0_rk - phi) * (1.0_rk - self%f_rspn) * RmA
-         qnb = BGn / max(BGc, 1.0e-8_rk); qpb = BGp / max(BGc, 1.0e-8_rk)
+         qnb = BGn / max(BGc, epsC); qpb = BGp / max(BGc, epsC)
          RmBr = (1.0_rk - phi) * (1.0_rk - self%f_rspn) * RmB
          rbn = RmBr * qnb; rbp = RmBr * qpb
          red3l = 0.0_rk; red3r = 0.0_rk
