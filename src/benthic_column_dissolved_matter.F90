@@ -38,6 +38,7 @@ module ersem_benthic_column_dissolved_matter
       real(rk) :: ads(nlayers)
       real(rk) :: relax
       real(rk) :: h_supply, minD
+      real(rk) :: cmix_scale = 1.0_rk   ! jsasaki 2026-10-07: unification family C wave 2: per-solute scale of the interface resistance (R_i/R_O2)
       integer :: last_layer
       logical :: correction
       type (type_single_constituent),allocatable :: constituents(:)
@@ -188,6 +189,10 @@ contains
 
       ! Dependencies
       call self%register_dependency(self%id_cmix,pelagic_benthic_transfer_constant)
+      ! jsasaki 2026-10-07: unification family C wave 2 (plan 2a item 6): the interface resistance of THIS solute is cmix_scale times the
+      ! O2 value ben_col EDZ_mix (or R_dbl): R_i/R_O2 = (D_O2/D_i)^(2/3) from R_i = delta_O2 (D_i/D_O2)^(1/3)/D_i. Default 1 = one value for all solutes (main).
+      call self%get_parameter(self%cmix_scale,'cmix_scale','-','interface resistance of this solute relative to the O2 value (R_i/R_O2); 1: all solutes share EDZ_mix',default=1.0_rk,minimum=0.0_rk)
+      if (.not.(self%cmix_scale>=0.0_rk .and. self%cmix_scale<huge(1.0_rk))) call self%fatal_error('initialize','cmix_scale must be finite and non-negative')
       call self%register_dependency(self%id_poro,sediment_porosity)
       call profile%register_dependency(profile%id_poro,sediment_porosity)
       do ilayer=1,nlayers
@@ -320,6 +325,7 @@ contains
       ! porosity, pelagic-bentic transfer coefficient, per-layer diffusivities, per-layer depth of the bottom interface.
       _GET_HORIZONTAL_(self%id_poro,poro)
       _GET_HORIZONTAL_(self%id_cmix,cmix)
+      cmix = cmix*self%cmix_scale   ! jsasaki 2026-10-07: unification family C wave 2: per-solute interface resistance (1.0: unchanged)
       do ilayer=1,nlayers
          _GET_HORIZONTAL_(self%id_diff(ilayer),diff(ilayer))
          _GET_HORIZONTAL_(self%id_Dm(ilayer),Dm(ilayer))
