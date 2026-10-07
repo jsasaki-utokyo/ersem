@@ -153,6 +153,13 @@ module ersem_seagrass
       real(rk) :: q10, Tref, k_tr, rs, k_mob, K_nsc, e_exu, f_recl, sd_hyp, z_p, z_max
       real(rk) :: V_l4, V_l3, V_lP, V_r4, V_r3, V_rP, K_l4, K_l3, K_lP, K_r4, K_r3, K_rP
       logical  :: no3_red
+      ! jsasaki 2026-10-07: unified mat (microphytobenthos) switches, legacy path only (muse docs/UNIFY_MAT_SPEC_20261007.md), per instance.
+      ! isw_no3red = 1: nitrate assimilation with its reductant, 2 AG C oxidised to DIC per NO3-N taken up, no O2 used (needs pq = rq_o2c = 1);
+      ! f_dk < 1: dark factor on nitrate uptake, jN3 x (f_dk + (1 - f_dk) eI); isw_matdiag = 1: registers upt_P, mort_AG, red_C.
+      ! Defaults (0, 1, 0) leave the module bit-identical to the former one.
+      integer  :: isw_no3red, isw_matdiag
+      real(rk) :: f_dk
+      type (type_horizontal_diagnostic_variable_id) :: id_uPl, id_mAG, id_redC
       type (type_bottom_state_variable_id) :: id_Q1c
       type (type_horizontal_dependency_id) :: id_K1p1w, id_K1p2w, id_K3n1w, id_K3n2w, id_K4n1w, id_K4n2w
       type (type_horizontal_dependency_id) :: id_D1m, id_D2m, id_poro
@@ -407,6 +414,20 @@ contains
          if (.not. (self%K_nsc > 0.0_rk .and. self%rs > 0.0_rk)) call self%fatal_error('initialize', 'K_nsc and rs must be positive')
       end if
 
+      ! jsasaki 2026-10-07: unified mat switches (legacy path; the unified eelgrass has its own no3_red and laws)
+      call self%get_parameter(self%isw_no3red, 'isw_no3red', '', 'nitrate assimilation with its reductant (2 AG C oxidised to DIC '// &
+         'per NO3-N, no O2; requires pq = rq_o2c = 1) [0: as before]', default=0, minimum=0, maximum=1)
+      call self%get_parameter(self%f_dk, 'f_dk', '-', 'dark/light ratio of nitrate uptake: jN3 x (f_dk + (1 - f_dk) eI) [1: as before]', &
+         default=1.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+      call self%get_parameter(self%isw_matdiag, 'isw_matdiag', '', 'register the mat diagnostics upt_P, mort_AG, red_C [0: none]', &
+         default=0, minimum=0, maximum=1)
+      if (self%isw_uni == 1 .and. (self%isw_no3red /= 0 .or. self%f_dk < 1.0_rk .or. self%isw_matdiag /= 0)) &
+         call self%fatal_error('initialize', 'isw_no3red, f_dk and isw_matdiag belong to the legacy path (isw_uni = 0)')
+      if (self%f_dk < 1.0_rk .and. self%isw_nupt == 0) &
+         call self%fatal_error('initialize', 'f_dk < 1 requires isw_nupt >= 1 (the legacy remainder rule has no nitrate potential)')
+      if (self%isw_no3red == 1 .and. .not. (self%pq == 1.0_rk .and. self%rq_o2c == 1.0_rk)) &
+         call self%fatal_error('initialize', 'isw_no3red = 1 requires pq = 1 and rq_o2c = 1 (CH2O electron balance)')
+
       ! --- Optional grazing closure on AG (docs/13, 2026-08-15) ----------
       ! Type-III (sigmoid) loss of AG carbon to external benthic grazers:
       !   F_gr = g_max * (grazer1c + grazer2c) * AGc^2 / (AGc^2 + h_ag^2)
@@ -444,6 +465,9 @@ contains
       call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
            'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
            default=0, minimum=0, maximum=1)
+      ! jsasaki 2026-10-07: the ledger counters do not carry the nitrate reductant
+      if (self%isw_no3red == 1 .and. self%isw_ledger == 1) &
+         call self%fatal_error('initialize', 'isw_no3red = 1 is not covered by the isw_ledger counters')
       if (self%isw_ledger == 1) then
          call self%register_diagnostic_variable(self%id_ledger_growth_O3c, 'ledger_growth_O3c', 'mmol C/m^2/d', &
               'ledger: gross fixation and AG, NSC and BG respiration -> pelagic DIC (exchange)', &
@@ -635,6 +659,16 @@ contains
          'ammonium uptake from porewater by roots', &
          domain=domain_bottom, source=source_do_bottom)
 
+      ! jsasaki 2026-10-07: mat diagnostics for the equivalence test (isw_matdiag = 1 only)
+      if (self%isw_matdiag == 1) then
+         call self%register_diagnostic_variable(self%id_uPl, 'upt_P', 'mmol P/m^2/d', 'phosphate uptake from the water column by leaves', &
+            domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_mAG, 'mort_AG', 'mg C/m^2/d', 'AG mortality (before routing)', &
+            domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_redC, 'red_C', 'mg C/m^2/d', 'AG carbon oxidised as nitrate reductant', &
+            domain=domain_bottom, source=source_do_bottom)
+      end if
+
       ! jsasaki 2026-10-07: couplings and diagnostics of the unified formulation (nothing is registered with isw_uni = 0)
       if (uni) then
          call self%register_dependency(self%id_K1p1w, 'K1p1_pw', 'mmol P/m^2', 'pore-water phosphate of layer 1')
@@ -676,6 +710,7 @@ contains
       real(rk) :: dAGc, dAGn, dAGp, dBGc, dBGn, dBGp, dNSC
       real(rk) :: gr1c, gr2c, F_gr, resp_gr, eges_gr
       real(rk) :: gTm, rbn, rbp, f1, rbw
+      real(rk) :: Rred_l, Rred_r       ! jsasaki 2026-10-07: nitrate reductant carbon, leaf and root (isw_no3red = 1), mg C/m^2/d
 
       ! jsasaki 2026-10-07: the unified formulation (isw_uni = 1) has its own routine
       if (self%isw_uni == 1) then
@@ -821,6 +856,11 @@ contains
                jN3_leaf = jN3_leaf * exp(-self%psi_inh * max(N4n, 0.0_rk))
                jN3_root = jN3_root * exp(-self%psi_inh * max(wsum, 0.0_rk))
             end if
+            ! jsasaki 2026-10-07: dark factor on nitrate uptake (f_dk < 1 only; nitrate reductase needs photosynthate), before the quota cap
+            if (self%f_dk < 1.0_rk) then
+               jN3_leaf = jN3_leaf * (self%f_dk + (1.0_rk - self%f_dk) * eI)
+               jN3_root = jN3_root * (self%f_dk + (1.0_rk - self%f_dk) * eI)
+            end if
             pot_n = jN4_leaf + jN3_leaf + jN4_root + jN3_root
             if (pot_n > 0.0_rk) then
                nscale = min(1.0_rk, cap_n / pot_n)
@@ -856,6 +896,13 @@ contains
 
          ! --- State ODEs (per day) ----------------------------------------
          dAGc = Pg - Ra_act - Ra_bas - T_st + T_mb - M_ag - G_alloc - self%f_exu * Pg
+         ! jsasaki 2026-10-07: nitrate assimilation oxidises 2 AG C per N to DIC, no O2 (MUSE no3_reductant); N and P stocks untouched
+         Rred_l = 0.0_rk; Rred_r = 0.0_rk
+         if (self%isw_no3red == 1) then
+            Rred_l = 2.0_rk * CMass * jN3_leaf
+            Rred_r = 2.0_rk * CMass * jN3_root
+            dAGc = dAGc - Rred_l - Rred_r
+         end if
          dNSC = T_st - T_mb - G_res - Rn - M_nsc
          dBGc = G_bg_c - Rb - M_bg
          dAGn = jN4_leaf + jN3_leaf + jN4_root + jN3_root &
@@ -917,6 +964,16 @@ contains
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_growth_O3c, (-Pg + Ra_act + Ra_bas + Rn + rbw * Rb) / CMass)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_growth_O2o, (self%pq * Pg - self%rq_o2c * Ra_act &
                                              - self%rq_o2c * Ra_bas - self%rq_o2c * Rn) / CMass)
+         end if
+         ! jsasaki 2026-10-07: reductant DIC: leaf part to the water, root part to the pore-water layers of the uptake (isw_fix = 1) or the water
+         if (self%isw_no3red == 1) then
+            if (self%isw_fix == 1) then
+               _SET_BOTTOM_EXCHANGE_(self%id_O3c, Rred_l / CMass)
+               _SET_BOTTOM_ODE_(self%id_G3c1, Rred_r * fK3 / CMass)
+               _SET_BOTTOM_ODE_(self%id_G3c2, Rred_r * (1.0_rk - fK3) / CMass)
+            else
+               _SET_BOTTOM_EXCHANGE_(self%id_O3c, (Rred_l + Rred_r) / CMass)
+            end if
          end if
          ! BG respiration draws benthic layer-1 oxygen instead
          _SET_BOTTOM_ODE_(self%id_G2o, -self%rq_o2c * Rb / CMass)
@@ -1083,6 +1140,12 @@ contains
             (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN3r, jN3_root)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN4r, jN4_root)
+         ! jsasaki 2026-10-07: mat diagnostics of the equivalence test
+         if (self%isw_matdiag == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uPl, jP_leaf)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_mAG, M_ag)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_redC, Rred_l + Rred_r)
+         end if
 
       _HORIZONTAL_LOOP_END_
 
