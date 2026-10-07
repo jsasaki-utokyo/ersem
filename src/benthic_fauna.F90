@@ -505,7 +505,7 @@ contains
             supply_ = max(0.0_rk,G2o_)/self%tau_o2
             if (cmix_ > 0.0_rk) then
                supply_ = supply_ + max(0.0_rk,O2o)/cmix_
-            else if (O2o > 0.0_rk) then
+            else if (cmix_ <= 0.0_rk .and. O2o > 0.0_rk) then      ! an explicit zero (or negative) resistance; a NaN resistance leaves the inventory term alone
                supply_ = 1.0e30_rk     ! no interface resistance and bottom water O2 present: the interface does not limit the supply
             end if                      ! (cmix <= 0 or NaN without bottom-water O2: the finite inventory term alone)
             supply_ = self%osup_share/max(1.0_rk,tot_) * supply_
