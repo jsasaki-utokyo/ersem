@@ -54,6 +54,8 @@ module ersem_seagrass
 
    use fabm_types
    use ersem_shared
+   ! jsasaki 2026-10-07: wave 2 family A review r1 #4: NaN for invalid light-operator input
+   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_value, ieee_quiet_nan
 
    implicit none
 
@@ -1478,10 +1480,9 @@ contains
 
    end subroutine do_bottom_uni
 
-   ! the integral over [za, zb] of the root profile (x/zp) e^(1 - x/zp), stably: e zp e^(-ua) [ua (1 - e^-d) + 1 - (1 + d) e^-d]
    ! jsasaki 2026-10-07: wave 2 family A. Mean over a layer of the saturating light response, M(u0, tau) = Integral_0^1 tanh(u0 exp(-tau xi)) d xi,
    ! u0 = alpha I_top >= 0, tau >= 0 the optical thickness of the layer. The same algorithm as muse src/sed_network_x.F90 mat_light_mean (the equivalence
-   ! test tests/mat_light compares the two): linear (analytic) below u_lin = 1e-6, otherwise composite 5-point Gauss-Legendre over the part of the layer
+   ! test tests/mat_light compares the two): linear (analytic, relative error < 3.4e-13) below u_lin = 1e-6, otherwise composite 5-point Gauss-Legendre over the part of the layer
    ! where u > u_lin in sub-intervals of optical thickness <= dtau (0.5; error <= 1.2e-11 over u0 1e-9 - 1e3, tau 0 - 1e4, muse tests/mat_light/test_quadrature.py).
    pure real(rk) function one_minus_exp(x) result(y)
       real(rk), intent(in) :: x
@@ -1500,23 +1501,33 @@ contains
                                       0.5_rk + sqrt(5.0_rk - 2.0_rk * r10) / 6.0_rk, 0.5_rk + sqrt(5.0_rk + 2.0_rk * r10) / 6.0_rk]
       real(rk), parameter :: wg(5) = [(322.0_rk - 13.0_rk * s70) / 1800.0_rk, (322.0_rk + 13.0_rk * s70) / 1800.0_rk, 64.0_rk / 225.0_rk, &
                                       (322.0_rk + 13.0_rk * s70) / 1800.0_rk, (322.0_rk - 13.0_rk * s70) / 1800.0_rk]
-      real(rk) :: xc, h, a
+      real(rk) :: xc, h, a, lr, nr
       integer :: n, j, k
-      if (.not. (u0 > 0.0_rk)) then
+      ! invalid input is visible, never a plausible light factor: NaN, infinite or negative u0 or tau give NaN; u0 = 0 (darkness) gives 0
+      if (.not. (ieee_is_finite(u0) .and. ieee_is_finite(tau) .and. u0 >= 0.0_rk .and. tau >= 0.0_rk)) then
+         m = ieee_value(m, ieee_quiet_nan)
+         return
+      end if
+      if (u0 == 0.0_rk) then
          m = 0.0_rk
          return
       end if
       if (tau < 1.0e-9_rk) then
-         m = tanh(u0) - 0.5_rk * tau * u0 / cosh(min(u0, 350.0_rk))**2
+         ! an optically thin layer: tanh(u0) to first order in tau; sech^2 = 4 e / (1 + e)^2, e = exp(-2 u0) (underflows to 0 for large u0)
+         a = exp(-2.0_rk * u0)
+         m = tanh(u0) - 0.5_rk * tau * u0 * 4.0_rk * a / (1.0_rk + a)**2
          return
       end if
       if (u0 <= u_lin) then
          m = u0 * one_minus_exp(tau) / tau
          return
       end if
+      ! the layer fraction above the linear tail; the logarithm of the ratio, not the ratio (u0 / u_lin overflows for u0 > 1e302)
+      lr = log(u0) - log(u_lin)
       xc = 1.0_rk
-      if (tau > log(u0 / u_lin)) xc = log(u0 / u_lin) / tau
-      n = max(1, ceiling(tau * xc / dtau))
+      if (tau > lr) xc = lr / tau
+      nr = min(tau * xc / dtau, 1.0e5_rk)
+      n = max(1, ceiling(nr))
       h = xc / real(n, rk)
       m = 0.0_rk
       do j = 1, n
@@ -1528,6 +1539,7 @@ contains
       if (xc < 1.0_rk) m = m + u_lin * one_minus_exp(tau * (1.0_rk - xc)) / tau
    end function mat_light_mean
 
+   ! the integral over [za, zb] of the root profile (x/zp) e^(1 - x/zp), stably: e zp e^(-ua) [ua (1 - e^-d) + 1 - (1 + d) e^-d]
    pure real(rk) function root_int(za, zb, zp) result(F)
       real(rk), intent(in) :: za, zb, zp
       real(rk), parameter :: e1 = 2.718281828459045_rk
