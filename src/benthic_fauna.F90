@@ -28,12 +28,19 @@ module ersem_benthic_fauna
 
       real(rk) :: pu
       real(rk) :: pue
+      ! jsasaki 2026-10-07: family B wave 2 (O1): faeces of this detritus food return to the class it came from (isw_waste = 1 only)
+      logical  :: keep = .false.
+      type (type_bottom_state_variable_id) :: id_kc,id_kn,id_kp
       logical  :: ispel
       logical  :: ll
    end type
 
    type,extends(type_ersem_benthic_base),public :: type_ersem_benthic_fauna
       type (type_state_variable_id)   :: id_O2o
+      ! jsasaki 2026-10-07: family B wave 2 (O1): separate sink of dead fauna (isw_waste = 1 only)
+      integer :: isw_waste = 0
+      type (type_model_id) :: id_Qd
+      type (type_bottom_state_variable_id) :: id_Qdc,id_Qdn,id_Qdp
       type (type_bottom_state_variable_id) :: id_Q6c,id_Q6n,id_Q6p,id_Q6s,id_benTA,id_benTA2
       type (type_bottom_state_variable_id) :: id_G3c,id_G2o,id_K4n,id_K1p,id_K4n2,id_K1p2
       type (type_horizontal_dependency_id) :: id_Dm
@@ -174,6 +181,22 @@ contains
       call self%request_coupling_to_model(self%id_Q6p,'Q','p')
       call self%request_coupling_to_model(self%id_Q6s,'Q','s')
 
+      !---> jsasaki 2026-10-07: family B wave 2 (plan O1, muse/docs/UNIFY_B2_SPEC_20261007.md section 3): waste routing by class.
+      ! isw_waste = 1: dead fauna go to the sink Qd (default: the same sink as Q, so that nothing changes without a coupling) and the faeces of a
+      ! DETRITUS food of a particulate layer return to the layer it came from (MUSE feces_keep_class); faeces of all other food and the excess carbon stay in Q.
+      call self%get_parameter(self%isw_waste,'isw_waste','','0: faeces, dead fauna and excess carbon to Q (legacy); 1: dead fauna to Qd, faeces of detritus food to its own class',default=0,minimum=0,maximum=1)
+      if (self%isw_waste == 1) then
+         call self%register_model_dependency(self%id_Qd,'Qd')
+         call self%couplings%set_string('Qd','Q')
+         call self%register_state_dependency(self%id_Qdc,'Qdc','mg C/m^2',   'particulate organic carbon receiving dead fauna')
+         call self%register_state_dependency(self%id_Qdn,'Qdn','mmol N/m^2', 'particulate organic nitrogen receiving dead fauna')
+         call self%register_state_dependency(self%id_Qdp,'Qdp','mmol P/m^2', 'particulate organic phosphorus receiving dead fauna')
+         call self%request_coupling_to_model(self%id_Qdc,self%id_Qd,'c')
+         call self%request_coupling_to_model(self%id_Qdn,self%id_Qd,'n')
+         call self%request_coupling_to_model(self%id_Qdp,self%id_Qd,'p')
+      end if
+      !<--- jsasaki 2026-10-07
+
       ! Determine number of food sources
       call self%get_parameter(self%nfood, 'nfood', '', 'number of food sources',default=0)
 
@@ -238,6 +261,16 @@ contains
             ! Implement the legacy behaviour here.
             if (legacy_ersem_compatibility.and..not.self%food(ifood)%ispel) &
                call self%couplings%set_string('food'//trim(index)//'_loss_source','Q')
+            ! jsasaki 2026-10-07: family B wave 2 (O1): the faeces of a sediment detritus food return to the class it was eaten from
+            if (self%isw_waste == 1 .and. .not.self%food(ifood)%ispel) then
+               self%food(ifood)%keep = .true.
+               call self%register_state_dependency(self%food(ifood)%id_kc,'food'//trim(index)//'_kc','mg C/m^2',  'carbon sink of the faeces of food source '//trim(index))
+               call self%register_state_dependency(self%food(ifood)%id_kn,'food'//trim(index)//'_kn','mmol N/m^2','nitrogen sink of the faeces of food source '//trim(index))
+               call self%register_state_dependency(self%food(ifood)%id_kp,'food'//trim(index)//'_kp','mmol P/m^2','phosphorus sink of the faeces of food source '//trim(index))
+               call self%request_coupling_to_model(self%food(ifood)%id_kc,self%food(ifood)%id_loss_source,'c')
+               call self%request_coupling_to_model(self%food(ifood)%id_kn,self%food(ifood)%id_loss_source,'n')
+               call self%request_coupling_to_model(self%food(ifood)%id_kp,self%food(ifood)%id_loss_source,'p')
+            end if
          else
             ! Use assimilation efficiency for living matter.
             self%food(ifood)%pue = pue
@@ -332,6 +365,7 @@ contains
       integer  :: ifood,istate
       real(rk) :: fBTYc,nfBTYc,fYG3c,p_an
       real(rk) :: excess_c,excess_n,excess_p
+      real(rk) :: faec_c,faec_n,faec_p   ! jsasaki 2026-10-07: family B wave 2 (O1)
       real(rk) :: f_O2_resp  ! Monod O2 limitation factor for respiration (jsasaki 2026-02-15)
 
       _HORIZONTAL_LOOP_BEGIN_
@@ -459,9 +493,27 @@ contains
       SYc = nfBTYc
       SYn = sum(netfluxn)
       SYp = sum(netfluxp)
+      !---> jsasaki 2026-10-07: family B wave 2 (O1): with isw_waste = 1 the faeces of the detritus foods go to the classes they came from
+      if (self%isw_waste == 1) then
+         faec_c = fBTYc - nfBTYc; faec_n = sum(grossfluxn) - sum(netfluxn); faec_p = sum(grossfluxp) - sum(netfluxp)
+         do ifood=1,self%nfood
+            if (.not.self%food(ifood)%keep) cycle
+            _SET_BOTTOM_ODE_(self%food(ifood)%id_kc,grossfluxc(ifood)-netfluxc(ifood))
+            _SET_BOTTOM_ODE_(self%food(ifood)%id_kn,grossfluxn(ifood)-netfluxn(ifood))
+            _SET_BOTTOM_ODE_(self%food(ifood)%id_kp,grossfluxp(ifood)-netfluxp(ifood))
+            faec_c = faec_c - (grossfluxc(ifood)-netfluxc(ifood))
+            faec_n = faec_n - (grossfluxn(ifood)-netfluxn(ifood))
+            faec_p = faec_p - (grossfluxp(ifood)-netfluxp(ifood))
+         end do
+         _SET_BOTTOM_ODE_(self%id_Q6c,faec_c)
+         _SET_BOTTOM_ODE_(self%id_Q6n,faec_n)
+         _SET_BOTTOM_ODE_(self%id_Q6p,faec_p)
+      else
+      !<--- jsasaki 2026-10-07
       _SET_BOTTOM_ODE_(self%id_Q6c,fBTYc - nfBTYc)
       _SET_BOTTOM_ODE_(self%id_Q6n,sum(grossfluxn) - sum(netfluxn))
       _SET_BOTTOM_ODE_(self%id_Q6p,sum(grossfluxp) - sum(netfluxp))
+      end if   ! jsasaki 2026-10-07: family B wave 2 (O1)
       _SET_BOTTOM_ODE_(self%id_Q6s,sum(grossfluxs))
 
       ! Compute contribution to bioturbation and bioirrigation from total carbon ingestion.
@@ -536,9 +588,15 @@ contains
 
       ! Apply mortality to biomass, and send dead matter to particulate organic carbon pool.
       _SET_BOTTOM_ODE_(self%id_c, -mortflux*cP)
+      if (self%isw_waste == 1) then      ! jsasaki 2026-10-07: family B wave 2 (O1): dead fauna to their own sink
+         _SET_BOTTOM_ODE_(self%id_Qdc,mortflux*cP)
+         _SET_BOTTOM_ODE_(self%id_Qdn,mortflux*cP*self%qnc)
+         _SET_BOTTOM_ODE_(self%id_Qdp,mortflux*cP*self%qpc)
+      else
       _SET_BOTTOM_ODE_(self%id_Q6c,mortflux*cP)
       _SET_BOTTOM_ODE_(self%id_Q6n,mortflux*cP*self%qnc)
       _SET_BOTTOM_ODE_(self%id_Q6p,mortflux*cP*self%qpc)
+      end if
 
       ! Compute excess carbon flux, given that the maximum realizable carbon flux needs to be balanced
       ! by corresponding nitrogen and phosphorus fluxes to maintain constant stoichiometry.
