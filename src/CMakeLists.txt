@@ -10,6 +10,7 @@ add_library(fabm_models_ersem OBJECT
             ersem_model_library.F90
             ${CMAKE_CURRENT_BINARY_DIR}/version.F90
             shared.F90
+            benthos_shared_laws.F90   # jsasaki 2026-10-07: unification family C (identical copy in muse/src)
             pelagic_base.F90
             benthic_base.F90
             light.F90

@@ -13,6 +13,7 @@ module ersem_benthic_column
    use fabm_types
 
    use ersem_shared
+   use benthos_shared_laws, only: tur_enh, irr_enh   ! jsasaki 2026-10-07: unification family C (laws shared with MUSE)
 
    implicit none
 
@@ -47,12 +48,17 @@ contains
       integer,                          intent(in)           :: configunit
 
       class (type_ersem_bioturbation), pointer :: bioturbation
+      real(rk) :: R_dbl   ! jsasaki 2026-10-07: unification family C (X9)
 
       ! Set time unit to d-1. This implies that all rates (sink/source terms) are given in d-1.
       self%dt = 86400._rk
 
       call self%get_parameter(self%qPW,'qPW','-','sediment porosity')
       call self%get_parameter(self%EDZ_mix,'EDZ_mix','d/m','equilibrium diffusive speed between sediment surface water')
+      ! jsasaki 2026-10-07: unification family C (X9): the interface resistance shared with MUSE (dbl/d0w), d/m. R_dbl > 0
+      ! replaces EDZ_mix; the default -1 keeps EDZ_mix (rfB13 bit for bit).
+      call self%get_parameter(R_dbl,'R_dbl','d/m','diffusive boundary layer resistance shared with MUSE (thickness/diffusivity); > 0 replaces EDZ_mix',default=-1.0_rk)
+      if (R_dbl > 0.0_rk) self%EDZ_mix = R_dbl
       call self%get_parameter(self%d_tot,'d_tot','m','depth of sediment column')
 
       call self%register_state_variable(self%id_D1m,'D1m','m','depth of bottom interface of oxygenated layer',standard_variable=depth_of_bottom_interface_of_layer_1)
@@ -123,21 +129,23 @@ contains
       class (type_ersem_bioturbation),intent(in) :: self
       _DECLARE_ARGUMENTS_DO_BOTTOM_
 
-      real(rk) :: Ytur, Yirr, Irr_enh, Tur_enh
+      real(rk) :: Ytur, Yirr, Irr_fac, Tur_fac   ! jsasaki 2026-10-07: renamed (clash with the shared functions)
 
       _HORIZONTAL_LOOP_BEGIN_
 
          ! Compute "diffusivity of particulates", which represents bioturbation.
          _GET_HORIZONTAL_(self%id_biotur_tot,Ytur)
-         Tur_enh = 1.0_rk + self%mtur * Ytur/(Ytur+self%htur)
-         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_diff_pom,Tur_enh*self%Etur)
+         ! jsasaki 2026-10-07: unification family C: shared enhancement law (same arithmetic as before)
+         Tur_fac = tur_enh(Ytur,self%mtur,self%htur)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_diff_pom,Tur_fac*self%Etur)
 
          ! Compute diffusivity of solutes that includes bioirrigation enhancement.
          _GET_HORIZONTAL_(self%id_bioirr_tot,Yirr)
-         Irr_enh = self%irr_min + self%mirr * Yirr/(Yirr+self%hirr)
-         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_diff(1),Irr_enh*self%EDZ_1)
-         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_diff(2),Irr_enh*self%EDZ_2)
-         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_diff(3),Irr_enh*self%EDZ_3)
+         ! jsasaki 2026-10-07: unification family C: shared enhancement law (same arithmetic as before)
+         Irr_fac = irr_enh(Yirr,self%irr_min,self%mirr,self%hirr)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_diff(1),Irr_fac*self%EDZ_1)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_diff(2),Irr_fac*self%EDZ_2)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_diff(3),Irr_fac*self%EDZ_3)
 
       _HORIZONTAL_LOOP_END_
 
