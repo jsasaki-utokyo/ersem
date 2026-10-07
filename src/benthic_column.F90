@@ -79,7 +79,8 @@ contains
       ! Bioturbation
       call self%get_parameter(bioturbation%Etur,'Etur','m^2/d','basal bioturbation rate')
       call self%get_parameter(bioturbation%mtur,'mtur','-','maximum relative turbation enhancement')
-      call self%get_parameter(bioturbation%htur,'htur','mg C/m^2/d','Michaelis-Menten constant for bioturbation')
+      ! jsasaki 2026-10-07: review r2 #7: the half-saturation must be positive (0/0 at zero activity otherwise)
+      call self%get_parameter(bioturbation%htur,'htur','mg C/m^2/d','Michaelis-Menten constant for bioturbation',minimum=tiny(1.0_rk))
       call self%get_parameter(bioturbation%dtur,'dtur','m','bioturbation depth')
 
       ! Bioirrigation
@@ -88,7 +89,8 @@ contains
       call self%get_parameter(bioturbation%EDZ_3,  'EDZ_3','m^2/d','diffusivity in anoxic layer')
       call self%get_parameter(bioturbation%irr_min,'irr_min','-','minimum diffusion enhancement through bioirrigation')
       call self%get_parameter(bioturbation%mirr,   'mirr','-','maximum relative diffusion enhancement due to bioirrigation')
-      call self%get_parameter(bioturbation%hirr,   'hirr','mg C/m^2/d','Michaelis-Menten constant for bioirrigation')
+      ! jsasaki 2026-10-07: review r2 #7: positive half-saturation
+      call self%get_parameter(bioturbation%hirr,   'hirr','mg C/m^2/d','Michaelis-Menten constant for bioirrigation',minimum=tiny(1.0_rk))
 
       ! Allow bioturbation module to initialize - must be after retrieving its parameters, as they are used when registering diagnostics.
       call self%add_child(bioturbation,'bioturbation',configunit=-1)
