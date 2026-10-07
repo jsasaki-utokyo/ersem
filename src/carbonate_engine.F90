@@ -70,6 +70,7 @@ module carbonate_engine
 
    public :: carbonate_engine_solve, convert_pH_scale
    public :: carbonate_engine_solve_porewater, calcite_ksp
+   public :: calcium_of_salinity   ! jsasaki 2026-10-07: family E
 
 contains
 
@@ -967,6 +968,14 @@ contains
    ! Mucci (1983) with the Millero (1995) pressure correction (Pr in Pa): the
    ! formula of CaCO3_Saturation in carbonate.F90 (which stays untouched)
    !-----------------------------------------------------------------------
+   ! jsasaki 2026-10-07: family E: the one seawater calcium formula, shared by ERSEM (iswCa = 1) and MUSE (calcium_seawater):
+   ! Ca (mol/kg) = 0.02128/40.078 * Cl, Cl = S/1.80655 (Riley and Tongudai 1967); 9.111e-3 at S = 31
+   pure function calcium_of_salinity(S) result(Ca)
+      real(rk), intent(in) :: S
+      real(rk) :: Ca
+      Ca = 0.02128_rk / 40.078_rk * S / 1.80655_rk
+   end function calcium_of_salinity
+
    function calcite_ksp(Tc, S, Pr) result(Kspc)
       real(rk), intent(in) :: Tc, S, Pr
       real(rk) :: Kspc
