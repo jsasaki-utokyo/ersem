@@ -123,7 +123,7 @@ contains
          call self%fatal_error('initialize','the O2 parameters must be finite with hO2 >= rlO2 >= 0 and hO2resp >= 0')
 
       !---> jsasaki 2026-10-07: family B wave 2 (plan amendment 3): explicit O2 supply constraint, shared law with MUSE (f_osupply, f_tau_o2).
-      ! Realised respiration extent R = D S/(D + S) (benthos_shared_laws o2_supply_extent) with D the demanded rate and
+      ! Realised respiration extent R = D (1 + (D/S)^4)^(-1/4), a smooth minimum (benthos_shared_laws o2_supply_extent), with D the demanded rate and
       ! S = O2o/(cmix + D1m/EDZ_osup) + G2o/tau_o2 (mmol O2 m-2 d-1): the water-O2 supply across the diffusive boundary layer and the
       ! oxic layer (baseline diffusivity), plus the oxic inventory over its turnover time. R is applied to C loss, DIC and O2 alike.
       call self%get_parameter(self%isw_osupply,'isw_osupply','','1: respiration extent limited by the O2 supply (shared law with MUSE); 0: off',default=0,minimum=0,maximum=1)
@@ -299,6 +299,15 @@ contains
       end if
 
    end subroutine initialize
+
+   ! jsasaki 2026-10-07: family B wave 2: the supply-limited extent (mg C m-2 d-1 from mg C m-2 d-1 and mmol O2 m-2 d-1), kept out of line so
+   ! that the switched-off path of do_bottom compiles to the same floating-point code as before the edit
+   function realised_resp(D,S) result(R)
+      !DIR$ ATTRIBUTES NOINLINE :: realised_resp
+      real(rk),intent(in) :: D,S
+      real(rk) :: R
+      R = CMass * o2_supply_extent(D/CMass,S)
+   end function realised_resp
 
    subroutine do_bottom(self,_ARGUMENTS_DO_BOTTOM_)
 
@@ -488,7 +497,7 @@ contains
             _GET_HORIZONTAL_(self%id_G2o,G2o_)
             _GET_HORIZONTAL_(self%id_cmix,cmix_)
             supply_ = max(0.0_rk,G2o_)/self%tau_o2 + max(0.0_rk,O2o)/(cmix_ + Dm/self%EDZ_osup)
-            fYG3c = CMass * o2_supply_extent(fYG3c/CMass, supply_)
+            fYG3c = realised_resp(fYG3c, supply_)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_osupply,supply_)
          end block
       end if
