@@ -55,7 +55,7 @@ module ersem_benthic_bacteria
       ! jsasaki 2026-10-07: family B unification (docs/UNIFY_FAUNA_BACTERIA_SPEC_20261007.md in the muse repository): the
       ! diagnostic / saturating uptake law and the overflow respiration, all off by default
       integer  :: isw_diag, isw_overflow
-      real(rk) :: B_ref, K_B, q10_decay
+      real(rk) :: B_ref, K_B, q10_decay, bge, bact_m
    contains
       procedure :: initialize
       procedure :: do_bottom
@@ -181,21 +181,33 @@ contains
 
       !---> jsasaki 2026-10-07: family B unification (plan X1): saturating first-order uptake, quasi-steady biomass
       ! isw_diag = 0 (default): the legacy bimolecular uptake (su + suf eN) eT eOx B S (bit-identical).
-      ! isw_diag = 1: diagnostic bacteria: the uptake uses the constant reference stock B_ref instead of B, i.e. it is first
-      !   order in the substrate with k_i = su_i B_ref and does not depend on the biomass (the adopted MUSE basis).
-      ! isw_diag = 2: saturating: B_eff = (B_ref + K_B) B/(B + K_B); equals B at B = B_ref and is bounded by B_ref + K_B
-      !   (MUSE explicit mode, f_B = B/(B + K_B)).
-      ! In both modes the temperature factor of the uptake is the pure power law q10_decay^((T - Tref)/10) (no heat cut), the
-      ! Q10 of decay (Thamdrup 1998; Kristensen 1992), separate from the Q10 `q10` of the maintenance respiration.
+      ! isw_diag = 1: DIAGNOSTIC bacteria, one budget (plan amendment 2): the uptake is first order in the substrate on the
+      !   constant stock B_ref (k_i = su_i B_ref), with the decay Q10 law; all of it is mineralised once (carbon to DIC and
+      !   oxygen, the nitrogen and phosphorus of the substrate to ammonium and phosphate, the fraction pue excreted to Q1 as
+      !   in the legacy law). The biomass is an observation-like diagnostic, dB/dt = bge/(1 - bge) R - bact_m B (MUSE's
+      !   bdg_bge, bdg_m): it has no feedback on any flux and is NOT charged to the carbon budget. There is no maintenance
+      !   respiration, no mortality return and no overflow respiration in this mode (they would charge the same carbon twice).
+      !   The fauna food H1/H2 must then be absent (preferences 0), as in MUSE's adopted basis.
+      ! isw_diag = 2: saturating prognostic stock: B_eff = (B_ref + K_B) B/(B + K_B); equals B at B = B_ref, bounded by
+      !   B_ref + K_B (MUSE explicit mode, f_B = B/(B + K_B)); the legacy balance otherwise; decay Q10 law.
+      ! isw_diag = 3: the first test of plan amendment 7: ONLY the biomass multiplier of the legacy uptake is frozen at B_ref
+      !   (the temperature law and every other term stay legacy).
+      ! Modes 1 and 2 use the pure power law q10_decay^((T - Tref)/10) (no heat cut), the Q10 of decay (Thamdrup 1998;
+      ! Kristensen 1992; family C's authoritative temperature table governs the value), separate from the Q10 `q10` of the
+      ! maintenance respiration.
       call self%get_parameter(self%isw_diag, 'isw_diag', '', &
-         'bacterial uptake law (0: legacy bimolecular, 1: diagnostic first order on B_ref, 2: saturating in B)', &
-         default=0, minimum=0, maximum=2)
+         'bacterial uptake law (0: legacy bimolecular, 1: diagnostic one-budget, 2: saturating in B, 3: frozen biomass multiplier test)', &
+         default=0, minimum=0, maximum=3)
       call self%get_parameter(self%B_ref, 'B_ref', 'mg C/m^2', 'reference bacterial stock of the diagnostic and saturating uptake', &
          default=-1.0_rk)
       call self%get_parameter(self%K_B, 'K_B', 'mg C/m^2', 'half-saturation of the biomass factor of the saturating uptake', &
          default=-1.0_rk)
       call self%get_parameter(self%q10_decay, 'q10_decay', '-', 'Q10 of the substrate uptake (isw_diag > 0)', &
          default=2.0_rk, minimum=1.0_rk)
+      call self%get_parameter(self%bge, 'bge', '-', 'bacterial growth efficiency of the diagnostic biomass (isw_diag = 1)', &
+         default=0.3_rk, minimum=0.0_rk, maximum=0.99_rk)
+      call self%get_parameter(self%bact_m, 'bact_m', '1/d', 'loss rate of the diagnostic biomass (isw_diag = 1)', &
+         default=0.05_rk, minimum=0.0_rk)
       if (self%isw_diag > 0 .and. self%B_ref <= 0.0_rk) &
          call self%fatal_error('initialize','isw_diag > 0 requires B_ref > 0')
       if (self%isw_diag == 2 .and. self%K_B <= 0.0_rk) &
@@ -205,6 +217,8 @@ contains
       ! Goldman et al. 1987, Russell & Cook 1995; as MUSE's purb). Default 0: legacy.
       call self%get_parameter(self%isw_overflow, 'isw_overflow', '', &
          'surplus carbon: 0 returned to Q6c (legacy), 1 respired (overflow respiration)', default=0, minimum=0, maximum=1)
+      if (self%isw_overflow == 1 .and. self%isw_diag == 1) &
+         call self%fatal_error('initialize','isw_overflow = 1 is not allowed with isw_diag = 1 (one budget)')
       !<--- jsasaki 2026-10-07
 
       ! Dependencies on state variables of external modules.
@@ -336,7 +350,8 @@ contains
          !---> jsasaki 2026-10-07: family B unification (X1): decay temperature law and effective biomass of the diagnostic and saturating uptake
          if (self%isw_diag > 0) then
             eTu = self%q10_decay**((ETW-self%Tref)/10._rk)
-            if (self%isw_diag == 1) then
+            if (self%isw_diag == 3) eTu = eT                  ! the multiplier test keeps the legacy temperature law
+            if (self%isw_diag /= 2) then
                Beff = self%B_ref
             else
                Beff = (self%B_ref + self%K_B) * max(Hc, 0.0_rk) / (max(Hc, 0.0_rk) + self%K_B)
@@ -397,6 +412,49 @@ contains
          fK1Hp = fQIHc * self%qpc
          if (fK1Hp>0) fK1Hp = fK1Hp * K1a/(K1a+fK1Hp)
 
+         !---> jsasaki 2026-10-07: family B unification (X1, plan amendment 2): the diagnostic mode, one complete budget
+         if (self%isw_diag == 1) then
+            fQIHc = sum(fQc)
+            ! all uptake is mineralised once, except the excreted fraction pue (back to Q1 as in the legacy law)
+            fHG3c = sum(fQc*(1._rk-self%food%pue))
+            _SET_BOTTOM_ODE_(self%id_G2o,-(1.0_rk-self%p_sulf)*fHG3c/CMass)
+            _SET_BOTTOM_ODE_(self%id_G3c, fHG3c/CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHG3c,fHG3c)
+            fK4Hn = -sum(fQn*(1._rk-self%food%pue))            ! negative: release
+            fK1Hp = -sum(fQp*(1._rk-self%food%pue))
+            _SET_BOTTOM_ODE_(self%id_K4n,-fK4Hn)
+            _SET_BOTTOM_ODE_(self%id_K1p,-fK1Hp)
+            if (.not.legacy_ersem_compatibility) _SET_BOTTOM_ODE_(self%id_benTA,-fK4Hn + fK1Hp)
+            do ifood=1,self%nfood
+               _SET_BOTTOM_ODE_(self%food(ifood)%id_c,-fQc(ifood)/CMass)
+               _SET_BOTTOM_ODE_(self%food(ifood)%id_n,-fQn(ifood))
+               _SET_BOTTOM_ODE_(self%food(ifood)%id_p,-fQp(ifood))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%food(ifood)%id_fc,fQc(ifood))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%food(ifood)%id_fn,fQn(ifood))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%food(ifood)%id_fp,fQp(ifood))
+            end do
+            _SET_BOTTOM_ODE_(self%id_Q1c,sum(fQc*self%food%pue)/CMass)
+            _SET_BOTTOM_ODE_(self%id_Q1n,sum(fQn*self%food%pue))
+            _SET_BOTTOM_ODE_(self%id_Q1p,sum(fQp*self%food%pue))
+            ! the diagnostic biomass (not a carbon sink of the budget)
+            _SET_BOTTOM_ODE_(self%id_c, self%bge/(1._rk-self%bge)*fHG3c - self%bact_m*HcP)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHKIn,-fK4Hn)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHK1p,-fK1Hp)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQ1c,sum(fQc*self%food%pue))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQ1n,sum(fQn*self%food%pue))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQ1p,sum(fQp*self%food%pue))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPc,0.0_rk)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPn,0.0_rk)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPp,0.0_rk)
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_resp_G2o,-(1.0_rk-self%p_sulf)*fHG3c/CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_resp_G3c, fHG3c/CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_nutr_K4n,-fK4Hn)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_nutr_K1p,-fK1Hp)
+               if (.not.legacy_ersem_compatibility) _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_nutr_benTA,-fK4Hn + fK1Hp)
+            end if
+         else
+         !<--- jsasaki 2026-10-07
          ! Monod-type oxygen limitation for aerobic respiration (jsasaki 2026-02-15)
          ! Aerobic bacteria (H1) require O2 for respiration. Without this factor,
          ! basal respiration consumes O2 unconditionally, driving it negative.
@@ -513,6 +571,7 @@ contains
          end if
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPn,sfHQ6 * HcP * self%qnc)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPp,sfHQ6 * HcP * self%qpc)
+         end if   ! jsasaki 2026-10-07: end of the legacy / saturating / multiplier-test branch (isw_diag /= 1)
 
       _HORIZONTAL_LOOP_END_
 
