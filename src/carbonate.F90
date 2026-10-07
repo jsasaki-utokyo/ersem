@@ -4,7 +4,7 @@ module ersem_carbonate
    use fabm_types
    use fabm_builtin_models
    use ersem_shared
-   use carbonate_engine, only: carbonate_engine_solve, convert_pH_scale
+   use carbonate_engine, only: carbonate_engine_solve, carbonate_engine_solve_porewater, convert_pH_scale, calcium_of_salinity  ! jsasaki 2026-10-07: family E
 
    implicit none
 
@@ -36,6 +36,11 @@ module ersem_carbonate
       real(rk) :: relax_c          ! DIC relaxation timescale (d), 0 = off
       real(rk) :: c_relax_target   ! target DIC for relaxation (mmol C/m³), used when c_ta_ratio <= 0
       real(rk) :: c_ta_ratio       ! target DIC/TA ratio for relaxation (0 = use fixed c_relax_target)
+      ! jsasaki 2026-10-07: family E unification (docs/UNIFY_E_SPEC_20261007.md in muse): nutrient alkalinity and Ca(S), defaults = old
+      integer  :: iswnutalk        ! 0: TA = carbonate + borate + OH - H (old); 1: PyCO2SYS alkalinity with the coupled nutrients
+      integer  :: iswCa            ! 0: Ca = 0.01028 mol/kg fixed (old); 1: Ca(S) = 0.02128/40.078 S/1.80655 (Riley and Tongudai 1967)
+      logical  :: use_po4, use_si, use_nh4, use_h2s
+      type (type_dependency_id) :: id_nut_po4, id_nut_si, id_nut_nh4, id_nut_h2s
    contains
       procedure :: initialize
       procedure :: do
@@ -145,6 +150,26 @@ contains
       call self%get_parameter(self%c_relax_target,'c_relax_target','mmol C/m^3','target DIC for relaxation (used when c_ta_ratio <= 0)',default=2100.0_rk,minimum=0.0_rk)
       call self%get_parameter(self%c_ta_ratio,'c_ta_ratio','-','target DIC/TA ratio for relaxation (0 = use fixed c_relax_target)',default=0.0_rk,minimum=0.0_rk,maximum=1.0_rk)
 
+      ! jsasaki 2026-10-07: family E: one carbonate option set with MUSE. iswnutalk = 1 solves the water column with the
+      ! pore-water routine of carbonate_engine (alkalinity of phosphate, silicate, ammonia and sulfide, complete acid side)
+      ! for the nutrients that are switched on (their totals come from coupled dependencies); iswCa = 1 makes the Omega
+      ! calcium follow the salinity. Both 0 (default) = the previous behaviour, bit for bit.
+      call self%get_parameter(self%iswnutalk,'iswnutalk','','nutrient alkalinity terms (0: off, 1: PO4, Si, NH4, H2S as switched below; needs engine=1)',default=0,minimum=0,maximum=1)
+      call self%get_parameter(self%iswCa,'iswCa','','calcium in the saturation state (0: 0.01028 mol/kg, 1: from salinity)',default=0,minimum=0,maximum=1)
+      self%use_po4 = .false.; self%use_si = .false.; self%use_nh4 = .false.; self%use_h2s = .false.
+      if (self%iswnutalk == 1) then
+         if (self%engine /= 1) call self%fatal_error('initialize','iswnutalk = 1 requires engine = 1')
+         if (self%opt_pH_scale == 4) call self%fatal_error('initialize','iswnutalk = 1 does not support opt_pH_scale = 4 (NBS); use 1, 2 or 3')   ! review round 1 #2
+         call self%get_parameter(self%use_po4,'use_po4','','phosphate alkalinity (needs the PO4 coupling)',default=.true.)
+         call self%get_parameter(self%use_si,'use_si','','silicate alkalinity (needs the Si coupling)',default=.true.)
+         call self%get_parameter(self%use_nh4,'use_nh4','','ammonia alkalinity (needs the NH4 coupling)',default=.true.)
+         call self%get_parameter(self%use_h2s,'use_h2s','','sulfide alkalinity (needs the H2S coupling)',default=.false.)
+         if (self%use_po4) call self%register_dependency(self%id_nut_po4,'PO4','mmol P/m^3','phosphate')
+         if (self%use_si)  call self%register_dependency(self%id_nut_si,'Si','mmol Si/m^3','silicate')
+         if (self%use_nh4) call self%register_dependency(self%id_nut_nh4,'NH4','mmol N/m^3','ammonium')
+         if (self%use_h2s) call self%register_dependency(self%id_nut_h2s,'H2S','mmol S/m^3','total sulfide')
+      end if
+
       call self%register_state_variable(self%id_O3c,'c','mmol C/m^3','total dissolved inorganic carbon', 2200._rk,minimum=0._rk)
       call self%add_to_aggregate_variable(standard_variables%total_carbon,self%id_O3c)
 
@@ -233,6 +258,20 @@ contains
 
    end subroutine
 
+   ! jsasaki 2026-10-07: family E: the water-column speciation with the alkalinity of the nutrients (PyCO2SYS terms), used by do and
+   ! do_surface alike. Nutrients in mmol m-3 (negative values are taken as zero), the others as in carbonate_engine_solve_porewater
+   ! (mol kg-1, bar). Shallow-water scope: the nutrient dissociation constants carry no pressure correction (carbonate_engine.F90).
+   subroutine solve_with_nutrients(self, T, S, Pbar, density, Ctot, TA, po4, si, nh4, h2s, pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+      class (type_ersem_carbonate), intent(in) :: self
+      real(rk), intent(in)  :: T, S, Pbar, density, Ctot, TA, po4, si, nh4, h2s
+      real(rk), intent(out) :: pH, PCO2, H2CO3, HCO3, CO3, k0co2
+      logical,  intent(out) :: success
+      call carbonate_engine_solve_porewater(T, S, Pbar, Ctot, TA, max(po4,0.0_rk)/1.0e3_rk/density, &
+                                            max(si,0.0_rk)/1.0e3_rk/density, max(h2s,0.0_rk)/1.0e3_rk/density, &
+                                            max(nh4,0.0_rk)/1.0e3_rk/density, self%opt_pH_scale, self%opt_k_carbonic_resolved, &
+                                            self%opt_total_borate, pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+   end subroutine
+
    function approximate_alkalinity(iswtalk,T,S,ta_slope,ta_intercept) result(TA)
       integer, intent(in) :: iswtalk
       real(rk),intent(in) :: T,S
@@ -287,6 +326,7 @@ contains
       real(rk) :: pH,pH_total,PCO2,H2CO3,HCO3,CO3,k0co2,Hplus
       real(rk) :: Om_cal,Om_arg
       logical  :: success
+      real(rk) :: PTm,SiTm,NH3Tm,H2STm,Ca_mol   ! jsasaki 2026-10-07: family E
 
       IF (self%iswCO2X .NE. 1 ) RETURN
 
@@ -334,10 +374,30 @@ contains
             end if
          else
             ! New carbonate-engine solver (PyCO2SYS-style)
-            call carbonate_engine_solve(ETW, X1X, pres*0.1_rk, Ctot, TA, &
-                                        self%opt_pH_scale, self%opt_k_carbonic_resolved, &
-                                        self%opt_total_borate, self%legacy_mode, &
-                                        pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+            if (self%iswnutalk == 0) then
+               call carbonate_engine_solve(ETW, X1X, pres*0.1_rk, Ctot, TA, &
+                                           self%opt_pH_scale, self%opt_k_carbonic_resolved, &
+                                           self%opt_total_borate, self%legacy_mode, &
+                                           pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+            else
+               !---> jsasaki 2026-10-07: family E: alkalinity of the nutrients, the same routine and option set as MUSE
+               PTm = 0.0_rk; SiTm = 0.0_rk; NH3Tm = 0.0_rk; H2STm = 0.0_rk
+               if (self%use_po4) then
+                  _GET_(self%id_nut_po4,PTm)
+               end if
+               if (self%use_si) then
+                  _GET_(self%id_nut_si,SiTm)
+               end if
+               if (self%use_nh4) then
+                  _GET_(self%id_nut_nh4,NH3Tm)
+               end if
+               if (self%use_h2s) then
+                  _GET_(self%id_nut_h2s,H2STm)
+               end if
+               call solve_with_nutrients(self, ETW, X1X, pres*0.1_rk, density, Ctot, TA, PTm, SiTm, NH3Tm, H2STm, &
+                                         pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+               !<--- jsasaki 2026-10-07
+            end if
             ! Convert to total scale for standard variable coupling
             if (self%opt_pH_scale == 1) then
                pH_total = pH
@@ -350,7 +410,7 @@ contains
 
          if (.not.success) then
             ! Carbonate system iterative scheme did not converge.
-            ! All diagnostics retain their previous value.
+            ! The species and pH diagnostics retain their previous value (the saturation states are recomputed with the current environment).
             ! Use previous carbonate concentration (but current environment) for carbonate saturation states.
             _GET_(self%id_CarbA_in,H2CO3)
             _GET_(self%id_BiCarb_in,HCO3)
@@ -384,7 +444,13 @@ contains
          _SET_DIAGNOSTIC_(self%id_Hplus, Hplus*1.e3_rk*density)
 
          ! Call carbonate saturation state subroutine
-         CALL CaCO3_Saturation (ETW, X1X, pres*1.e4_rk, CO3, Om_cal, Om_arg)  ! NB pressure from dbar to Pa
+         ! jsasaki 2026-10-07: family E: Ca(S) when iswCa = 1 (Riley and Tongudai 1967, mol/kg), else the fixed value
+         if (self%iswCa == 1) then
+            Ca_mol = calcium_of_salinity(X1X)
+            CALL CaCO3_Saturation (ETW, X1X, pres*1.e4_rk, CO3, Om_cal, Om_arg, Ca_mol)  ! NB pressure from dbar to Pa
+         else
+            CALL CaCO3_Saturation (ETW, X1X, pres*1.e4_rk, CO3, Om_cal, Om_arg)  ! NB pressure from dbar to Pa
+         end if
 
          _SET_DIAGNOSTIC_(self%id_Om_cal,Om_cal)
          _SET_DIAGNOSTIC_(self%id_Om_arg,Om_arg)
@@ -414,6 +480,7 @@ contains
 
       real(rk) :: ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,Hplus,k0co2
       logical  :: success
+      real(rk) :: PTm,SiTm,NH3Tm,H2STm   ! jsasaki 2026-10-07: family E
 
       if (self%iswASFLUX<=0) return
 
@@ -456,10 +523,30 @@ contains
             CALL CO2dyn(T, S, PRSS*0.1_rk,Ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,Hplus,k0co2,success,self%phscale)
          else
             ! New carbonate-engine solver (PyCO2SYS-style)
-            call carbonate_engine_solve(T, S, PRSS*0.1_rk, Ctot, TA, &
-                                        self%opt_pH_scale, self%opt_k_carbonic_resolved, &
-                                        self%opt_total_borate, self%legacy_mode, &
-                                        pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+            if (self%iswnutalk == 0) then
+               call carbonate_engine_solve(T, S, PRSS*0.1_rk, Ctot, TA, &
+                                           self%opt_pH_scale, self%opt_k_carbonic_resolved, &
+                                           self%opt_total_borate, self%legacy_mode, &
+                                           pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+            else
+               !---> jsasaki 2026-10-07: family E (review round 1 #1): the exchange uses the same nutrient-aware fugacity as the diagnostics
+               PTm = 0.0_rk; SiTm = 0.0_rk; NH3Tm = 0.0_rk; H2STm = 0.0_rk
+               if (self%use_po4) then
+                  _GET_(self%id_nut_po4,PTm)
+               end if
+               if (self%use_si) then
+                  _GET_(self%id_nut_si,SiTm)
+               end if
+               if (self%use_nh4) then
+                  _GET_(self%id_nut_nh4,NH3Tm)
+               end if
+               if (self%use_h2s) then
+                  _GET_(self%id_nut_h2s,H2STm)
+               end if
+               call solve_with_nutrients(self, T, S, PRSS*0.1_rk, density, Ctot, TA, PTm, SiTm, NH3Tm, H2STm, &
+                                         pH, PCO2, H2CO3, HCO3, CO3, k0co2, success)
+               !<--- jsasaki 2026-10-07
+            end if
          end if
          if (.not.success) then
             _GET_(self%id_pco2_in,PCO2)
@@ -1056,9 +1143,10 @@ contains
 !\\
 !\\
 ! !INTERFACE:
-      SUBROUTINE CaCO3_Saturation (Tc, S, Pr, CO3, Om_cal, Om_arg)
+      SUBROUTINE CaCO3_Saturation (Tc, S, Pr, CO3, Om_cal, Om_arg, Ca_in)
          real(rk),intent(in)  :: Tc, S, Pr, CO3
          real(rk),intent(out) :: Om_cal, Om_arg
+         real(rk),intent(in),optional :: Ca_in   ! jsasaki 2026-10-07: family E: calcium (mol/kg); absent = the fixed 0.01028
 !
 ! !LOCAL VARIABLES:
 !       ! TODO - these are ...
@@ -1082,6 +1170,7 @@ contains
 ! setup
         Tk = Tc + Kelvin
         Ca = 0.01028_rk    ! Currently oceanic mean value at S=25, needs refining)
+        if (present(Ca_in)) Ca = Ca_in   ! jsasaki 2026-10-07: family E: Ca(S) option (iswCa = 1)
         R = 83.131_rk      !(cm3.bar.mol-1.K-1)
         P = Pr*1.e-5_rk    !pressure in bars
 
