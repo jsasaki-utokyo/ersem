@@ -31,6 +31,7 @@ add_library(fabm_models_ersem OBJECT
             benthic_column.F90
             benthic_column_dissolved_matter.F90
             benthic_column_particulate_matter.F90
+            benthic_pom_class_split.F90   # jsasaki 2026-10-07: unification family C wave 2 (Q6 class split)
             benthic_nitrogen_cycle.F90
             benthic_bacteria.F90
             benthic_fauna.F90

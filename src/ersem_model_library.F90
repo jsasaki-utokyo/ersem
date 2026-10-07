@@ -22,6 +22,7 @@ module ersem_model_library
    use ersem_benthic_column
    use ersem_benthic_column_dissolved_matter
    use ersem_benthic_column_particulate_matter
+   use ersem_benthic_pom_class_split   ! jsasaki 2026-10-07: unification family C wave 2 (Q6 class split)
    use ersem_benthic_nitrogen_cycle
    use ersem_benthic_bacteria
    use ersem_benthic_fauna
@@ -99,6 +100,7 @@ contains
          case ('spm_optics');                              allocate(type_ersem_spm_optics::model)
          case ('pom_decay');                               allocate(type_ersem_pom_decay::model)  ! jsasaki 2026-03-19
          case ('dom_decay');                               allocate(type_ersem_dom_decay::model)  ! jsasaki 2026-03-20
+         case ('benthic_pom_class_split');                 allocate(type_ersem_benthic_pom_class_split::model)  ! jsasaki 2026-10-07: unification family C wave 2
          ! Add new models here
          case default
             call self%type_base_model_factory%create(name,model)

@@ -88,6 +88,7 @@ module ersem_benthic_sulfur_cycle
       integer  :: n = 0
       real(rk), allocatable :: z(:)
       real(rk) :: h_supply = 0.0_rk, minD = 0.0_rk, dtot = 0.0_rk
+      real(rk) :: cmix_scale = 1.0_rk   ! jsasaki 2026-10-07: unification family C wave 2: sulfide interface resistance relative to the O2 value
       type(type_bottom_state_variable_id), allocatable :: id_m(:)
       type(type_state_variable_id) :: id_H2S_pel
       type(type_horizontal_dependency_id) :: id_D1m, id_D2m, id_Dtot, id_poro, id_cmix
@@ -1543,6 +1544,9 @@ contains
       tran%n = n
       tran%z = self%z_h2s
       tran%h_supply = h_supply
+      ! jsasaki 2026-10-07: unification family C wave 2 (plan 2a item 6): R_H2S/R_O2 = (D_O2/D_H2S)^(2/3); 1 = one resistance for all solutes (main)
+      call self%get_parameter(tran%cmix_scale, 'cmix_scale_h2s', '-', 'sulfide interface resistance relative to the O2 value (R_i/R_O2); 1: shares EDZ_mix', default=1.0_rk, minimum=0.0_rk)
+      if (.not.(tran%cmix_scale >= 0.0_rk .and. tran%cmix_scale < huge(1.0_rk))) call self%fatal_error('initialize', 'cmix_scale_h2s must be finite and non-negative')
       tran%minD = self%minD_h2s
       tran%dtot = self%dtot_h2s
       tran%test = self%h2s_test
@@ -1745,7 +1749,7 @@ contains
             r(k) = r(k) + F
             r(k + 1) = r(k + 1) - F
          end do
-         Rs = cmix
+         Rs = cmix*self%cmix_scale   ! jsasaki 2026-10-07: unification family C wave 2: per-solute interface resistance (1.0: unchanged)
          do l = 1, 3
             Rs = Rs + h2s_overlap(0.0_rk, zc(1), cuts(l), cuts(l + 1)) / diff(l)
          end do
