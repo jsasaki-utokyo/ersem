@@ -19,6 +19,7 @@ module ersem_benthic_bacteria
       real(rk) :: suf
       real(rk) :: puinc
       real(rk) :: pue
+      real(rk) :: q10d   ! jsasaki 2026-10-07: Q10 of the decay law of this substrate (isw_diag > 0); default q10_decay
    end type
 
    type,extends(type_ersem_benthic_base),public :: type_ersem_benthic_bacteria
@@ -56,7 +57,7 @@ module ersem_benthic_bacteria
       ! diagnostic / saturating uptake law and the overflow respiration, all off by default
       integer  :: isw_diag, isw_overflow
       type (type_bottom_state_variable_id) :: id_Bbal   ! jsasaki 2026-10-07: bookkeeping counterpart of the diagnostic biomass (isw_diag = 1)
-      real(rk) :: B_ref, K_B, q10_decay, bge, bact_m
+      real(rk) :: B_ref, K_B, q10_decay, bge, bact_m, c_init
    contains
       procedure :: initialize
       procedure :: do_bottom
@@ -135,6 +136,9 @@ contains
       call self%get_parameter(self%hO2resp, 'hO2resp', 'mmol O2/m^3', &
          'half-saturation of the cubic-Hill O2 response of respiration (0: legacy Monod on hO2)', &
          default=0.0_rk, minimum=0.0_rk)
+      ! jsasaki 2026-10-07: review round 2 #12: a NaN must not silently select another respiration law
+      if (.not.(self%hO2 >= 0.0_rk .and. self%hO2 < huge(1.0_rk) .and. self%hO2resp >= 0.0_rk .and. self%hO2resp < huge(1.0_rk))) &
+         call self%fatal_error('initialize','hO2 and hO2resp must be finite and non-negative')
       ! Anaerobic electron-acceptor routing (jsasaki 2026-08-15; design:
       ! nippon-steel/docs/14-anaerobic-pathway.md). For anaerobic bacteria
       ! (H2) the electron acceptor is sulfate, not benthic oxygen: with
@@ -205,6 +209,16 @@ contains
          default=-1.0_rk)
       call self%get_parameter(self%q10_decay, 'q10_decay', '-', 'Q10 of the substrate uptake (isw_diag > 0)', &
          default=2.0_rk, minimum=1.0_rk)
+      ! jsasaki 2026-10-07: review round 2 #2: the decay law is normalised at 20 degC (family C temperature table), never at the Tref of the
+      ! maintenance respiration; each substrate may carry its own Q10 (fast class Q10_f, slow class Q10_s, DOM := Q10_f)
+      do ifood=1,self%nfood
+         write (strindex,'(i0)') ifood
+         call self%get_parameter(self%food(ifood)%q10d, 'q10_decay'//trim(strindex), '-', &
+            'Q10 of the uptake of substrate '//trim(strindex)//' (isw_diag > 0; default q10_decay)', default=self%q10_decay, minimum=1.0_rk)
+      end do
+      call self%get_parameter(self%c_init, 'c_init', 'mg C/m^2', &
+         'initial diagnostic biomass, equal to the initialisation of c (isw_diag = 1 only: the bookkeeping state starts at -c_init)', &
+         default=-1.0_rk)
       call self%get_parameter(self%bge, 'bge', '-', 'bacterial growth efficiency of the diagnostic biomass (isw_diag = 1)', &
          default=0.3_rk, minimum=0.0_rk, maximum=0.99_rk)
       call self%get_parameter(self%bact_m, 'bact_m', '1/d', 'loss rate of the diagnostic biomass (isw_diag = 1)', &
@@ -214,15 +228,18 @@ contains
          call self%fatal_error('initialize','isw_diag > 0 requires a finite B_ref > 0')
       if (self%isw_diag == 2 .and. .not.(self%K_B > 0.0_rk .and. self%K_B < huge(1.0_rk))) &
          call self%fatal_error('initialize','isw_diag = 2 requires a finite K_B > 0')
+      if (self%isw_diag == 1 .and. .not.(self%c_init >= 0.0_rk .and. self%c_init < huge(1.0_rk))) &
+         call self%fatal_error('initialize','isw_diag = 1 requires c_init >= 0 equal to the initialisation of c')
       if (.not.(self%q10_decay >= 1.0_rk .and. self%q10_decay < huge(1.0_rk)) .or. &
           .not.(self%bge >= 0.0_rk .and. self%bge <= 0.99_rk) .or. .not.(self%bact_m >= 0.0_rk .and. self%bact_m < huge(1.0_rk))) &
          call self%fatal_error('initialize','q10_decay, bge or bact_m is NaN or out of range')
       ! jsasaki 2026-10-07: review round 1 #1: the diagnostic biomass is kept OUT of the conserved totals. Its tendency
       ! (production bge/(1-bge) R, loss bact_m B) is not a physical transfer, so a bookkeeping state with the opposite
-      ! tendency is added to the same aggregates; it starts at 0 and may become negative (it carries no physical meaning).
+      ! tendency is added to the same aggregates and it starts at -c_init, so that c + Bbal = 0 at all times and the diagnostic
+      ! stock is absent from the totals (it carries no physical meaning).
       if (self%isw_diag == 1) then
          call self%register_state_variable(self%id_Bbal, 'Bbal', 'mg C/m^2', &
-            'bookkeeping counterpart of the diagnostic bacterial biomass (not physical)', 0.0_rk, minimum=-1.0e20_rk)
+            'bookkeeping counterpart of the diagnostic bacterial biomass (not physical)', -self%c_init, minimum=-1.0e20_rk)
          call self%add_to_aggregate_variable(standard_variables%total_carbon, self%id_Bbal, scale_factor=1._rk/CMass)
          call self%add_to_aggregate_variable(standard_variables%total_nitrogen, self%id_Bbal, scale_factor=self%qnc)
          call self%add_to_aggregate_variable(standard_variables%total_phosphorus, self%id_Bbal, scale_factor=self%qpc)
@@ -365,7 +382,6 @@ contains
          eOx = Dm/(self%dd+Dm)
          !---> jsasaki 2026-10-07: family B unification (X1): decay temperature law and effective biomass of the diagnostic and saturating uptake
          if (self%isw_diag > 0) then
-            eTu = self%q10_decay**((ETW-self%Tref)/10._rk)
             if (self%isw_diag == 3) eTu = eT                  ! the multiplier test keeps the legacy temperature law
             if (self%isw_diag /= 2) then
                Beff = self%B_ref
@@ -389,6 +405,7 @@ contains
             if (self%isw_diag == 0) then
                sfQ(ifood) = (self%food(ifood)%su + self%food(ifood)%suf * eN) * eT * eOX * Hc
             else
+               if (self%isw_diag /= 3) eTu = self%food(ifood)%q10d**((ETW-20._rk)/10._rk)   ! review round 2 #2: fixed 20 degC reference
                sfQ(ifood) = (self%food(ifood)%su + self%food(ifood)%suf * eN) * eTu * eOX * Beff
             end if
          end do
