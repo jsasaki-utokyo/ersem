@@ -339,7 +339,7 @@ contains
       ! fixed carbon goes does. Default 0 = the former model, and the R2
       ! coupling is then not even requested (bit-identical).
       call self%get_parameter(self%f_exu, 'f_exu', '-', &
-           'fraction of gross production exuded as DOC to pelagic R2 (isw_uni = 0 only; the unified formulation uses e_leaf)', default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+           'fraction of gross production exuded as DOC (to pelagic R2, or to benthic Q1 with isw_exu_dest = 1; isw_uni = 0 only; the unified formulation uses e_leaf)', default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
       call self%get_parameter(self%tau_mob, 'tau_mob', '1/d', &
          'NSC remobilisation rate (isw_fix = 0: under light limitation; 1: when AG is below its share)', &
          default=0.05_rk, minimum=0.0_rk)
