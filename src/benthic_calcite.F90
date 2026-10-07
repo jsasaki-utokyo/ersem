@@ -84,6 +84,10 @@ contains
       ! supersaturated water (Omega > 1), which no mechanism supports; MUSE has none by default. iswdiss = 1 removes it, so the
       ! law is fdissmax (1 - Omega)^ndiss for Omega < 1 and zero above, as in MUSE calcite_coef. 0 (default) = old behaviour.
       call self%get_parameter(self%iswdiss,'iswdiss','','dissolution rate floor (0: fdissmin applies at every Omega, 1: no floor, unified law)',default=0,minimum=0,maximum=1)
+      ! review round 2 #3: the unified power law needs a positive finite exponent (0**0 = 1 would dissolve a supersaturated bed)
+      if (self%iswdiss == 1 .and. self%iswcal == 1) then
+         if (.not. (self%ndiss > 0.0_rk .and. self%ndiss < huge(1.0_rk))) call self%fatal_error('initialize','iswdiss = 1 requires a positive finite ndiss')
+      end if
       ! review round 1 #5: the hyperbolic law (iswcal = 2) is positive again above Omega = 1 + KcalomX, so it cannot be the unified law
       if (self%iswdiss == 1 .and. self%iswcal == 2) call self%fatal_error('initialize','iswdiss = 1 requires iswcal = 1 (power law) or 0; the hyperbolic law is not zero above saturation')
       ! Light-driven mat calcification (jsasaki 2026-08-15; design:

@@ -410,7 +410,7 @@ contains
 
          if (.not.success) then
             ! Carbonate system iterative scheme did not converge.
-            ! All diagnostics retain their previous value.
+            ! The species and pH diagnostics retain their previous value (the saturation states are recomputed with the current environment).
             ! Use previous carbonate concentration (but current environment) for carbonate saturation states.
             _GET_(self%id_CarbA_in,H2CO3)
             _GET_(self%id_BiCarb_in,HCO3)
