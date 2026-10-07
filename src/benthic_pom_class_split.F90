@@ -35,6 +35,8 @@ module ersem_benthic_pom_class_split
       logical  :: tgt(max_target,4) = .false.                                 ! target registered for this element
       real(rk) :: share(max_target,4) = 0.0_rk
       integer  :: ntarget = 2
+      ! diagnostics of the budget (mg C or mmol per m2 per day): the source collected and the part handed to every target (review r1 #9)
+      type (type_horizontal_diagnostic_variable_id) :: id_in(4), id_out(max_target,4)
    contains
       procedure :: do_bottom => processor_do_bottom
    end type
@@ -93,6 +95,7 @@ contains
 
          call proc%register_dependency(proc%id_sms(iel),elname(iel)//'_sms',trim(elunits(iel))//'/m^2/s','sources collected for '//trim(ellong(iel)))
          call proc%request_coupling(proc%id_sms(iel),'../'//elname(iel)//'_sms_tot')
+         call proc%register_diagnostic_variable(proc%id_in(iel),'in_'//elname(iel),trim(elunits(iel))//'/m^2/d','source collected for '//trim(ellong(iel)),source=source_do_bottom)
 
          ! Shares: target 1 takes the remainder (rule of pelagic_base).
          proc%share(1,iel) = 1.0_rk
@@ -102,11 +105,13 @@ contains
                qx = 0.0_rk
             else
                call self%get_parameter(qx,'qx'//elname(iel)//trim(num),'-','share of '//trim(ellong(iel))//' to target '//trim(num),default=0.0_rk,minimum=0.0_rk,maximum=1.0_rk)
+               ! the minimum/maximum tests of get_parameter are false for NaN: refuse it here (review r1 #12)
+               if (.not.(qx>=0.0_rk .and. qx<=1.0_rk)) call self%fatal_error('initialize','share qx'//elname(iel)//trim(num)//' must be a number in [0,1]')
             end if
             proc%share(itarget,iel) = qx
             proc%share(1,iel) = proc%share(1,iel) - qx
          end do
-         if (proc%share(1,iel) < -1.0e-12_rk) call self%fatal_error('initialize','the shares of '//trim(ellong(iel))//' to targets 2.. exceed 1')
+         if (.not.(proc%share(1,iel) >= -1.0e-12_rk)) call self%fatal_error('initialize','the shares of '//trim(ellong(iel))//' to targets 2.. exceed 1')
          proc%share(1,iel) = max(0.0_rk,proc%share(1,iel))
 
          ! Class targets (state dependencies, coupled as a whole model: target<i>: <layer instance>).
@@ -114,6 +119,7 @@ contains
             write (num,'(i0)') itarget
             if (itarget==3 .and. index(composition3,elname(iel))==0) cycle
             proc%tgt(itarget,iel) = .true.
+            call proc%register_diagnostic_variable(proc%id_out(itarget,iel),'out'//trim(num)//'_'//elname(iel),trim(elunits(iel))//'/m^2/d','part of '//trim(ellong(iel))//' handed to target '//trim(num),source=source_do_bottom)
             call self%register_state_dependency(self%id_target(itarget,iel),'target'//trim(num)//'_'//elname(iel),trim(elunits(iel))//'/m^2','class target '//trim(num)//' for '//trim(ellong(iel)))
             call self%request_coupling_to_model(self%id_target(itarget,iel),'target'//trim(num),elname(iel))
             call proc%register_state_dependency(proc%id_target(itarget,iel),'target'//trim(num)//'_'//elname(iel),trim(elunits(iel))//'/m^2','class target '//trim(num)//' for '//trim(ellong(iel)))
@@ -149,8 +155,12 @@ contains
             _GET_HORIZONTAL_(self%id_sms(iel),sms)
             ! per second (FABM) -> per day (the time unit of ERSEM's ODE macros, dt = 86400)
             sms = sms*self%dt
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_in(iel),sms)
             do itarget=1,self%ntarget
-               if (self%tgt(itarget,iel)) _SET_BOTTOM_ODE_(self%id_target(itarget,iel),self%share(itarget,iel)*sms)
+               if (self%tgt(itarget,iel)) then
+                  _SET_BOTTOM_ODE_(self%id_target(itarget,iel),self%share(itarget,iel)*sms)
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_out(itarget,iel),self%share(itarget,iel)*sms)
+               end if
             end do
          end do
       _HORIZONTAL_LOOP_END_
