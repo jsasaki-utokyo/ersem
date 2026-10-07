@@ -54,6 +54,12 @@ module ersem_seagrass
 
    private
 
+   ! jsasaki 2026-10-07: diagnostics of the unified formulation (isw_uni = 1): the rate terms the equivalence test compares
+   integer, parameter :: nuni = 36
+   character(len=12), parameter :: uni_name(nuni) = [character(len=12) :: 'Pg', 'Ract', 'RmA', 'RmB', 'phi', 'Tst', 'Alloc', 'Mob', &
+      'ExuL', 'ExuR', 'MA', 'MB', 'MN', 'dAGc', 'dBGc', 'dNSC', 'L4', 'L3', 'LP', 'U4', 'U3', 'UP', 'w1', 'c4_1', 'c4_2', 'c3_1', &
+      'c3_2', 'cP_1', 'cP_2', 'dic_w', 'o2_w', 'ta_w', 'nh4_w', 'po4_w', 'dic_pw', 'ta_pw']
+
    type,extends(type_base_model),public :: type_ersem_seagrass
       ! Own bottom state variables
       type (type_bottom_state_variable_id) :: id_AGc, id_AGn, id_AGp
@@ -141,9 +147,20 @@ module ersem_seagrass
          id_ledger_bgresp_K4n1, id_ledger_bgresp_K4n2, id_ledger_bgresp_K1p1, id_ledger_bgresp_K1p2, &
          id_ledger_bgresp_benTA, id_ledger_bgresp_benTA2, id_ledger_root_benTA2
       type (type_bottom_state_variable_id) :: id_G3c1, id_G3c2, id_benTA2
+      ! jsasaki 2026-10-07: unified eelgrass formulation shared with MUSE (muse docs/EELGRASS_UNIFIED_SPEC_20261007.md).
+      ! isw_uni = 1 replaces the process laws by the unified set U1-U20 (needs isw_fix = 1); isw_uni = 0 (default) is the former module.
+      integer  :: isw_uni
+      real(rk) :: q10, Tref, k_tr, rs, k_mob, K_nsc, e_exu, f_recl, sd_hyp, z_p, z_max
+      real(rk) :: V_l4, V_l3, V_lP, V_r4, V_r3, V_rP, K_l4, K_l3, K_lP, K_r4, K_r3, K_rP
+      logical  :: no3_red
+      type (type_bottom_state_variable_id) :: id_Q1c
+      type (type_horizontal_dependency_id) :: id_K1p1w, id_K1p2w, id_K3n1w, id_K3n2w, id_K4n1w, id_K4n2w
+      type (type_horizontal_dependency_id) :: id_D1m, id_D2m, id_poro
+      type (type_horizontal_diagnostic_variable_id) :: id_u(nuni)
    contains
       procedure :: initialize
       procedure :: do_bottom
+      procedure :: do_bottom_uni
    end type
 
 contains
@@ -153,28 +170,35 @@ contains
       integer,                       intent(in)            :: configunit
 
       real(rk) :: a, b, ab2
+      logical  :: uni
+      integer  :: iu
 
       ! Set time unit to d-1 (ERSEM convention)
       self%dt = 86400._rk
+
+      ! jsasaki 2026-10-07: unified formulation switch (read first: it selects the defaults of the shared parameters)
+      call self%get_parameter(self%isw_uni, 'isw_uni', '', 'unified eelgrass formulation shared with MUSE (0: this module as '// &
+         'before [rfB13], 1: laws U1-U20 and the shared parameter set; requires isw_fix = 1)', default=0, minimum=0, maximum=1)
+      uni = self%isw_uni == 1
 
       ! --- Parameters (defaults follow docs/10 section 5) -----------------
       call self%get_parameter(self%p_max, 'p_max', '1/d', &
          'maximum gross production at Topt', default=0.12_rk, minimum=0.0_rk)
       call self%get_parameter(self%alpha, 'alpha', '(W/m^2)^-1', &
-         'initial slope of the P-I curve (tanh)', default=0.06_rk, minimum=0.0_rk)
+         'initial slope of the P-I curve (tanh)', default=dflt(uni, 0.06_rk, 0.04_rk), minimum=0.0_rk)
       call self%get_parameter(self%a_lai, 'a_lai', 'm^2/mg C', &
-         'leaf area per unit AG carbon', default=4.0e-5_rk, minimum=0.0_rk)
+         'leaf area per unit AG carbon', default=dflt(uni, 4.0e-5_rk, 4.8e-4_rk / CMass), minimum=0.0_rk)
       call self%get_parameter(self%k_can, 'k_can', '-', &
          'canopy attenuation coefficient per unit LAI', default=0.7_rk, minimum=0.0_rk)
 
       call self%get_parameter(self%Tmin, 'Tmin', 'degrees_Celsius', &
          'CTMI minimum temperature for growth', default=2.0_rk)
       call self%get_parameter(self%Topt, 'Topt', 'degrees_Celsius', &
-         'CTMI optimal temperature for growth', default=18.0_rk)
+         'CTMI optimal temperature for growth', default=dflt(uni, 18.0_rk, 25.0_rk))
       call self%get_parameter(self%Tmax, 'Tmax', 'degrees_Celsius', &
-         'CTMI maximum temperature for growth', default=30.0_rk)
+         'CTMI maximum temperature for growth', default=dflt(uni, 30.0_rk, 38.0_rk))
       call self%get_parameter(self%T_heat, 'T_heat', 'degrees_Celsius', 'temperature above which heat mortality '// &
-         'acts (isw_fix = 1)', default=self%Tmax)
+         'acts (isw_fix = 1)', default=dflt(uni, self%Tmax, 30.0_rk))
       if (self%Tmin >= self%Topt) call self%fatal_error('initialize','CTMI requires Tmin < Topt')
       if (self%Topt >= self%Tmax) call self%fatal_error('initialize','CTMI requires Topt < Tmax')
       a = self%Topt - self%Tmin
@@ -184,17 +208,17 @@ contains
       self%ctmi_b = (a * b + (a + b) * self%Topt) / ab2
 
       call self%get_parameter(self%qn_min, 'qn_min', 'mmol N/mg C', &
-         'minimum AG nitrogen quota', default=0.003_rk, minimum=0.0_rk)
+         'minimum AG nitrogen quota', default=dflt(uni, 0.003_rk, 0.036_rk / CMass), minimum=0.0_rk)
       call self%get_parameter(self%qn_max, 'qn_max', 'mmol N/mg C', &
-         'maximum AG nitrogen quota', default=0.008_rk, minimum=0.0_rk)
+         'maximum AG nitrogen quota', default=dflt(uni, 0.008_rk, 0.096_rk / CMass), minimum=0.0_rk)
       call self%get_parameter(self%qp_min, 'qp_min', 'mmol P/mg C', &
-         'minimum AG phosphorus quota', default=8.0e-5_rk, minimum=0.0_rk)
+         'minimum AG phosphorus quota', default=dflt(uni, 8.0e-5_rk, 0.00096_rk / CMass), minimum=0.0_rk)
       call self%get_parameter(self%qp_max, 'qp_max', 'mmol P/mg C', &
-         'maximum AG phosphorus quota', default=2.5e-4_rk, minimum=0.0_rk)
+         'maximum AG phosphorus quota', default=dflt(uni, 2.5e-4_rk, 0.0030_rk / CMass), minimum=0.0_rk)
       call self%get_parameter(self%qn_bg, 'qn_bg', 'mmol N/mg C', &
-         'fixed BG nitrogen quota', default=0.0035_rk, minimum=0.0_rk)
+         'fixed BG nitrogen quota', default=dflt(uni, 0.0035_rk, 0.042_rk / CMass), minimum=0.0_rk)
       call self%get_parameter(self%qp_bg, 'qp_bg', 'mmol P/mg C', &
-         'fixed BG phosphorus quota', default=1.0e-4_rk, minimum=0.0_rk)
+         'fixed BG phosphorus quota', default=dflt(uni, 1.0e-4_rk, 0.0012_rk / CMass), minimum=0.0_rk)
 
       call self%get_parameter(self%vmax_n, 'vmax_n', 'mmol N/mg C/d', &
          'maximum N uptake per unit AG carbon', default=6.0e-4_rk, minimum=0.0_rk)
@@ -278,7 +302,7 @@ contains
       ! fixed carbon goes does. Default 0 = the former model, and the R2
       ! coupling is then not even requested (bit-identical).
       call self%get_parameter(self%f_exu, 'f_exu', '-', &
-           'fraction of gross production exuded as DOC to pelagic R2', default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+           'fraction of gross production exuded as DOC to pelagic R2', default=dflt(uni, 0.0_rk, 0.012_rk), minimum=0.0_rk, maximum=1.0_rk)
       call self%get_parameter(self%tau_mob, 'tau_mob', '1/d', &
          'NSC remobilisation rate (isw_fix = 0: under light limitation; 1: when AG is below its share)', &
          default=0.05_rk, minimum=0.0_rk)
@@ -294,7 +318,7 @@ contains
       call self%get_parameter(self%f_bg1, 'f_bg1', '-', 'share of the below-ground actions in sediment layer 1 '// &
          '(isw_fix = 1; assumption)', default=0.2_rk, minimum=0.0_rk, maximum=1.0_rk)
       call self%get_parameter(self%K_dic, 'K_dic', 'mmol C/m^3', 'half-saturation of gross fixation in the water DIC '// &
-         '(isw_fix = 1; a positivity guard: the fixation stops when the DIC is exhausted)', default=1.0_rk, &
+         '(isw_fix = 1; a positivity guard: the fixation stops when the DIC is exhausted)', default=dflt(uni, 1.0_rk, 10.0_rk), &
          minimum=0.0_rk)
       if (self%isw_fix == 1 .and. .not. (self%K_dic > 0.0_rk)) &
          call self%fatal_error('initialize', 'isw_fix = 1 requires K_dic > 0 (review p12 #8)')
@@ -325,19 +349,63 @@ contains
          default=0.15_rk, minimum=0.0_rk)
 
       call self%get_parameter(self%sd_ag, 'sd_ag', '1/d', &
-         'AG background sloughing rate', default=0.004_rk, minimum=0.0_rk)
+         'AG background sloughing rate', default=dflt(uni, 0.004_rk, 0.015_rk), minimum=0.0_rk)
       call self%get_parameter(self%sd_bg, 'sd_bg', '1/d', &
-         'BG background mortality rate', default=0.002_rk, minimum=0.0_rk)
+         'BG background mortality rate', default=dflt(uni, 0.002_rk, 0.004_rk), minimum=0.0_rk)
       call self%get_parameter(self%sd_anx, 'sd_anx', '1/d', &
          'extra BG mortality under benthic anoxia', default=0.01_rk, minimum=0.0_rk)
       call self%get_parameter(self%nsc_starve, 'nsc_starve', '-', &
          'NSC:BG carbon ratio below which starvation mortality starts', &
          default=0.02_rk, minimum=0.0_rk)
       call self%get_parameter(self%sd_starve, 'sd_starve', '1/d', &
-         'extra AG mortality under NSC starvation', default=0.02_rk, minimum=0.0_rk)
+         'extra AG mortality under NSC starvation', default=dflt(uni, 0.02_rk, 1.0_rk / 30.0_rk), minimum=0.0_rk)
       call self%get_parameter(self%f_pel, 'f_pel', '-', &
          'fraction of AG sloughing routed to pelagic POM (R6)', &
          default=0.5_rk, minimum=0.0_rk, maximum=1.0_rk)
+
+      ! jsasaki 2026-10-07: parameters of the unified formulation (isw_uni = 1 only; names as in MUSE &seagrass, per mg C here:
+      ! the MUSE value per mmol C divided by CMass = 12.011 wherever carbon is in the unit denominator)
+      if (uni) then
+         if (self%isw_fix /= 1) call self%fatal_error('initialize', 'isw_uni = 1 requires isw_fix = 1')
+         if (self%isw_ledger == 1) call self%fatal_error('initialize', 'isw_uni = 1 has its own diagnostics; use isw_ledger = 0')
+         call self%get_parameter(self%q10, 'q10', '-', 'Q10 of maintenance respiration, nutrient uptake demand and root exudation', &
+            default=2.4_rk, minimum=1.0_rk)
+         call self%get_parameter(self%Tref, 'Tref', 'degrees_Celsius', 'reference temperature of q10', default=20.0_rk)
+         call self%get_parameter(self%k_tr, 'k_tr', '1/d', 'relaxation rate of AG -> BG allocation to the BG:AG target', &
+            default=0.033_rk, minimum=0.0_rk)
+         call self%get_parameter(self%rs, 'rs', '-', 'target BG:AG carbon ratio', default=0.75_rk, minimum=0.01_rk)
+         call self%get_parameter(self%k_mob, 'k_mob', '1/d', 'NSC remobilisation rate when AG is below its share', &
+            default=0.05_rk, minimum=0.0_rk)
+         call self%get_parameter(self%K_nsc, 'K_nsc', '-', 'NSC:BG ratio at which the reserve pays half of the maintenance', &
+            default=0.02_rk, minimum=1.0e-9_rk)
+         call self%get_parameter(self%e_exu, 'e_exu', '1/d', 'root exudation per unit BG carbon at Tref (to benthic Q1c)', &
+            default=0.0018_rk, minimum=0.0_rk)
+         call self%get_parameter(self%f_recl, 'f_recl', '-', 'fraction of leaf N, P resorbed at senescence', &
+            default=0.2_rk, minimum=0.0_rk, maximum=1.0_rk)
+         call self%get_parameter(self%sd_hyp, 'sd_hyp', '1/d', 'extra BG mortality per unit water-O2 deficit (1 - fO2)', &
+            default=0.0_rk, minimum=0.0_rk)
+         call self%get_parameter(self%z_p, 'z_p', 'm', 'depth of the root-profile maximum', default=0.03_rk, minimum=1.0e-4_rk)
+         call self%get_parameter(self%z_max, 'z_max', 'm', 'root depth', default=0.15_rk, minimum=1.0e-3_rk)
+         call self%get_parameter(self%V_l4, 'V_l4', 'mmol N/mg C/d', 'maximum leaf NH4 uptake', default=0.038_rk / CMass, minimum=0.0_rk)
+         call self%get_parameter(self%V_l3, 'V_l3', 'mmol N/mg C/d', 'maximum leaf NO3 uptake', default=0.027_rk / CMass, minimum=0.0_rk)
+         call self%get_parameter(self%V_lP, 'V_lP', 'mmol P/mg C/d', 'maximum leaf PO4 uptake', default=0.014_rk / CMass, minimum=0.0_rk)
+         call self%get_parameter(self%V_r4, 'V_r4', 'mmol N/mg C/d', 'maximum root NH4 uptake', default=0.014_rk / CMass, minimum=0.0_rk)
+         call self%get_parameter(self%V_r3, 'V_r3', 'mmol N/mg C/d', 'maximum root NO3 uptake', default=0.023_rk / CMass, minimum=0.0_rk)
+         call self%get_parameter(self%V_rP, 'V_rP', 'mmol P/mg C/d', 'maximum root PO4 uptake', default=0.0023_rk / CMass, minimum=0.0_rk)
+         call self%get_parameter(self%K_l4, 'K_l4', 'mmol N/m^3', 'leaf NH4 half-saturation', default=9.2_rk, minimum=1.0e-6_rk)
+         call self%get_parameter(self%K_l3, 'K_l3', 'mmol N/m^3', 'leaf NO3 half-saturation', default=23.0_rk, minimum=1.0e-6_rk)
+         call self%get_parameter(self%K_lP, 'K_lP', 'mmol P/m^3', 'leaf PO4 half-saturation', default=1.5_rk, minimum=1.0e-6_rk)
+         call self%get_parameter(self%K_r4, 'K_r4', 'mmol N/m^3', 'root NH4 half-saturation (pore-water concentration)', &
+            default=104.0_rk, minimum=1.0e-6_rk)
+         call self%get_parameter(self%K_r3, 'K_r3', 'mmol N/m^3', 'root NO3 half-saturation (pore-water concentration)', &
+            default=8.9_rk, minimum=1.0e-6_rk)
+         call self%get_parameter(self%K_rP, 'K_rP', 'mmol P/m^3', 'root PO4 half-saturation (pore-water concentration)', &
+            default=1.5_rk, minimum=1.0e-6_rk)
+         call self%get_parameter(self%no3_red, 'no3_red', '', 'nitrate assimilation oxidises 2 C per N (leaves: water DIC; roots: pore DIC)', &
+            default=.false.)
+         if (.not. (self%Tmin < self%Topt .and. self%Topt < self%Tmax)) call self%fatal_error('initialize', 'CTMI order')
+         if (.not. (self%K_nsc > 0.0_rk .and. self%rs > 0.0_rk)) call self%fatal_error('initialize', 'K_nsc and rs must be positive')
+      end if
 
       ! --- Optional grazing closure on AG (docs/13, 2026-08-15) ----------
       ! Type-III (sigmoid) loss of AG carbon to external benthic grazers:
@@ -567,6 +635,25 @@ contains
          'ammonium uptake from porewater by roots', &
          domain=domain_bottom, source=source_do_bottom)
 
+      ! jsasaki 2026-10-07: couplings and diagnostics of the unified formulation (nothing is registered with isw_uni = 0)
+      if (uni) then
+         call self%register_dependency(self%id_K1p1w, 'K1p1_pw', 'mmol P/m^2', 'pore-water phosphate of layer 1')
+         call self%register_dependency(self%id_K1p2w, 'K1p2_pw', 'mmol P/m^2', 'pore-water phosphate of layer 2')
+         call self%register_dependency(self%id_K3n1w, 'K3n1_pw', 'mmol N/m^2', 'pore-water nitrate of layer 1')
+         call self%register_dependency(self%id_K3n2w, 'K3n2_pw', 'mmol N/m^2', 'pore-water nitrate of layer 2')
+         call self%register_dependency(self%id_K4n1w, 'K4n1_pw', 'mmol N/m^2', 'pore-water ammonium of layer 1')
+         call self%register_dependency(self%id_K4n2w, 'K4n2_pw', 'mmol N/m^2', 'pore-water ammonium of layer 2')
+         call self%register_dependency(self%id_D1m, depth_of_bottom_interface_of_layer_1)
+         call self%register_dependency(self%id_D2m, depth_of_bottom_interface_of_layer_2)
+         call self%register_dependency(self%id_poro, sediment_porosity)
+         if (self%e_exu > 0.0_rk) call self%register_state_dependency(self%id_Q1c, 'Q1c', 'mg C/m^2', &
+            'benthic dissolved organic carbon (root exudate)')
+         do iu = 1, nuni
+            call self%register_diagnostic_variable(self%id_u(iu), 'uni_'//trim(uni_name(iu)), '-', &
+               'unified-formulation term '//trim(uni_name(iu)), domain=domain_bottom, source=source_do_bottom)
+         end do
+      end if
+
    end subroutine initialize
 
    subroutine do_bottom(self, _ARGUMENTS_DO_BOTTOM_)
@@ -589,6 +676,12 @@ contains
       real(rk) :: dAGc, dAGn, dAGp, dBGc, dBGn, dBGp, dNSC
       real(rk) :: gr1c, gr2c, F_gr, resp_gr, eges_gr
       real(rk) :: gTm, rbn, rbp, f1, rbw
+
+      ! jsasaki 2026-10-07: the unified formulation (isw_uni = 1) has its own routine
+      if (self%isw_uni == 1) then
+         call self%do_bottom_uni(_ARGUMENTS_DO_BOTTOM_)
+         return
+      end if
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -994,6 +1087,257 @@ contains
       _HORIZONTAL_LOOP_END_
 
    end subroutine do_bottom
+
+   ! jsasaki 2026-10-07: the unified eelgrass formulation (isw_uni = 1), laws U1-U20 of muse docs/EELGRASS_UNIFIED_SPEC_20261007.md.
+   ! Same laws as MUSE's seagrass_prepare/_rates/_water/_commit; the only structural difference is the root zone: two porewater
+   ! layers (0 - D1m, D1m - D2m) whose root weights are the exact integrals of the shared profile r(z), renormalised over the two.
+   subroutine do_bottom_uni(self, _ARGUMENTS_DO_BOTTOM_)
+      class (type_ersem_seagrass), intent(in) :: self
+      _DECLARE_ARGUMENTS_DO_BOTTOM_
+
+      real(rk) :: AGc, AGn, AGp, BGc, BGn, BGp, NSCc, O2o, O3c, N1p, N3n, N4n, ETW, par
+      real(rk) :: K1p(2), K3n(2), K4n(2), K1pw(2), K3nw(2), K4nw(2), D1m, D2m, poro
+      real(rk) :: eT, gT, tau, I_can, eI, qn, qp, eQ, fC, fO2, Pg, Ract, RmA, RmB, phi, ExuL, ExuR, Pnet
+      real(rk) :: Tst, Alloc, Mob, starve, heat, M_A, M_B, M_N, RmAr, RmBr, qnb, qpb
+      real(rk) :: dn, dp, L4, L3, LP, scl, rest, su, sN, sP
+      real(rk) :: dd(2), zt(2), zb(2), dF(2), wl(2), cn4(2), cn3(2), cp(2), u4(2), u3(2), up(2)
+      real(rk) :: dAGc, dBGc, dNSC, dAGn, dAGp, dBGn, dBGp, qlost
+      real(rk) :: red3l, red3r, rbn, rbp
+      integer :: k
+
+      _HORIZONTAL_LOOP_BEGIN_
+
+         _GET_HORIZONTAL_(self%id_AGc, AGc);  _GET_HORIZONTAL_(self%id_AGn, AGn);  _GET_HORIZONTAL_(self%id_AGp, AGp)
+         _GET_HORIZONTAL_(self%id_BGc, BGc);  _GET_HORIZONTAL_(self%id_BGn, BGn);  _GET_HORIZONTAL_(self%id_BGp, BGp)
+         _GET_HORIZONTAL_(self%id_NSCc, NSCc)
+         _GET_HORIZONTAL_(self%id_K1p1, K1p(1)); _GET_HORIZONTAL_(self%id_K1p2, K1p(2))
+         _GET_HORIZONTAL_(self%id_K3n1, K3n(1)); _GET_HORIZONTAL_(self%id_K3n2, K3n(2))
+         _GET_HORIZONTAL_(self%id_K4n1, K4n(1)); _GET_HORIZONTAL_(self%id_K4n2, K4n(2))
+         _GET_HORIZONTAL_(self%id_K1p1w, K1pw(1)); _GET_HORIZONTAL_(self%id_K1p2w, K1pw(2))
+         _GET_HORIZONTAL_(self%id_K3n1w, K3nw(1)); _GET_HORIZONTAL_(self%id_K3n2w, K3nw(2))
+         _GET_HORIZONTAL_(self%id_K4n1w, K4nw(1)); _GET_HORIZONTAL_(self%id_K4n2w, K4nw(2))
+         _GET_HORIZONTAL_(self%id_D1m, D1m); _GET_HORIZONTAL_(self%id_D2m, D2m); _GET_HORIZONTAL_(self%id_poro, poro)
+         _GET_(self%id_O2o, O2o); _GET_(self%id_O3c, O3c); _GET_(self%id_N1p, N1p)
+         _GET_(self%id_N3n, N3n); _GET_(self%id_N4n, N4n); _GET_(self%id_ETW, ETW); _GET_(self%id_par, par)
+
+         AGc = max(AGc, 0.0_rk); BGc = max(BGc, 0.0_rk); NSCc = max(NSCc, 0.0_rk)
+
+         ! U1, U2: temperature
+         if (ETW <= self%Tmin .or. ETW >= self%Tmax) then
+            eT = 0.0_rk
+         else
+            eT = (ETW - self%Tmin) * (ETW - self%Tmax) * (self%ctmi_a * ETW + self%ctmi_b)
+            eT = max(0.0_rk, min(1.0_rk, eT))
+         end if
+         gT = self%q10**((ETW - self%Tref) / 10.0_rk)
+         ! U3: light with canopy self-shading
+         tau = self%k_can * self%a_lai * AGc
+         I_can = max(0.0_rk, par)
+         if (tau > 1.0e-8_rk) I_can = I_can * (1.0_rk - exp(-tau)) / tau
+         eI = tanh(self%alpha * I_can)
+         ! U4: quota; U5: DIC and water O2
+         qn = max(AGn, 0.0_rk) / max(AGc, 1.0e-8_rk); qp = max(AGp, 0.0_rk) / max(AGc, 1.0e-8_rk)
+         eQ = min(max(0.0_rk, (qn - self%qn_min) / (self%qn_max - self%qn_min)), &
+                  max(0.0_rk, (qp - self%qp_min) / (self%qp_max - self%qp_min)), 1.0_rk)
+         fC = max(O3c, 0.0_rk) / (max(O3c, 0.0_rk) + self%K_dic)
+         fO2 = max(O2o, 0.0_rk) / (max(O2o, 0.0_rk) + self%hO2)
+
+         ! U6-U8: production, respiration, the reserve's share
+         Pg = self%p_max * eT * eI * eQ * fC * AGc
+         Ract = self%pu_ra * Pg
+         RmA = self%srs_ag * gT * AGc * fO2
+         RmB = self%srs_bg * gT * BGc * fO2
+         phi = 0.0_rk
+         if (NSCc > 0.0_rk) phi = NSCc / (NSCc + self%K_nsc * max(BGc, 1.0e-8_rk))
+         ExuL = self%f_exu * Pg                                              ! U12
+         Pnet = Pg - Ract - (1.0_rk - phi) * RmA - ExuL
+
+         ! U9-U11: storage, allocation (relaxation to rs, quota-capped), mobilisation
+         Tst = 0.0_rk
+         if (BGc > 0.0_rk) Tst = self%tau_store * max(0.0_rk, Pnet) * max(0.0_rk, 1.0_rk - NSCc / (self%q_nsc * BGc))
+         Alloc = self%k_tr * max(0.0_rk, (self%rs * AGc - BGc) / (1.0_rk + self%rs))
+         Alloc = min(Alloc, 0.5_rk * max(AGn, 0.0_rk) / self%qn_bg, 0.5_rk * max(AGp, 0.0_rk) / self%qp_bg)
+         Mob = 0.0_rk
+         if (BGc > 0.0_rk) Mob = self%k_mob * NSCc * max(0.0_rk, 1.0_rk - AGc * self%rs / BGc) * eQ
+
+         ! U12, U13: root exudation, mortality
+         ExuR = self%e_exu * gT * BGc
+         starve = 0.0_rk
+         if (NSCc < self%nsc_starve * BGc) starve = self%sd_starve
+         heat = 0.0_rk
+         if (ETW > self%T_heat) heat = self%sd_heat
+         M_A = (self%sd_ag + starve + heat) * AGc
+         M_B = (self%sd_bg + starve + heat + self%sd_hyp * (1.0_rk - fO2)) * BGc
+         M_N = 0.0_rk
+         if (BGc > 0.0_rk) M_N = M_B / BGc * NSCc
+
+         ! U20: root weights of the two layers, exact integrals of the profile cut at z_max, renormalised over the two layers
+         zt = [0.0_rk, min(D1m, self%z_max)]; zb = [min(D1m, self%z_max), min(D2m, self%z_max)]
+         do k = 1, 2
+            dF(k) = 0.0_rk
+            if (zb(k) > zt(k)) dF(k) = root_prim(zb(k), self%z_p) - root_prim(zt(k), self%z_p)
+         end do
+         if (dF(1) + dF(2) > 0.0_rk) then
+            wl = dF / (dF(1) + dF(2))
+         else
+            wl = [1.0_rk, 0.0_rk]
+         end if
+         ! pore-water concentrations (mmol m-3 of pore water)
+         dd = [D1m, D2m - D1m]
+         do k = 1, 2
+            if (poro * dd(k) > 0.0_rk) then
+               cn4(k) = max(K4nw(k), 0.0_rk) / (poro * dd(k))
+               cn3(k) = max(K3nw(k), 0.0_rk) / (poro * dd(k))
+               cp(k)  = max(K1pw(k), 0.0_rk) / (poro * dd(k))
+            else
+               cn4(k) = 0.0_rk; cn3(k) = 0.0_rk; cp(k) = 0.0_rk
+            end if
+         end do
+
+         ! U14: demand, leaves first, roots take the rest
+         dn = self%vmax_n * gT * AGc * max(0.0_rk, 1.0_rk - qn / self%qn_max)
+         dp = self%vmax_p * gT * AGc * max(0.0_rk, 1.0_rk - qp / self%qp_max)
+         L4 = self%V_l4 * AGc * max(N4n, 0.0_rk) / (self%K_l4 + max(N4n, 0.0_rk))
+         L3 = self%V_l3 * AGc * max(N3n, 0.0_rk) / (self%K_l3 + max(N3n, 0.0_rk))
+         LP = self%V_lP * AGc * max(N1p, 0.0_rk) / (self%K_lP + max(N1p, 0.0_rk))
+         if (L4 + L3 > dn .and. L4 + L3 > 0.0_rk) then
+            scl = dn / (L4 + L3); L4 = L4 * scl; L3 = L3 * scl
+         end if
+         if (LP > dp .and. LP > 0.0_rk) LP = dp
+         rest = max(0.0_rk, dn - L4 - L3)
+         su = 0.0_rk
+         do k = 1, 2
+            u4(k) = self%V_r4 * BGc * wl(k) * cn4(k) / (self%K_r4 + cn4(k))
+            u3(k) = self%V_r3 * BGc * wl(k) * cn3(k) / (self%K_r3 + cn3(k)) * exp(-self%psi_inh * cn4(k))
+            su = su + u4(k) + u3(k)
+         end do
+         sN = 0.0_rk
+         if (su > 0.0_rk) sN = min(1.0_rk, rest / su)
+         u4 = sN * u4; u3 = sN * u3
+         rest = max(0.0_rk, dp - LP)
+         su = 0.0_rk
+         do k = 1, 2
+            up(k) = self%V_rP * BGc * wl(k) * cp(k) / (self%K_rP + cp(k))
+            su = su + up(k)
+         end do
+         sP = 0.0_rk
+         if (su > 0.0_rk) sP = min(1.0_rk, rest / su)
+         up = sP * up
+
+         ! U16, U17: respiratory return (structural share, times 1 - f_rspn); BG at the BG quotas
+         RmAr = (1.0_rk - phi) * (1.0_rk - self%f_rspn) * RmA
+         qnb = BGn / max(BGc, 1.0e-8_rk); qpb = BGp / max(BGc, 1.0e-8_rk)
+         RmBr = (1.0_rk - phi) * (1.0_rk - self%f_rspn) * RmB
+         rbn = RmBr * qnb; rbp = RmBr * qpb
+         red3l = 0.0_rk; red3r = 0.0_rk
+         if (self%no3_red) then
+            red3l = 2.0_rk * L3                      ! mmol C per day, from the leaves
+            red3r = 2.0_rk * (u3(1) + u3(2))         ! from the roots
+         end if
+
+         ! pools (per day)
+         dAGc = Pg - Ract - (1.0_rk - phi) * RmA - ExuL - Tst - Alloc + Mob - M_A - red3l * CMass
+         dNSC = Tst - Mob - phi * (RmA + RmB) - M_N
+         dBGc = Alloc - (1.0_rk - phi) * RmB - ExuR - M_B - red3r * CMass
+         dAGn = L4 + L3 + u4(1) + u4(2) + u3(1) + u3(2) - self%qn_bg * Alloc - RmAr * qn - M_A * qn * (1.0_rk - self%f_recl)
+         dAGp = LP + up(1) + up(2) - self%qp_bg * Alloc - RmAr * qp - M_A * qp * (1.0_rk - self%f_recl)
+         dBGn = self%qn_bg * Alloc - rbn - M_B * qnb
+         dBGp = self%qp_bg * Alloc - rbp - M_B * qpb
+         _SET_BOTTOM_ODE_(self%id_AGc, dAGc)
+         _SET_BOTTOM_ODE_(self%id_AGn, dAGn)
+         _SET_BOTTOM_ODE_(self%id_AGp, dAGp)
+         _SET_BOTTOM_ODE_(self%id_BGc, dBGc)
+         _SET_BOTTOM_ODE_(self%id_BGn, dBGn)
+         _SET_BOTTOM_ODE_(self%id_BGp, dBGp)
+         _SET_BOTTOM_ODE_(self%id_NSCc, dNSC)
+
+         ! water column: leaf carbon and oxygen, leaf nutrients, structural-respiration return, alkalinity
+         _SET_BOTTOM_EXCHANGE_(self%id_O3c, (-Pg + Ract + RmA + red3l * CMass) / CMass)
+         _SET_BOTTOM_EXCHANGE_(self%id_O2o, (self%pq * Pg - self%rq_o2c * (Ract + RmA + RmB)) / CMass)
+         _SET_BOTTOM_EXCHANGE_(self%id_N4n, -L4 + RmAr * qn)
+         _SET_BOTTOM_EXCHANGE_(self%id_N3n, -L3)
+         _SET_BOTTOM_EXCHANGE_(self%id_N1p, -LP + RmAr * qp)
+         _SET_BOTTOM_EXCHANGE_(self%id_TA, L3 - L4 + LP + RmAr * (qn - qp))
+         if (self%f_exu > 0.0_rk) _SET_BOTTOM_EXCHANGE_(self%id_R2c, ExuL)
+
+         ! sediment layers: root uptake, BG respiration products and exudation by the root weights
+         _SET_BOTTOM_ODE_(self%id_K4n1, -u4(1) + wl(1) * rbn)
+         _SET_BOTTOM_ODE_(self%id_K4n2, -u4(2) + wl(2) * rbn)
+         _SET_BOTTOM_ODE_(self%id_K3n1, -u3(1))
+         _SET_BOTTOM_ODE_(self%id_K3n2, -u3(2))
+         _SET_BOTTOM_ODE_(self%id_K1p1, -up(1) + wl(1) * rbp)
+         _SET_BOTTOM_ODE_(self%id_K1p2, -up(2) + wl(2) * rbp)
+         _SET_BOTTOM_ODE_(self%id_G3c1, wl(1) * RmB / CMass + 2.0_rk * u3(1) * merge(1.0_rk, 0.0_rk, self%no3_red))
+         _SET_BOTTOM_ODE_(self%id_G3c2, wl(2) * RmB / CMass + 2.0_rk * u3(2) * merge(1.0_rk, 0.0_rk, self%no3_red))
+         _SET_BOTTOM_ODE_(self%id_benTA, u3(1) - u4(1) + up(1) + wl(1) * (rbn - rbp))
+         _SET_BOTTOM_ODE_(self%id_benTA2, u3(2) - u4(2) + up(2) + wl(2) * (rbn - rbp))
+         if (self%e_exu > 0.0_rk) _SET_BOTTOM_ODE_(self%id_Q1c, ExuR)
+
+         ! mortality routing: AG split between pelagic POM and the plant detritus layer, BG and its reserve to the detritus
+         _SET_BOTTOM_EXCHANGE_(self%id_R6c, self%f_pel * M_A)
+         _SET_BOTTOM_EXCHANGE_(self%id_R6n, self%f_pel * qn * (1.0_rk - self%f_recl) * M_A)
+         _SET_BOTTOM_EXCHANGE_(self%id_R6p, self%f_pel * qp * (1.0_rk - self%f_recl) * M_A)
+         _SET_BOTTOM_ODE_(self%id_Q6c, (1.0_rk - self%f_pel) * M_A + M_B + M_N)
+         _SET_BOTTOM_ODE_(self%id_Q6n, (1.0_rk - self%f_pel) * qn * (1.0_rk - self%f_recl) * M_A + M_B * qnb)
+         _SET_BOTTOM_ODE_(self%id_Q6p, (1.0_rk - self%f_pel) * qp * (1.0_rk - self%f_recl) * M_A + M_B * qpb)
+
+         ! standard diagnostics
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_gpp, Pg)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_npp, Pg - Ract - RmA - RmB)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_resp, Ract + RmA + RmB)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fT, eT)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fI, eI)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_graz, 0.0_rk)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN3l, L3)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN4l, L4)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_relN4, RmAr * qn)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN3r, u3(1) + u3(2))
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uN4r, u4(1) + u4(2))
+         ! the terms the equivalence test compares (mg C or mmol per m2 and day as in the pools; exchanges per mmol C)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(1), Pg);  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(2), Ract)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(3), RmA); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(4), RmB)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(5), phi); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(6), Tst)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(7), Alloc); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(8), Mob)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(9), ExuL); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(10), ExuR)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(11), M_A); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(12), M_B)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(13), M_N); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(14), dAGc)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(15), dBGc); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(16), dNSC)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(17), L4); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(18), L3)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(19), LP); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(20), u4(1) + u4(2))
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(21), u3(1) + u3(2)); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(22), up(1) + up(2))
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(23), wl(1)); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(24), cn4(1))
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(25), cn4(2)); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(26), cn3(1))
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(27), cn3(2)); _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(28), cp(1))
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(29), cp(2))
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(30), (-Pg + Ract + RmA + red3l * CMass) / CMass)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(31), (self%pq * Pg - self%rq_o2c * (Ract + RmA + RmB)) / CMass)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(32), L3 - L4 + LP + RmAr * (qn - qp))
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(33), -L4 + RmAr * qn)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(34), -LP + RmAr * qp)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(35), RmB / CMass + 2.0_rk * (u3(1) + u3(2)) * merge(1.0_rk, 0.0_rk, self%no3_red))
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(36), (u3(1) + u3(2)) - (u4(1) + u4(2)) + (up(1) + up(2)) + rbn - rbp)
+
+      _HORIZONTAL_LOOP_END_
+
+   end subroutine do_bottom_uni
+
+   ! primitive of the root profile (x/z_p) e^(1 - x/z_p) = e z_p [-(x/z_p + 1) e^(-x/z_p)]
+   pure real(rk) function root_prim(x, zp) result(F)
+      real(rk), intent(in) :: x, zp
+      real(rk), parameter :: e1 = 2.718281828459045_rk
+      F = -e1 * zp * (x / zp + 1.0_rk) * exp(-x / zp)
+   end function
+
+   ! jsasaki 2026-10-07: default of a parameter shared with the unified formulation: a0 (former module), a1 (isw_uni = 1)
+   pure real(rk) function dflt(uni, a0, a1)
+      logical,  intent(in) :: uni
+      real(rk), intent(in) :: a0, a1
+      if (uni) then
+         dflt = a1
+      else
+         dflt = a0
+      end if
+   end function
 
    ! the layer-1 share f1 of an uptake j from two layers with inventories a, b (clipped at zero); j = 0 when both
    ! are empty
