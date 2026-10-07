@@ -52,6 +52,10 @@ module ersem_benthic_bacteria
       real(rk) :: pur,sr
       real(rk) :: pdQ1
       real(rk) :: sd
+      ! jsasaki 2026-10-07: family B unification (docs/UNIFY_FAUNA_BACTERIA_SPEC_20261007.md in the muse repository): the
+      ! diagnostic / saturating uptake law and the overflow respiration, all off by default
+      integer  :: isw_diag, isw_overflow
+      real(rk) :: B_ref, K_B, q10_decay
    contains
       procedure :: initialize
       procedure :: do_bottom
@@ -175,6 +179,34 @@ contains
       call self%get_parameter(self%Tref, 'Tref', 'degrees_Celsius', &
          'reference temperature for Q10 function', default=20.0_rk)
 
+      !---> jsasaki 2026-10-07: family B unification (plan X1): saturating first-order uptake, quasi-steady biomass
+      ! isw_diag = 0 (default): the legacy bimolecular uptake (su + suf eN) eT eOx B S (bit-identical).
+      ! isw_diag = 1: diagnostic bacteria: the uptake uses the constant reference stock B_ref instead of B, i.e. it is first
+      !   order in the substrate with k_i = su_i B_ref and does not depend on the biomass (the adopted MUSE basis).
+      ! isw_diag = 2: saturating: B_eff = (B_ref + K_B) B/(B + K_B); equals B at B = B_ref and is bounded by B_ref + K_B
+      !   (MUSE explicit mode, f_B = B/(B + K_B)).
+      ! In both modes the temperature factor of the uptake is the pure power law q10_decay^((T - Tref)/10) (no heat cut), the
+      ! Q10 of decay (Thamdrup 1998; Kristensen 1992), separate from the Q10 `q10` of the maintenance respiration.
+      call self%get_parameter(self%isw_diag, 'isw_diag', '', &
+         'bacterial uptake law (0: legacy bimolecular, 1: diagnostic first order on B_ref, 2: saturating in B)', &
+         default=0, minimum=0, maximum=2)
+      call self%get_parameter(self%B_ref, 'B_ref', 'mg C/m^2', 'reference bacterial stock of the diagnostic and saturating uptake', &
+         default=-1.0_rk)
+      call self%get_parameter(self%K_B, 'K_B', 'mg C/m^2', 'half-saturation of the biomass factor of the saturating uptake', &
+         default=-1.0_rk)
+      call self%get_parameter(self%q10_decay, 'q10_decay', '-', 'Q10 of the substrate uptake (isw_diag > 0)', &
+         default=2.0_rk, minimum=1.0_rk)
+      if (self%isw_diag > 0 .and. self%B_ref <= 0.0_rk) &
+         call self%fatal_error('initialize','isw_diag > 0 requires B_ref > 0')
+      if (self%isw_diag == 2 .and. self%K_B <= 0.0_rk) &
+         call self%fatal_error('initialize','isw_diag = 2 requires K_B > 0')
+      ! isw_overflow = 1: the carbon the biomass quotas cannot support (excess_c) is respired (to G3c, with the same
+      ! electron-acceptor routing as the other respiration) instead of being returned to POM Q6c (overflow respiration;
+      ! Goldman et al. 1987, Russell & Cook 1995; as MUSE's purb). Default 0: legacy.
+      call self%get_parameter(self%isw_overflow, 'isw_overflow', '', &
+         'surplus carbon: 0 returned to Q6c (legacy), 1 respired (overflow respiration)', default=0, minimum=0, maximum=1)
+      !<--- jsasaki 2026-10-07
+
       ! Dependencies on state variables of external modules.
       call self%register_state_dependency(self%id_K4n,'K4n','mmol N/m^2','ammonium')
       call self%register_state_dependency(self%id_K1p,'K1p','mmol N/m^2','phosphate')
@@ -273,6 +305,7 @@ contains
       real(rk) :: H2S_col
       real(rk) :: par_b
       real(rk) :: O2o, f_O2_resp  ! Monod O2 limitation for respiration (jsasaki 2026-02-15)
+      real(rk) :: eTu, Beff       ! jsasaki 2026-10-07: uptake temperature factor and effective biomass (isw_diag > 0)
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -300,6 +333,16 @@ contains
          ! Limitation by temperature and height of habitat layer.
          eT  = max(0.0_rk,self%q10**((ETW-self%Tref)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
          eOx = Dm/(self%dd+Dm)
+         !---> jsasaki 2026-10-07: family B unification (X1): decay temperature law and effective biomass of the diagnostic and saturating uptake
+         if (self%isw_diag > 0) then
+            eTu = self%q10_decay**((ETW-self%Tref)/10._rk)
+            if (self%isw_diag == 1) then
+               Beff = self%B_ref
+            else
+               Beff = (self%B_ref + self%K_B) * max(Hc, 0.0_rk) / (max(Hc, 0.0_rk) + self%K_B)
+            end if
+         end if
+         !<--- jsasaki 2026-10-07
 
          ! Effective uptake rate (sfQ, 1/d) per substrate
          do ifood=1,self%nfood
@@ -310,7 +353,13 @@ contains
             else
                eN = min(1._rk,max(0._rk,Qn(ifood)/(self%qnc*Qc(ifood)))) * min(1._rk,max(0._rk,Qp(ifood)/(self%qpc*Qc(ifood))))
             end if
-            sfQ(ifood) = (self%food(ifood)%su + self%food(ifood)%suf * eN) * eT * eOX * Hc
+            ! jsasaki 2026-10-07: family B unification (X1): isw_diag > 0 replaces eT and B by the decay Q10 law and the
+            ! diagnostic / saturating effective biomass; isw_diag = 0 is the legacy expression, unchanged
+            if (self%isw_diag == 0) then
+               sfQ(ifood) = (self%food(ifood)%su + self%food(ifood)%suf * eN) * eT * eOX * Hc
+            else
+               sfQ(ifood) = (self%food(ifood)%su + self%food(ifood)%suf * eN) * eTu * eOX * Beff
+            end if
          end do
 
          ! Free-sulfide inhibition of uptake (docs/114 DS). Growth AND the
@@ -424,7 +473,18 @@ contains
             _SET_HORIZONTAL_DIAGNOSTIC_(self%food(ifood)%id_fp,fQp(ifood))
          end do
 
-         _SET_BOTTOM_ODE_(self%id_Q6c,excess_c/CMass)
+         ! jsasaki 2026-10-07: family B unification: isw_overflow = 1 respires the surplus carbon instead of returning it to Q6c
+         if (self%isw_overflow == 0) then
+            _SET_BOTTOM_ODE_(self%id_Q6c,excess_c/CMass)
+         else
+            _SET_BOTTOM_ODE_(self%id_G2o,-(1.0_rk-self%p_sulf)*excess_c/CMass)
+            _SET_BOTTOM_ODE_(self%id_G3c, excess_c/CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHG3c,fHG3c + excess_c)
+            if (self%isw_ledger == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_resp_G2o,-(1.0_rk-self%p_sulf)*(fHG3c + excess_c)/CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_resp_G3c,(fHG3c + excess_c)/CMass)
+            end if
+         end if
          _SET_BOTTOM_ODE_(self%id_K4n,-fK4Hn + excess_n)
          _SET_BOTTOM_ODE_(self%id_K1p,-fK1Hp + excess_p)
          if (self%isw_ledger == 1) then
@@ -446,7 +506,11 @@ contains
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQ1n,sum(fQn*self%food%pue) + sfHQ1 * HcP*self%qnc)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQ1p,sum(fQp*self%food%pue) + sfHQ1 * HcP*self%qpc)
 
-         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPc,sfHQ6 * HcP + excess_c)
+         if (self%isw_overflow == 0) then   ! jsasaki 2026-10-07: with isw_overflow = 1 the surplus carbon is not POM
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPc,sfHQ6 * HcP + excess_c)
+         else
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPc,sfHQ6 * HcP)
+         end if
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPn,sfHQ6 * HcP * self%qnc)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPp,sfHQ6 * HcP * self%qpc)
 
