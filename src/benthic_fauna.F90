@@ -39,7 +39,6 @@ module ersem_benthic_fauna
       type (type_state_variable_id)   :: id_O2o
       ! jsasaki 2026-10-07: family B wave 2 (O1): separate sink of dead fauna (isw_waste = 1 only)
       integer :: isw_waste = 0
-      type (type_model_id) :: id_Qd
       type (type_bottom_state_variable_id) :: id_Qdc,id_Qdn,id_Qdp
       type (type_bottom_state_variable_id) :: id_Q6c,id_Q6n,id_Q6p,id_Q6s,id_benTA,id_benTA2
       type (type_bottom_state_variable_id) :: id_G3c,id_G2o,id_K4n,id_K1p,id_K4n2,id_K1p2
@@ -182,18 +181,17 @@ contains
       call self%request_coupling_to_model(self%id_Q6s,'Q','s')
 
       !---> jsasaki 2026-10-07: family B wave 2 (plan O1, muse/docs/UNIFY_B2_SPEC_20261007.md section 3): waste routing by class.
-      ! isw_waste = 1: dead fauna go to the sink Qd (default: the same sink as Q, so that nothing changes without a coupling) and the faeces of a
+      ! isw_waste = 1: dead fauna go to the sinks Qdc, Qdn, Qdp (default: the same variables as Q6c, Q6n, Q6p, whichever way those are coupled, so that nothing
+      ! changes without a coupling; a splitter instance is coupled as Qdc: <splitter>/c, Qdn: <splitter>/n, Qdp: <splitter>/p) and the faeces of a
       ! DETRITUS food of a particulate layer return to the layer it came from (MUSE feces_keep_class); faeces of all other food and the excess carbon stay in Q.
-      call self%get_parameter(self%isw_waste,'isw_waste','','0: faeces, dead fauna and excess carbon to Q (legacy); 1: dead fauna to Qd, faeces of detritus food to its own class',default=0,minimum=0,maximum=1)
+      call self%get_parameter(self%isw_waste,'isw_waste','','0: faeces, dead fauna and excess carbon to Q (legacy); 1: dead fauna to Qdc/n/p, faeces of detritus food to its own class',default=0,minimum=0,maximum=1)
       if (self%isw_waste == 1) then
-         call self%register_model_dependency(self%id_Qd,'Qd')
-         call self%couplings%set_string('Qd','Q')
          call self%register_state_dependency(self%id_Qdc,'Qdc','mg C/m^2',   'particulate organic carbon receiving dead fauna')
          call self%register_state_dependency(self%id_Qdn,'Qdn','mmol N/m^2', 'particulate organic nitrogen receiving dead fauna')
          call self%register_state_dependency(self%id_Qdp,'Qdp','mmol P/m^2', 'particulate organic phosphorus receiving dead fauna')
-         call self%request_coupling_to_model(self%id_Qdc,self%id_Qd,'c')
-         call self%request_coupling_to_model(self%id_Qdn,self%id_Qd,'n')
-         call self%request_coupling_to_model(self%id_Qdp,self%id_Qd,'p')
+         call self%request_coupling(self%id_Qdc,'Q6c')
+         call self%request_coupling(self%id_Qdn,'Q6n')
+         call self%request_coupling(self%id_Qdp,'Q6p')
       end if
       !<--- jsasaki 2026-10-07
 
