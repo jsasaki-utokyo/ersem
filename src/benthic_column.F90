@@ -58,6 +58,8 @@ contains
       ! jsasaki 2026-10-07: unification family C (X9): the interface resistance shared with MUSE (dbl/d0w), d/m. R_dbl > 0
       ! replaces EDZ_mix; the default -1 keeps EDZ_mix (rfB13 bit for bit).
       call self%get_parameter(R_dbl,'R_dbl','d/m','diffusive boundary layer resistance shared with MUSE (thickness/diffusivity); > 0 replaces EDZ_mix',default=-1.0_rk)
+      ! jsasaki 2026-10-07: review r1 #18: NaN must not silently mean 'off'
+      if (R_dbl /= R_dbl) call self%fatal_error('initialize','R_dbl is not a number')
       if (R_dbl > 0.0_rk) self%EDZ_mix = R_dbl
       call self%get_parameter(self%d_tot,'d_tot','m','depth of sediment column')
 
