@@ -69,13 +69,19 @@ contains
 
       ! Denitrification
       call self%get_parameter(self%pammon,'pammon','-','fraction of oxygen demand fulfilled by denitrification under anaerobic conditions')
-      call self%get_parameter(self%pdenit,'pdenit','-','fraction of denitrification producing dinitrogen gas (remainder produces ammonium)')
       ! jsasaki 2026-10-07: unification family D wave 2: the shared name f_DNRA (docs/UNIFY_D_SPEC_20261007.md in muse) is the
       ! fraction of the nitrate reduced to NH4, f_DNRA = 1 - pdenit; the value must equal the f_DNRA of benthic_sulfur_cycle in the
       ! same configuration. f_DNRA < 0 (default) keeps pdenit as read (bit identical).
       call self%get_parameter(f_dnra_shared,'f_DNRA','-','shared DNRA fraction of nitrate reduction (overrides pdenit = 1 - f_DNRA; negative: off)', &
            default=-1.0_rk, maximum=1.0_rk)
-      if (f_dnra_shared >= 0.0_rk) self%pdenit = 1.0_rk - f_dnra_shared
+      ! review w2r1 #4: pdenit is required only when the shared key is off (it is still consumed when both are given)
+      if (f_dnra_shared >= 0.0_rk) then
+         call self%get_parameter(self%pdenit,'pdenit','-','fraction of denitrification producing dinitrogen gas (remainder produces ammonium)', &
+              default=1.0_rk - f_dnra_shared)
+         self%pdenit = 1.0_rk - f_dnra_shared
+      else
+         call self%get_parameter(self%pdenit,'pdenit','-','fraction of denitrification producing dinitrogen gas (remainder produces ammonium)')
+      end if
       call self%get_parameter(self%xn2,   'xn2','mol O_2/mol N','oxygen demand fulfilled by reduction of nitrate to dinitrogen gas')
       call self%get_parameter(self%hM3G4,'hM3G4','mmol N/m^3','Michaelis-Menten constant for nitrate limitation of denitrification')
 
