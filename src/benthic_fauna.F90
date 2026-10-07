@@ -109,6 +109,10 @@ contains
          default=0.0_rk, minimum=0.0_rk)
       if (self%hO2resp > 0.0_rk .and. self%hO2resp <= self%rlO2) &
          call self%fatal_error('initialize','hO2resp must exceed rlO2')
+      ! jsasaki 2026-10-07: review round 1 #8: the feeding Hill law (O2-rlO2)^3/((O2-rlO2)^3+(hO2-rlO2)^3) is singular unless
+      ! hO2 > rlO2; the legacy configuration hO2 = rlO2 = 0 (no feeding limitation) stays allowed
+      if (.not.(self%hO2 > self%rlO2 .or. (self%hO2 == 0.0_rk .and. self%rlO2 == 0.0_rk))) &
+         call self%fatal_error('initialize','the feeding O2 limitation needs hO2 > rlO2 (or hO2 = rlO2 = 0)')
 
       ! Add carbon pool as our only state variable.
       call self%add_constituent('c',3000._rk,c0,qn=self%qnc,qp=self%qpc)

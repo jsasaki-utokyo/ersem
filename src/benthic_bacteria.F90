@@ -55,6 +55,7 @@ module ersem_benthic_bacteria
       ! jsasaki 2026-10-07: family B unification (docs/UNIFY_FAUNA_BACTERIA_SPEC_20261007.md in the muse repository): the
       ! diagnostic / saturating uptake law and the overflow respiration, all off by default
       integer  :: isw_diag, isw_overflow
+      type (type_bottom_state_variable_id) :: id_Bbal   ! jsasaki 2026-10-07: bookkeeping counterpart of the diagnostic biomass (isw_diag = 1)
       real(rk) :: B_ref, K_B, q10_decay, bge, bact_m
    contains
       procedure :: initialize
@@ -208,10 +209,24 @@ contains
          default=0.3_rk, minimum=0.0_rk, maximum=0.99_rk)
       call self%get_parameter(self%bact_m, 'bact_m', '1/d', 'loss rate of the diagnostic biomass (isw_diag = 1)', &
          default=0.05_rk, minimum=0.0_rk)
-      if (self%isw_diag > 0 .and. self%B_ref <= 0.0_rk) &
-         call self%fatal_error('initialize','isw_diag > 0 requires B_ref > 0')
-      if (self%isw_diag == 2 .and. self%K_B <= 0.0_rk) &
-         call self%fatal_error('initialize','isw_diag = 2 requires K_B > 0')
+      ! jsasaki 2026-10-07: review round 1 #9: the guards are written so that a NaN fails them
+      if (self%isw_diag > 0 .and. .not.(self%B_ref > 0.0_rk .and. self%B_ref < huge(1.0_rk))) &
+         call self%fatal_error('initialize','isw_diag > 0 requires a finite B_ref > 0')
+      if (self%isw_diag == 2 .and. .not.(self%K_B > 0.0_rk .and. self%K_B < huge(1.0_rk))) &
+         call self%fatal_error('initialize','isw_diag = 2 requires a finite K_B > 0')
+      if (.not.(self%q10_decay >= 1.0_rk .and. self%q10_decay < huge(1.0_rk)) .or. &
+          .not.(self%bge >= 0.0_rk .and. self%bge <= 0.99_rk) .or. .not.(self%bact_m >= 0.0_rk .and. self%bact_m < huge(1.0_rk))) &
+         call self%fatal_error('initialize','q10_decay, bge or bact_m is NaN or out of range')
+      ! jsasaki 2026-10-07: review round 1 #1: the diagnostic biomass is kept OUT of the conserved totals. Its tendency
+      ! (production bge/(1-bge) R, loss bact_m B) is not a physical transfer, so a bookkeeping state with the opposite
+      ! tendency is added to the same aggregates; it starts at 0 and may become negative (it carries no physical meaning).
+      if (self%isw_diag == 1) then
+         call self%register_state_variable(self%id_Bbal, 'Bbal', 'mg C/m^2', &
+            'bookkeeping counterpart of the diagnostic bacterial biomass (not physical)', 0.0_rk, minimum=-1.0e20_rk)
+         call self%add_to_aggregate_variable(standard_variables%total_carbon, self%id_Bbal, scale_factor=1._rk/CMass)
+         call self%add_to_aggregate_variable(standard_variables%total_nitrogen, self%id_Bbal, scale_factor=self%qnc)
+         call self%add_to_aggregate_variable(standard_variables%total_phosphorus, self%id_Bbal, scale_factor=self%qpc)
+      end if
       ! isw_overflow = 1: the carbon the biomass quotas cannot support (excess_c) is respired (to G3c, with the same
       ! electron-acceptor routing as the other respiration) instead of being returned to POM Q6c (overflow respiration;
       ! Goldman et al. 1987, Russell & Cook 1995; as MUSE's purb). Default 0: legacy.
@@ -223,7 +238,7 @@ contains
 
       ! Dependencies on state variables of external modules.
       call self%register_state_dependency(self%id_K4n,'K4n','mmol N/m^2','ammonium')
-      call self%register_state_dependency(self%id_K1p,'K1p','mmol N/m^2','phosphate')
+      call self%register_state_dependency(self%id_K1p,'K1p','mmol P/m^2','phosphate')   ! jsasaki 2026-10-07: review round 1 #15: units (metadata only)
       call self%register_state_dependency(self%id_G2o,'G2o','mmol O_2/m^2','oxygen')
       ! Pelagic oxygen for Monod respiration limitation (jsasaki 2026-02-15)
       call self%register_state_dependency(self%id_O2o,'O2o','mmol O_2/m^3','pelagic oxygen')
@@ -320,6 +335,7 @@ contains
       real(rk) :: par_b
       real(rk) :: O2o, f_O2_resp  ! Monod O2 limitation for respiration (jsasaki 2026-02-15)
       real(rk) :: eTu, Beff       ! jsasaki 2026-10-07: uptake temperature factor and effective biomass (isw_diag > 0)
+      real(rk) :: excess_resp     ! jsasaki 2026-10-07: overflow respiration actually realised (isw_overflow = 1)
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -414,6 +430,17 @@ contains
 
          !---> jsasaki 2026-10-07: family B unification (X1, plan amendment 2): the diagnostic mode, one complete budget
          if (self%isw_diag == 1) then
+            ! jsasaki 2026-10-07: review round 1 #2: the realised extent (substrate loss, DIC, O2 draw, nutrient release) carries
+            ! the same acceptor limit as the legacy respiration: the water-O2 factor, hO2resp (cubic Hill) or hO2 (Monod)
+            _GET_(self%id_O2o, O2o)
+            if (self%hO2resp > 0.0_rk) then
+               f_O2_resp = max(0.0_rk, O2o)**3 / (max(0.0_rk, O2o)**3 + self%hO2resp**3)
+            else if (self%hO2 > 0.0_rk) then
+               f_O2_resp = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
+            else
+               f_O2_resp = 1.0_rk
+            end if
+            fQc = fQc * f_O2_resp; fQn = fQn * f_O2_resp; fQp = fQp * f_O2_resp
             fQIHc = sum(fQc)
             ! all uptake is mineralised once, except the excreted fraction pue (back to Q1 as in the legacy law)
             fHG3c = sum(fQc*(1._rk-self%food%pue))
@@ -438,6 +465,7 @@ contains
             _SET_BOTTOM_ODE_(self%id_Q1p,sum(fQp*self%food%pue))
             ! the diagnostic biomass (not a carbon sink of the budget)
             _SET_BOTTOM_ODE_(self%id_c, self%bge/(1._rk-self%bge)*fHG3c - self%bact_m*HcP)
+            _SET_BOTTOM_ODE_(self%id_Bbal, -(self%bge/(1._rk-self%bge)*fHG3c - self%bact_m*HcP))   ! review round 1 #1
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHKIn,-fK4Hn)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHK1p,-fK1Hp)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQ1c,sum(fQc*self%food%pue))
@@ -535,12 +563,16 @@ contains
          if (self%isw_overflow == 0) then
             _SET_BOTTOM_ODE_(self%id_Q6c,excess_c/CMass)
          else
-            _SET_BOTTOM_ODE_(self%id_G2o,-(1.0_rk-self%p_sulf)*excess_c/CMass)
-            _SET_BOTTOM_ODE_(self%id_G3c, excess_c/CMass)
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHG3c,fHG3c + excess_c)
+            ! review round 1 #2: the overflow respiration carries the same oxygen limit as every other respiration; the part
+            ! the limit refuses returns to POM (conserving), so no unsupported carbon is oxidised
+            excess_resp = f_O2_resp * excess_c
+            _SET_BOTTOM_ODE_(self%id_Q6c,(excess_c - excess_resp)/CMass)
+            _SET_BOTTOM_ODE_(self%id_G2o,-(1.0_rk-self%p_sulf)*excess_resp/CMass)
+            _SET_BOTTOM_ODE_(self%id_G3c, excess_resp/CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHG3c,fHG3c + excess_resp)
             if (self%isw_ledger == 1) then
-               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_resp_G2o,-(1.0_rk-self%p_sulf)*(fHG3c + excess_c)/CMass)
-               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_resp_G3c,(fHG3c + excess_c)/CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_resp_G2o,-(1.0_rk-self%p_sulf)*(fHG3c + excess_resp)/CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_resp_G3c,(fHG3c + excess_resp)/CMass)
             end if
          end if
          _SET_BOTTOM_ODE_(self%id_K4n,-fK4Hn + excess_n)
@@ -567,7 +599,7 @@ contains
          if (self%isw_overflow == 0) then   ! jsasaki 2026-10-07: with isw_overflow = 1 the surplus carbon is not POM
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPc,sfHQ6 * HcP + excess_c)
          else
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPc,sfHQ6 * HcP)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPc,sfHQ6 * HcP + excess_c - excess_resp)
          end if
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPn,sfHQ6 * HcP * self%qnc)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQPp,sfHQ6 * HcP * self%qpc)
