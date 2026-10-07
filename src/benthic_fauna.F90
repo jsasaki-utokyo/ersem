@@ -7,6 +7,7 @@ module ersem_benthic_fauna
    use fabm_particle
    use ersem_shared
    use ersem_benthic_base
+   use benthos_shared_laws, only: o2_supply_extent   ! jsasaki 2026-10-07: family B wave 2 (amendment 3)
 
    implicit none
 
@@ -27,15 +28,25 @@ module ersem_benthic_fauna
 
       real(rk) :: pu
       real(rk) :: pue
+      ! jsasaki 2026-10-07: family B wave 2 (O1): faeces of this detritus food return to the class it came from (isw_waste = 1 only)
+      logical  :: keep = .false.
+      type (type_bottom_state_variable_id) :: id_kc,id_kn,id_kp
       logical  :: ispel
       logical  :: ll
    end type
 
    type,extends(type_ersem_benthic_base),public :: type_ersem_benthic_fauna
       type (type_state_variable_id)   :: id_O2o
+      ! jsasaki 2026-10-07: family B wave 2 (O1): separate sink of dead fauna (isw_waste = 1 only)
+      integer :: isw_waste = 0
+      type (type_bottom_state_variable_id) :: id_Qdc,id_Qdn,id_Qdp
       type (type_bottom_state_variable_id) :: id_Q6c,id_Q6n,id_Q6p,id_Q6s,id_benTA,id_benTA2
       type (type_bottom_state_variable_id) :: id_G3c,id_G2o,id_K4n,id_K1p,id_K4n2,id_K1p2
       type (type_horizontal_dependency_id) :: id_Dm
+      ! jsasaki 2026-10-07: family B wave 2 (amendment 3): interface and oxic-layer coupling of the O2 supply constraint (isw_osupply = 1 only)
+      type (type_horizontal_dependency_id) :: id_cmix,id_osup_tot
+      type (type_horizontal_diagnostic_variable_id) :: id_osup_share_c
+      type (type_horizontal_diagnostic_variable_id) :: id_osupply
       type (type_horizontal_diagnostic_variable_id) :: id_bioirr,id_biotur,id_fYG3c, id_fYKIn,id_fYK1p,id_fYQPc,id_fYQPn,id_fYQPp
       ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
       integer :: isw_ledger
@@ -53,6 +64,9 @@ module ersem_benthic_fauna
       real(rk) :: sd,sdmO2,sdc,xdc
       real(rk) :: sr,pur
       real(rk) :: hO2resp
+      integer  :: isw_osupply   ! jsasaki 2026-10-07: family B wave 2: 0 = main (default), 1 = realised respiration extent limited by the O2 supply
+      real(rk) :: osup_share    ! jsasaki 2026-10-07: share of the O2 supply this group can draw (the groups of one site must sum to <= 1)
+      real(rk) :: tau_o2        ! jsasaki 2026-10-07: d, turnover time of the O2 inventory G2o as a supply
       real(rk) :: ptur,pirr, dwat,dQ6
    contains
       procedure :: initialize
@@ -115,6 +129,25 @@ contains
                 self%hO2resp >= 0.0_rk .and. self%hO2resp < huge(1.0_rk))) &
          call self%fatal_error('initialize','the O2 parameters must be finite with hO2 >= rlO2 >= 0 and hO2resp >= 0')
 
+      !---> jsasaki 2026-10-07: family B wave 2 (plan amendment 3): explicit O2 supply constraint, shared law with MUSE (f_osupply, f_tau_o2).
+      ! Realised respiration extent R = D (1 + (D/S)^4)^(-1/4), a smooth minimum (benthos_shared_laws o2_supply_extent), with D the demanded rate and
+      ! S = osup_share (O2o/cmix + G2o/tau_o2) (mmol O2 m-2 d-1): the largest O2 flux the diffusive boundary layer (resistance cmix, d m-1)
+      ! can carry from the bottom water (the oxic layer shrunk to zero thickness), plus the oxic inventory over its turnover time. R is applied to C loss, DIC and O2 alike.
+      call self%get_parameter(self%isw_osupply,'isw_osupply','','1: respiration extent limited by the O2 supply (shared law with MUSE); 0: off',default=0,minimum=0,maximum=1)
+      call self%get_parameter(self%tau_o2,'tau_o2','d','turnover time of the oxic O2 inventory as a supply (isw_osupply = 1)',default=0.05_rk,minimum=0.0_rk)
+      call self%get_parameter(self%osup_share,'osup_share','-','share of the O2 supply that this fauna group can draw (shares of all groups sum to <= 1; MUSE f_osup_share)',default=1.0_rk/3.0_rk,minimum=0.0_rk,maximum=1.0_rk)
+      if (.not.(self%osup_share >= 0.0_rk .and. self%osup_share <= 1.0_rk)) call self%fatal_error('initialize','osup_share must be a number in [0,1]')   ! NaN fails both comparisons
+      if (self%isw_osupply == 1) then
+         if (.not.(self%tau_o2 > 0.0_rk .and. self%tau_o2 < huge(1.0_rk))) call self%fatal_error('initialize','tau_o2 must be positive and finite')
+         call self%register_dependency(self%id_cmix,pelagic_benthic_transfer_constant)
+         ! the shares of all groups of the site are summed (aggregate of constant diagnostics) and used as share/max(1, sum): the supply is never allocated twice
+         call self%register_diagnostic_variable(self%id_osup_share_c,'osup_share_c','-','O2 supply share of this group',missing_value=self%osup_share,output=output_none,source=source_none)
+         call self%add_to_aggregate_variable(total_osup_share,self%id_osup_share_c)
+         call self%register_dependency(self%id_osup_tot,total_osup_share,domain=domain_bottom)
+         call self%register_diagnostic_variable(self%id_osupply,'osupply','mmol O2/m^2/d','O2 supply available to the respiration',source=source_do_bottom)
+      end if
+      !<--- jsasaki 2026-10-07
+
       ! Add carbon pool as our only state variable.
       call self%add_constituent('c',3000._rk,c0,qn=self%qnc,qp=self%qpc)
 
@@ -146,6 +179,21 @@ contains
       call self%request_coupling_to_model(self%id_Q6n,'Q','n')
       call self%request_coupling_to_model(self%id_Q6p,'Q','p')
       call self%request_coupling_to_model(self%id_Q6s,'Q','s')
+
+      !---> jsasaki 2026-10-07: family B wave 2 (plan O1, muse/docs/UNIFY_B2_SPEC_20261007.md section 3): waste routing by class.
+      ! isw_waste = 1: dead fauna go to the sinks Qdc, Qdn, Qdp (default: the same variables as Q6c, Q6n, Q6p, whichever way those are coupled, so that nothing
+      ! changes without a coupling; a splitter instance is coupled as Qdc: <splitter>/c, Qdn: <splitter>/n, Qdp: <splitter>/p) and the faeces of a
+      ! DETRITUS food of a particulate layer return to the layer it came from (MUSE feces_keep_class); faeces of all other food and the excess carbon stay in Q.
+      call self%get_parameter(self%isw_waste,'isw_waste','','0: faeces, dead fauna and excess carbon to Q (legacy); 1: dead fauna to Qdc/n/p, faeces of detritus food to its own class',default=0,minimum=0,maximum=1)
+      if (self%isw_waste == 1) then
+         call self%register_state_dependency(self%id_Qdc,'Qdc','mg C/m^2',   'particulate organic carbon receiving dead fauna')
+         call self%register_state_dependency(self%id_Qdn,'Qdn','mmol N/m^2', 'particulate organic nitrogen receiving dead fauna')
+         call self%register_state_dependency(self%id_Qdp,'Qdp','mmol P/m^2', 'particulate organic phosphorus receiving dead fauna')
+         call self%request_coupling(self%id_Qdc,'Q6c')
+         call self%request_coupling(self%id_Qdn,'Q6n')
+         call self%request_coupling(self%id_Qdp,'Q6p')
+      end if
+      !<--- jsasaki 2026-10-07
 
       ! Determine number of food sources
       call self%get_parameter(self%nfood, 'nfood', '', 'number of food sources',default=0)
@@ -211,6 +259,16 @@ contains
             ! Implement the legacy behaviour here.
             if (legacy_ersem_compatibility.and..not.self%food(ifood)%ispel) &
                call self%couplings%set_string('food'//trim(index)//'_loss_source','Q')
+            ! jsasaki 2026-10-07: family B wave 2 (O1): the faeces of a sediment detritus food return to the class it was eaten from
+            if (self%isw_waste == 1 .and. .not.self%food(ifood)%ispel) then
+               self%food(ifood)%keep = .true.
+               call self%register_state_dependency(self%food(ifood)%id_kc,'food'//trim(index)//'_kc','mg C/m^2',  'carbon sink of the faeces of food source '//trim(index))
+               call self%register_state_dependency(self%food(ifood)%id_kn,'food'//trim(index)//'_kn','mmol N/m^2','nitrogen sink of the faeces of food source '//trim(index))
+               call self%register_state_dependency(self%food(ifood)%id_kp,'food'//trim(index)//'_kp','mmol P/m^2','phosphorus sink of the faeces of food source '//trim(index))
+               call self%request_coupling_to_model(self%food(ifood)%id_kc,self%food(ifood)%id_loss_source,'c')
+               call self%request_coupling_to_model(self%food(ifood)%id_kn,self%food(ifood)%id_loss_source,'n')
+               call self%request_coupling_to_model(self%food(ifood)%id_kp,self%food(ifood)%id_loss_source,'p')
+            end if
          else
             ! Use assimilation efficiency for living matter.
             self%food(ifood)%pue = pue
@@ -278,6 +336,15 @@ contains
 
    end subroutine initialize
 
+   ! jsasaki 2026-10-07: family B wave 2: the supply-limited extent (mg C m-2 d-1 from mg C m-2 d-1 and mmol O2 m-2 d-1), kept out of line so
+   ! that the switched-off path of do_bottom compiles to the same floating-point code as before the edit
+   function realised_resp(D,S) result(R)
+      !DIR$ ATTRIBUTES NOINLINE :: realised_resp
+      real(rk),intent(in) :: D,S
+      real(rk) :: R
+      R = CMass * o2_supply_extent(D/CMass,S)
+   end function realised_resp
+
    subroutine do_bottom(self,_ARGUMENTS_DO_BOTTOM_)
 
       class (type_ersem_benthic_fauna),intent(in) :: self
@@ -296,6 +363,7 @@ contains
       integer  :: ifood,istate
       real(rk) :: fBTYc,nfBTYc,fYG3c,p_an
       real(rk) :: excess_c,excess_n,excess_p
+      real(rk) :: faec_c,faec_n,faec_p   ! jsasaki 2026-10-07: family B wave 2 (O1)
       real(rk) :: f_O2_resp  ! Monod O2 limitation factor for respiration (jsasaki 2026-02-15)
 
       _HORIZONTAL_LOOP_BEGIN_
@@ -423,9 +491,27 @@ contains
       SYc = nfBTYc
       SYn = sum(netfluxn)
       SYp = sum(netfluxp)
+      !---> jsasaki 2026-10-07: family B wave 2 (O1): with isw_waste = 1 the faeces of the detritus foods go to the classes they came from
+      if (self%isw_waste == 1) then
+         faec_c = fBTYc - nfBTYc; faec_n = sum(grossfluxn) - sum(netfluxn); faec_p = sum(grossfluxp) - sum(netfluxp)
+         do ifood=1,self%nfood
+            if (.not.self%food(ifood)%keep) cycle
+            _SET_BOTTOM_ODE_(self%food(ifood)%id_kc,grossfluxc(ifood)-netfluxc(ifood))
+            _SET_BOTTOM_ODE_(self%food(ifood)%id_kn,grossfluxn(ifood)-netfluxn(ifood))
+            _SET_BOTTOM_ODE_(self%food(ifood)%id_kp,grossfluxp(ifood)-netfluxp(ifood))
+            faec_c = faec_c - (grossfluxc(ifood)-netfluxc(ifood))
+            faec_n = faec_n - (grossfluxn(ifood)-netfluxn(ifood))
+            faec_p = faec_p - (grossfluxp(ifood)-netfluxp(ifood))
+         end do
+         _SET_BOTTOM_ODE_(self%id_Q6c,faec_c)
+         _SET_BOTTOM_ODE_(self%id_Q6n,faec_n)
+         _SET_BOTTOM_ODE_(self%id_Q6p,faec_p)
+      else
+      !<--- jsasaki 2026-10-07
       _SET_BOTTOM_ODE_(self%id_Q6c,fBTYc - nfBTYc)
       _SET_BOTTOM_ODE_(self%id_Q6n,sum(grossfluxn) - sum(netfluxn))
       _SET_BOTTOM_ODE_(self%id_Q6p,sum(grossfluxp) - sum(netfluxp))
+      end if   ! jsasaki 2026-10-07: family B wave 2 (O1)
       _SET_BOTTOM_ODE_(self%id_Q6s,sum(grossfluxs))
 
       ! Compute contribution to bioturbation and bioirrigation from total carbon ingestion.
@@ -459,6 +545,25 @@ contains
       ! Respiration fluxes = basal respiration (proportional to biomass)+ activity respiration (proportional to carbon assimilation)
       ! Limited by O2 availability via Monod factor (jsasaki 2026-02-15)
       fYG3c = (self%sr * cP * eT + self%pur * nfBTYc) * f_O2_resp
+      !---> jsasaki 2026-10-07: family B wave 2 (amendment 3): the realised extent under the O2 supply constraint (mg C m-2 d-1)
+      if (self%isw_osupply == 1) then
+         block
+            real(rk) :: G2o_, cmix_, supply_, tot_
+            _GET_HORIZONTAL_(self%id_G2o,G2o_)
+            _GET_HORIZONTAL_(self%id_cmix,cmix_)
+            _GET_HORIZONTAL_(self%id_osup_tot,tot_)
+            supply_ = max(0.0_rk,G2o_)/self%tau_o2
+            if (cmix_ > 0.0_rk) then
+               supply_ = supply_ + max(0.0_rk,O2o)/cmix_
+            else if (cmix_ <= 0.0_rk .and. O2o > 0.0_rk) then      ! an explicit zero (or negative) resistance; a NaN resistance leaves the inventory term alone
+               supply_ = 1.0e30_rk     ! no interface resistance and bottom water O2 present: the interface does not limit the supply
+            end if                      ! (cmix <= 0 or NaN without bottom-water O2: the finite inventory term alone)
+            supply_ = self%osup_share/max(1.0_rk,tot_) * supply_
+            fYG3c = realised_resp(fYG3c, supply_)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_osupply,supply_)
+         end block
+      end if
+      !<--- jsasaki 2026-10-07
 
       ! Store carbon flux resulting from respiration for later use (note: respiration does not affect nitrogen, phosphorus).
       ! Also account for its production of benthic CO2 and consumption of benthic oxygen.
@@ -481,9 +586,15 @@ contains
 
       ! Apply mortality to biomass, and send dead matter to particulate organic carbon pool.
       _SET_BOTTOM_ODE_(self%id_c, -mortflux*cP)
+      if (self%isw_waste == 1) then      ! jsasaki 2026-10-07: family B wave 2 (O1): dead fauna to their own sink
+         _SET_BOTTOM_ODE_(self%id_Qdc,mortflux*cP)
+         _SET_BOTTOM_ODE_(self%id_Qdn,mortflux*cP*self%qnc)
+         _SET_BOTTOM_ODE_(self%id_Qdp,mortflux*cP*self%qpc)
+      else
       _SET_BOTTOM_ODE_(self%id_Q6c,mortflux*cP)
       _SET_BOTTOM_ODE_(self%id_Q6n,mortflux*cP*self%qnc)
       _SET_BOTTOM_ODE_(self%id_Q6p,mortflux*cP*self%qpc)
+      end if
 
       ! Compute excess carbon flux, given that the maximum realizable carbon flux needs to be balanced
       ! by corresponding nitrogen and phosphorus fluxes to maintain constant stoichiometry.

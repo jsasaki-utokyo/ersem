@@ -34,6 +34,8 @@ module ersem_shared
    ! Aggregate variables for benthic bioturbation and bioirrigation (summed over all fauna).
    type (type_bulk_standard_variable),parameter :: total_bioturbation_activity = type_bulk_standard_variable(name='total_bioturbation_activity',units='mg C/m^2/d',aggregate_variable=.true.)
    type (type_bulk_standard_variable),parameter :: total_bioirrigation_activity = type_bulk_standard_variable(name='total_bioirrigation_activity',units='mg C/m^2/d',aggregate_variable=.true.)
+   ! jsasaki 2026-10-07: family B wave 2 (review round 1 #2): sum of the O2 supply shares of all fauna groups (isw_osupply = 1)
+   type (type_bulk_standard_variable),parameter :: total_osup_share = type_bulk_standard_variable(name='total_osup_share',units='-',aggregate_variable=.true.)
 
    ! Standard benthic variables used to make implicit based on matching standard names coupling possible.
    type (type_horizontal_standard_variable),parameter :: depth_of_sediment_column = type_horizontal_standard_variable(name='depth_of_sediment_column',units='m')
