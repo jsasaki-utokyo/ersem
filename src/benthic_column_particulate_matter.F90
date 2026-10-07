@@ -507,15 +507,7 @@ contains
          ! flux at the bottom of the sediment column. See its derivation at the top of the file, section "Impact of burial".
          if (_VARIABLE_REGISTERED_(self%id_c)) then
             _GET_HORIZONTAL_(self%id_penetration_c,z_mean)
-            ! jsasaki 2026-10-07: unification family C wave 2 (review r4 #1): explicit limit for a zero penetration depth (the quotients D/z_mean and
-            ! z_tur/z_mean are 0/0 when mixing is off, and the MIN then returned the cap); identical to the line below for z_mean > 0
-            if (z_mean > 0.0_rk) then
-               z_mean_sms = min(D/z_mean,max_pen_depth_change)*(1.0_rk - exp(-z_tur/z_mean))
-            elseif (D > 0.0_rk .and. z_tur > 0.0_rk) then
-               z_mean_sms = max_pen_depth_change
-            else
-               z_mean_sms = 0.0_rk
-            end if
+            z_mean_sms = min(D/z_mean,max_pen_depth_change)*(1.0_rk - exp(-z_tur/z_mean))
             _SET_BOTTOM_ODE_(self%id_penetration_c,z_mean_sms)
             if (self%burial.and.z_mean>0.0_rk) then
                _GET_HORIZONTAL_(self%id_c,C_int)
@@ -534,15 +526,7 @@ contains
          end if
          if (_VARIABLE_REGISTERED_(self%id_p)) then
             _GET_HORIZONTAL_(self%id_penetration_p,z_mean)
-            ! jsasaki 2026-10-07: unification family C wave 2 (review r4 #1): explicit limit for a zero penetration depth (the quotients D/z_mean and
-            ! z_tur/z_mean are 0/0 when mixing is off, and the MIN then returned the cap); identical to the line below for z_mean > 0
-            if (z_mean > 0.0_rk) then
-               z_mean_sms = min(D/z_mean,max_pen_depth_change)*(1.0_rk - exp(-z_tur/z_mean))
-            elseif (D > 0.0_rk .and. z_tur > 0.0_rk) then
-               z_mean_sms = max_pen_depth_change
-            else
-               z_mean_sms = 0.0_rk
-            end if
+            z_mean_sms = min(D/z_mean,max_pen_depth_change)*(1.0_rk - exp(-z_tur/z_mean))
             _SET_BOTTOM_ODE_(self%id_penetration_p,z_mean_sms)
             if (self%burial.and.z_mean>0.0_rk) then
                _GET_HORIZONTAL_(self%id_p,C_int)
@@ -561,15 +545,7 @@ contains
          end if
          if (_VARIABLE_REGISTERED_(self%id_n)) then
             _GET_HORIZONTAL_(self%id_penetration_n,z_mean)
-            ! jsasaki 2026-10-07: unification family C wave 2 (review r4 #1): explicit limit for a zero penetration depth (the quotients D/z_mean and
-            ! z_tur/z_mean are 0/0 when mixing is off, and the MIN then returned the cap); identical to the line below for z_mean > 0
-            if (z_mean > 0.0_rk) then
-               z_mean_sms = min(D/z_mean,max_pen_depth_change)*(1.0_rk - exp(-z_tur/z_mean))
-            elseif (D > 0.0_rk .and. z_tur > 0.0_rk) then
-               z_mean_sms = max_pen_depth_change
-            else
-               z_mean_sms = 0.0_rk
-            end if
+            z_mean_sms = min(D/z_mean,max_pen_depth_change)*(1.0_rk - exp(-z_tur/z_mean))
             _SET_BOTTOM_ODE_(self%id_penetration_n,z_mean_sms)
             if (self%burial.and.z_mean>0.0_rk) then
                _GET_HORIZONTAL_(self%id_n,C_int)
@@ -588,15 +564,7 @@ contains
          end if
          if (_VARIABLE_REGISTERED_(self%id_s)) then
             _GET_HORIZONTAL_(self%id_penetration_s,z_mean)
-            ! jsasaki 2026-10-07: unification family C wave 2 (review r4 #1): explicit limit for a zero penetration depth (the quotients D/z_mean and
-            ! z_tur/z_mean are 0/0 when mixing is off, and the MIN then returned the cap); identical to the line below for z_mean > 0
-            if (z_mean > 0.0_rk) then
-               z_mean_sms = min(D/z_mean,max_pen_depth_change)*(1.0_rk - exp(-z_tur/z_mean))
-            elseif (D > 0.0_rk .and. z_tur > 0.0_rk) then
-               z_mean_sms = max_pen_depth_change
-            else
-               z_mean_sms = 0.0_rk
-            end if
+            z_mean_sms = min(D/z_mean,max_pen_depth_change)*(1.0_rk - exp(-z_tur/z_mean))
             _SET_BOTTOM_ODE_(self%id_penetration_s,z_mean_sms)
             if (self%burial.and.z_mean>0.0_rk) then
                _GET_HORIZONTAL_(self%id_s,C_int)
