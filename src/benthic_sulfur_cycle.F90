@@ -55,6 +55,8 @@ module ersem_benthic_sulfur_cycle
 
    use fabm_types
    use ersem_shared
+   ! jsasaki 2026-10-07: unification family D wave 2 part 2: shared Fe/FeS/FeS2 laws (identical copy in muse/src)
+   use benthos_iron_laws
 
    implicit none
    private
@@ -210,6 +212,18 @@ module ersem_benthic_sulfur_cycle
       type(type_horizontal_dependency_id) :: id_poro
       type(type_horizontal_diagnostic_variable_id) :: id_sr_share_1
       real(rk) :: f_DNRA         ! Fraction of H2S-NO3 N going to NH4 (0-1)
+
+      !---> jsasaki 2026-10-07: unification family D wave 2 part 2 (muse docs/UNIFY_D_SPEC_20261007.md section 9): Fe2/Fe3/FeS/FeS2
+      ! states and the MUSE iron laws (benthos_iron_laws) behind isw_fe; 0 (default) leaves every line above untouched.
+      integer  :: isw_fe = 0, isw_fe3red = 1
+      type(iron_params) :: fep
+      real(rk) :: k_hs_tot = 1.0_rk, k_s0ox = 0.02_rk, SO4_ref = 28000.0_rk
+      type(type_bottom_state_variable_id) :: id_Fe2, id_Fe3, id_FeS, id_FeS2
+      type(type_bottom_state_variable_id) :: id_S0f(2:3)   ! solid S0 of layers 2 and 3 (made by H2S + Fe(III), eaten by pyritisation)
+      type(type_horizontal_diagnostic_variable_id) :: id_Rfe(nfe), id_Fe_total, id_S_in_Fe
+      type(type_horizontal_diagnostic_variable_id) :: id_fe_qO2_1, id_fe_qNO3_1, id_fe_qNO3_2, id_fe_share(2), id_fe_qH2S(3)
+      type(type_horizontal_diagnostic_variable_id) :: id_fe_qFe3, id_fe_qFe2, id_fe_S0(3), id_fe_app(10), id_fe_Rdirect
+      !<--- jsasaki 2026-10-07
 
    contains
       procedure :: initialize
@@ -379,6 +393,133 @@ contains
            'PAR half-saturation for light-driven interface oxidation (0: off)', &
            default=0.0_rk, minimum=0.0_rk)
 
+      !---> jsasaki 2026-10-07: unification family D wave 2 part 2: the MUSE iron cycle (annex D rows 16-19)
+      ! isw_fe = 1 adds four bed-column states (Fe2 total, Fe3, FeS, FeS2, mmol Fe/m2, mixed over the column depth) and the laws of
+      ! muse/src/sed_network_c.F90 (shared module benthos_iron_laws): Fe2 + O2, FeS precipitation and dissolution
+      ! (saturation, K_c), FeS + O2, pyritisation, FeS2 + O2, H2S + Fe(III), and the Fe(III) branch of the anaerobic
+      ! respiration (4 Fe(III) per C, partition against sulfate by the MUSE cascade). It REPLACES the irreversible K_FeS_ben
+      ! sink (switched off in the benthos), and it replaces the bottom-water-O2 Hill (K_O2_half_pel), the PAR gate (K_par_ox)
+      ! and the layer-1 Monod on G2o/D1m of the sulfide and S0 oxidation by the MUSE bimolecular laws on pore-water O2 per
+      ! layer (k_hs_tot, k_s0ox, f_ox_direct = 1 - f_s0), with the per-reaction Q10 of the temperature table. 0 = legacy.
+      ! Not supported with the fixed H2S grid (isw_h2s_layers 2) or the ledger counters.
+      call self%get_parameter(self%isw_fe, 'isw_fe', '', &
+           'MUSE iron cycle: Fe2/Fe3/FeS/FeS2 states and laws replace K_FeS_ben and the O2/PAR gates (0: legacy, 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_fe == 1) then
+         call self%get_parameter(self%isw_fe3red, 'isw_fe3red', '', &
+              'Fe(III) reduction branch of the anaerobic respiration (0: off, 1: on; MUSE R3)', default=1, minimum=0, maximum=1)
+         call self%get_parameter(self%k_hs_tot, 'k_hs_tot', '(mmol/m^3)^-1/d', &
+              'aerobic sulfide oxidation constant on pore-water H2S and O2 (MUSE k_hs_tot)', default=1.0_rk, minimum=0.0_rk)
+         call self%get_parameter(self%k_s0ox, 'k_s0ox', '(mmol/m^3)^-1/d', &
+              'S0 oxidation constant on solid S0 and pore-water O2 (MUSE k_s0ox)', default=0.02_rk, minimum=0.0_rk)
+         call self%get_parameter(self%fep%k_feox, 'k_feox', '(mmol/m^3)^-1/d', 'Fe2 oxidation by O2 (MUSE k_feox)', &
+              default=3.5_rk, minimum=0.0_rk)
+         call self%get_parameter(self%fep%k_isp, 'k_isp', 'mmol/m^3 solid/d', 'FeS precipitation (MUSE k_isp)', &
+              default=2.74e4_rk, minimum=0.0_rk)
+         call self%get_parameter(self%fep%k_isd, 'k_isd', '1/d', 'FeS dissolution (MUSE k_isd)', default=8.21e-3_rk, minimum=0.0_rk)
+         call self%get_parameter(self%fep%K_c, 'K_c', '(mmol/m^3)^2', 'conditional FeS solubility product at the declared pH 7.5 (MUSE K_c)', &
+              default=130.0_rk, minimum=1.0e-12_rk)
+         call self%get_parameter(self%fep%k_fesox, 'k_fesox', '(mmol/m^3)^-1/d', 'FeS oxidation by O2 (MUSE k_fesox)', &
+              default=2.2e-3_rk, minimum=0.0_rk)
+         call self%get_parameter(self%fep%k_pyr0, 'k_pyr0', '(mmol/m^3)^-1/d', 'pyritisation FeS + S0 (MUSE k_pyr0)', &
+              default=1.73e-4_rk, minimum=0.0_rk)
+         call self%get_parameter(self%fep%k_pyox, 'k_pyox', '(mmol/m^3)^-1/d', 'pyrite oxidation by O2 (MUSE k_pyox)', &
+              default=3.0e-4_rk, minimum=0.0_rk)
+         call self%get_parameter(self%fep%k_sfe, 'k_sfe', '(mmol/m^3)^-1/d', 'H2S + Fe(III) (MUSE k_sfe)', &
+              default=1.2e-4_rk, minimum=0.0_rk)
+         call self%get_parameter(self%fep%Ks_Fe2, 'Ks_Fe2', '-', 'Fe2 sorption, rho_s K_D per solid volume (MUSE Ks_Fe2)', &
+              default=2.65_rk * 268.0_rk, minimum=0.0_rk)
+         call self%get_parameter(self%fep%q10(1), 'q10_fe2', '-', 'Q10 of Fe2 oxidation (temperature table Q10_fe2)', &
+              default=4.4_rk, minimum=1.0_rk)
+         call self%get_parameter(self%fep%q10(2), 'q10_isp', '-', 'Q10 of FeS precipitation (Q10_isp)', default=1.0_rk, minimum=1.0_rk)
+         call self%get_parameter(self%fep%q10(3), 'q10_fes', '-', 'Q10 of FeS oxidation (Q10_fes)', default=2.0_rk, minimum=1.0_rk)
+         call self%get_parameter(self%fep%q10(4), 'q10_pyr', '-', 'Q10 of pyritisation (Q10_pyr)', default=2.8_rk, minimum=1.0_rk)
+         call self%get_parameter(self%fep%q10(5), 'q10_pyox', '-', 'Q10 of pyrite oxidation (Q10_pyox)', default=2.3_rk, minimum=1.0_rk)
+         call self%get_parameter(self%fep%q10(6), 'q10_sfe', '-', 'Q10 of H2S + Fe(III) (Q10_sfe)', default=1.0_rk, minimum=1.0_rk)
+         call self%get_parameter(self%fep%q10(7), 'q10_isd', '-', 'Q10 of FeS dissolution (Q10_isd)', default=1.0_rk, minimum=1.0_rk)
+         call self%get_parameter(self%fep%K_Fe3, 'K_Fe3', 'mmol/m^3 solid', 'Fe(III) half-saturation of its reduction (MUSE K_Fe3)', &
+              default=5.0e4_rk, minimum=1.0e-12_rk)
+         call self%get_parameter(self%fep%K_SO4, 'K_SO4', 'mmol/m^3', 'sulfate half-saturation of its reduction (MUSE K_SO4)', &
+              default=1600.0_rk, minimum=1.0e-12_rk)
+         call self%get_parameter(self%fep%Kin_O2, 'Kin_O2', 'mmol/m^3', 'O2 inhibition constant of the anaerobic paths (MUSE Kin_O2)', &
+              default=5.0_rk, minimum=1.0e-12_rk)
+         call self%get_parameter(self%fep%Kin_NO3, 'Kin_NO3', 'mmol/m^3', 'NO3 inhibition constant of the anaerobic paths (MUSE Kin_NO3)', &
+              default=5.0_rk, minimum=1.0e-12_rk)
+         call self%get_parameter(self%fep%Kin_Fe3, 'Kin_Fe3', 'mmol/m^3 solid', 'Fe(III) inhibition constant of sulfate reduction (MUSE Kin_Fe3)', &
+              default=5.0e4_rk, minimum=1.0e-12_rk)
+         call self%get_parameter(self%SO4_ref, 'SO4_ref', 'mmol/m^3', 'pore-water sulfate (no sulfate state in ERSEM; must be positive)', &
+              default=28000.0_rk, minimum=1.0e-6_rk)
+         call self%register_state_variable(self%id_Fe2, 'Fe2', 'mmol Fe/m^2', 'Fe(II), dissolved + sorbed total, column mean', &
+              initial_value=0.0_rk, minimum=0.0_rk)
+         call self%register_state_variable(self%id_Fe3, 'Fe3', 'mmol Fe/m^2', 'reactive Fe(III), solid, column mean', &
+              initial_value=0.0_rk, minimum=0.0_rk)
+         call self%register_state_variable(self%id_FeS, 'FeS', 'mmol Fe/m^2', 'iron monosulfide (acid volatile), solid', &
+              initial_value=0.0_rk, minimum=0.0_rk)
+         call self%register_state_variable(self%id_FeS2, 'FeS2', 'mmol Fe/m^2', 'pyrite, solid', &
+              initial_value=0.0_rk, minimum=0.0_rk)
+         ! S0 of layers 2 and 3 is a SOLID pool of its own: the dissolved-matter column G2_S0 exports every production to the
+         ! water at once (it has no relaxation time for last_layer 3), which would draw or push S0 across the interface
+         call self%register_state_variable(self%id_S0f(2), 'S0f2', 'mmol S/m^2', 'solid elemental sulfur, layer 2 (Fe laws)', &
+              initial_value=0.0_rk, minimum=0.0_rk)
+         call self%register_state_variable(self%id_S0f(3), 'S0f3', 'mmol S/m^2', 'solid elemental sulfur, layer 3 (Fe laws)', &
+              initial_value=0.0_rk, minimum=0.0_rk)
+         call self%register_diagnostic_variable(self%id_Rfe(jFEOX), 'R_Fe2_ox', 'mmol Fe/m^2/d', 'Fe2 oxidation by O2 (R9)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_Rfe(jISP), 'R_FeS_form', 'mmol S/m^2/d', 'FeS precipitation (R10)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_Rfe(jFESOX), 'R_FeS_ox', 'mmol S/m^2/d', 'FeS oxidation by O2 (R11)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_Rfe(jPYR), 'R_FeS2_form', 'mmol S/m^2/d', 'pyritisation FeS + S0 (R12)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_Rfe(jPYOX), 'R_FeS2_ox', 'mmol FeS2/m^2/d', 'pyrite oxidation (R13; reaction extent, 2 S per unit)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_Rfe(jSFE), 'R_H2S_Fe3', 'mmol S/m^2/d', 'H2S + Fe(III) (R14)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_Rfe(jISD), 'R_FeS_diss', 'mmol S/m^2/d', 'FeS dissolution (R16)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_Rfe(jFE3RED), 'R_Fe3_red', 'mmol C/m^2/d', &
+              'organic carbon oxidised by Fe(III) (R3; 4 Fe(III) per C)', domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_Fe_total, 'Fe_total', 'mmol Fe/m^2', 'Fe2 + Fe3 + FeS + FeS2 (conserved)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_S_in_Fe, 'S_in_Fe', 'mmol S/m^2', 'sulfur held as FeS + 2 FeS2', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_qO2_1, 'fe_qO2_1', 'mmol/m^3', 'pore-water O2, layer 1 (law input)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_qNO3_1, 'fe_qNO3_1', 'mmol/m^3', 'pore-water NO3, layer 1 (law input)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_qNO3_2, 'fe_qNO3_2', 'mmol/m^3', 'pore-water NO3, layer 2 (law input)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_share(1), 'fe_share_1', '-', 'Fe(III) share of the layer-1 anaerobic carbon flux', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_share(2), 'fe_share_3', '-', 'Fe(III) share of the layer-3 anaerobic carbon flux', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_qH2S(1), 'fe_qH2S_1', 'mmol/m^3', 'pore-water sulfide, layer 1 (law input)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_qH2S(2), 'fe_qH2S_2', 'mmol/m^3', 'pore-water sulfide, layer 2 (law input)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_qH2S(3), 'fe_qH2S_3', 'mmol/m^3', 'pore-water sulfide, layer 3 (law input)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_S0(1), 'fe_S0_1', 'mmol S/m^2', 'S0 inventory, layer 1 (law input)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_S0(2), 'fe_S0_2', 'mmol S/m^2', 'S0 inventory, layer 2 (law input)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_S0(3), 'fe_S0_3', 'mmol S/m^2', 'S0 inventory, layer 3 (law input)', &
+              domain=domain_bottom, source=source_do_bottom)
+         do ilay = 1, 10
+            write (lab, '(i0)') ilay
+            call self%register_diagnostic_variable(self%id_fe_app(ilay), 'fe_app_'//trim(lab), 'mmol/m^2/d', &
+                 'applied Fe-block source (1 O2 layer 1, 2-4 H2S, 5-7 S0, 8-10 TA of layers 1-3)', &
+                 domain=domain_bottom, source=source_do_bottom)
+         end do
+         call self%register_diagnostic_variable(self%id_fe_Rdirect, 'fe_R_ox_direct', 'mmol S/m^2/d', &
+              'layer-1 H2S oxidation completed to SO4 in place (applied; the rest goes to S0)', domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_qFe3, 'fe_qFe3', 'mmol/m^3 solid', 'solid Fe(III), column mean (law input)', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_fe_qFe2, 'fe_qFe2', 'mmol/m^3', 'dissolved Fe2, column mean (law input)', &
+              domain=domain_bottom, source=source_do_bottom)
+      end if
+      !<--- jsasaki 2026-10-07
+
       ! SR2 (jsasaki 2026-09-22; nippon-steel docs/127 s7.2 and s8 item 5, review rounds 38-39). The layer-1 share of
       ! sulfate reduction becomes p_sr_1 * product of linear exclusion ramps, each exactly zero at or above its
       ! threshold: bottom-water O2, layer-1 PORE-WATER O2 (G2o/(poro*D1m)), layer-1 PORE-WATER NO3 (NO3_1/(poro*D1m))
@@ -392,9 +533,10 @@ contains
       call self%get_parameter(self%PAR_thr_sr, 'PAR_thr_sr', 'W/m^2', &
            'SR2: light threshold excluding interface sulfate reduction (0: off)', default=0.0_rk, minimum=0.0_rk)
       self%sr2_on = self%O2_thr_sr > 0.0_rk .or. self%NO3_thr_sr > 0.0_rk .or. self%PAR_thr_sr > 0.0_rk
-      if (self%NO3_thr_sr > 0.0_rk) call self%register_state_dependency(self%id_NO3_1, 'NO3_1', 'mmol N/m^2', &
-           'nitrate in layer 1 (SR2 exclusion)')
-      if (self%O2_thr_sr > 0.0_rk .or. self%NO3_thr_sr > 0.0_rk) &
+      ! jsasaki 2026-10-07: unification family D wave 2 part 2: layer-1 nitrate and the porosity are also needed by the Fe laws
+      if (self%NO3_thr_sr > 0.0_rk .or. self%isw_fe == 1) call self%register_state_dependency(self%id_NO3_1, 'NO3_1', 'mmol N/m^2', &
+           'nitrate in layer 1 (SR2 exclusion, Fe laws)')
+      if (self%O2_thr_sr > 0.0_rk .or. self%NO3_thr_sr > 0.0_rk .or. self%isw_fe == 1) &
            call self%register_dependency(self%id_poro, sediment_porosity)
       if (self%sr2_on) call self%register_diagnostic_variable(self%id_sr_share_1, 'sr_share_1', '-', &
            'SR2: share of sulfate reduction placed in layer 1', domain=domain_bottom, source=source_do_bottom)
@@ -426,6 +568,14 @@ contains
       call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
            'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
            default=0, minimum=0, maximum=1)
+      ! jsasaki 2026-10-07: unification family D wave 2 part 2: what isw_fe does not extend
+      if (self%isw_fe == 1 .and. self%isw_ledger == 1) call self%fatal_error('initialize', &
+           'isw_fe = 1 does not extend the ledger counters (isw_ledger must be 0)')
+      if (self%isw_fe == 1 .and. self%isw_h2s_layers /= 0) call self%fatal_error('initialize', &
+           'isw_fe = 1 is implemented for the three-layer H2S column only (isw_h2s_layers = 0)')
+      ! jsasaki 2026-10-07: review round 1 #3, #13: the Fe laws treat layer-1 S0 as a solid and use the 20 degC reference of the shared laws
+      if (self%isw_fe == 1 .and. self%isw_S0_solid /= 1) call self%fatal_error('initialize', &
+           'isw_fe = 1 requires isw_S0_solid = 1 (the Fe laws act on solid S0)')
       if (self%isw_ledger == 1) then
        if (self%isw_h2s_layers == 0) then
          call self%register_diagnostic_variable(self%id_ledger_srfes_H2S_3, 'ledger_srfes_H2S_3', 'mmol S/m^2/d', &
@@ -526,7 +676,10 @@ contains
            default=2.3_rk, minimum=1.0_rk)
       call self%get_parameter(self%q10_s0ox, 'q10_s0ox', '-', 'Q10 of S0 oxidation by O2 (MUSE q10(12))', &
            default=2.0_rk, minimum=1.0_rk)
-      if (self%isw_temp_s == 1) call self%register_dependency(self%id_ETW_s, standard_variables%temperature)
+      if (self%isw_fe == 1 .and. self%Tref_s /= 20.0_rk) call self%fatal_error('initialize', &
+           'isw_fe = 1 requires Tref_s = 20 (the shared Fe and sulfur laws use the 20 degC reference)')   ! jsasaki 2026-10-07: review round 1 #13
+      ! jsasaki 2026-10-07: unification family D wave 2 part 2: the Fe laws and the MUSE sulfur laws need the temperature too
+      if (self%isw_temp_s == 1 .or. self%isw_fe == 1) call self%register_dependency(self%id_ETW_s, standard_variables%temperature)
       !<--- jsasaki 2026-10-07
 
       ! Register dependencies for layer-specific sulfur variables
@@ -651,6 +804,12 @@ contains
       integer  :: kbox
       real(rk) :: Dtot, hl(3), kl(3), Slay(3), Pl1, Pl3, Sj, sumS, tD1, tD2, yday
       real(rk) :: R_FeS_1, R_FeS_2, R_FeS_3, R_FeS_ben, R_FeS_pel
+      !---> jsasaki 2026-10-07: unification family D wave 2 part 2 (isw_fe = 1)
+      real(rk) :: Dtot_fe, hl_fe(3), hc_fe(3), Fe2_t, Fe3_t, FeS_t, FeS2_t, S0_2f, S0_3, Fe2_b, Fe3_b, FeS_b, FeS2_b, S0b(3), S0_l(3)
+      real(rk) :: qH2S_l(3), qO2_l(3), qNO3_l(3), rl(nfe, 3), rx(nfe), sm(nsp_fe, nfe), sh_fe(2), xC1, xC3, Cflux
+      real(rk) :: r10_fe, r11_fe, r12_fe, dH2S(3), dS0(3), dTA(3), dFe2, dFe3, dFeS, dFeS2, dO2, qFe3_s
+      integer  :: ilay_fe
+      !<--- jsasaki 2026-10-07
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -723,7 +882,7 @@ contains
          R_sulfate_red = self%K_H2S_prod * remin_rate / CMass
          !---> jsasaki 2026-10-07: unification family D: Q10 factors (all exactly 1 and not evaluated when isw_temp_s = 0)
          fT_hs = 1.0_rk; fT_s0 = 1.0_rk
-         if (self%isw_temp_s == 1) then
+         if (self%isw_temp_s == 1 .or. self%isw_fe == 1) then   ! jsasaki 2026-10-07: family D wave 2 part 2: isw_fe needs the factors too
             _GET_(self%id_ETW_s, ETW_s)
             fT_hs = self%q10_hs**((ETW_s - self%Tref_s) / 10.0_rk)
             fT_s0 = self%q10_s0ox**((ETW_s - self%Tref_s) / 10.0_rk)
@@ -889,6 +1048,85 @@ contains
          ! FeS precipitation (scavenging) in pelagic bottom water
          ! Removes H2S through reaction with particulate Fe or settling FeS
          R_FeS_pel = self%K_FeS_pel * H2S_pel * h_bottom
+
+         !---> jsasaki 2026-10-07: unification family D wave 2 part 2 (isw_fe = 1): the MUSE iron cycle (benthos_iron_laws)
+         ! on the three ERSEM layers. Layer thicknesses D1m, D2m-D1m, Dtot-D2m; pore-water concentrations are the layer
+         ! inventories over poro x thickness (G2o: oxygen exists in layer 1 only, ERSEM's last_layer 1; nitrate in layers
+         ! 1-2); Fe pools are column means (inventory/Dtot, no vertical Fe resolution). The extents are per bulk volume and are
+         ! multiplied by the layer thickness. K_FeS_ben is switched off (the FeS pool and its saturation law replace it) and
+         ! the interface H2S and S0 oxidation use MUSE's bimolecular laws on the layer-1 pore-water O2 instead of the
+         ! bottom-water-O2 Hill, the PAR gate and the G2o/D1m Monod.
+         if (self%isw_fe == 1) then
+            _GET_HORIZONTAL_(self%id_poro, poro)
+            _GET_HORIZONTAL_(self%id_Dtot, Dtot_fe)
+            if (.not. (poro > 0.0_rk .and. poro < 1.0_rk .and. Dtot_fe > 0.0_rk .and. Dtot_fe < huge(1.0_rk) &
+                       .and. abs(D1m) < huge(1.0_rk) .and. abs(D2m) < huge(1.0_rk))) &
+               call self%fatal_error('do_bottom', 'isw_fe: porosity must be in (0,1), the column depth and interfaces finite and positive')
+            _GET_HORIZONTAL_(self%id_Fe2, Fe2_t)
+            _GET_HORIZONTAL_(self%id_Fe3, Fe3_t)
+            _GET_HORIZONTAL_(self%id_FeS, FeS_t)
+            _GET_HORIZONTAL_(self%id_FeS2, FeS2_t)
+            _GET_HORIZONTAL_(self%id_S0f(2), S0_2f)
+            _GET_HORIZONTAL_(self%id_S0f(3), S0_3)
+            _GET_HORIZONTAL_(self%id_NO3_1, NO3_1)
+            S0_2f = max(0.0_rk, S0_2f)
+            S0_3 = max(0.0_rk, S0_3)
+            NO3_1 = max(0.0_rk, NO3_1)
+            Fe2_b = max(0.0_rk, Fe2_t) / Dtot_fe
+            Fe3_b = max(0.0_rk, Fe3_t) / Dtot_fe
+            FeS_b = max(0.0_rk, FeS_t) / Dtot_fe
+            FeS2_b = max(0.0_rk, FeS2_t) / Dtot_fe
+            ! review round 1 #1, #2: the layer thicknesses are the true ones (they sum to Dtot); only the DENOMINATOR of a
+            ! concentration is floored (hc, as the legacy code floors D1m at 0.1 mm), the reaction volume is not enlarged
+            if (.not. (D1m >= 0.0_rk .and. D2m >= D1m .and. Dtot_fe >= D2m)) &
+               call self%fatal_error('do_bottom', 'isw_fe: layer interfaces must satisfy 0 <= D1m <= D2m <= Dtot')
+            hl_fe = (/ D1m, D2m - D1m, Dtot_fe - D2m /)
+            hc_fe = max(hl_fe, 0.0001_rk)
+            S0_l = (/ S0_1, S0_2f, S0_3 /)
+            qH2S_l = 0.0_rk; qO2_l = 0.0_rk; qNO3_l = 0.0_rk; S0b = 0.0_rk
+            do ilay_fe = 1, 3
+               if (hl_fe(ilay_fe) > 0.0_rk) S0b(ilay_fe) = S0_l(ilay_fe) / hc_fe(ilay_fe)
+            end do
+            if (hl_fe(1) > 0.0_rk) then
+               qH2S_l(1) = H2S_1 / (poro * hc_fe(1))
+               qO2_l(1) = G2o / (poro * hc_fe(1))
+               qNO3_l(1) = NO3_1 / (poro * hc_fe(1))
+            end if
+            if (hl_fe(2) > 0.0_rk) then
+               qH2S_l(2) = H2S_2 / (poro * hc_fe(2))
+               qNO3_l(2) = NO3_2 / (poro * hc_fe(2))
+            end if
+            if (hl_fe(3) > 0.0_rk) qH2S_l(3) = H2S_3 / (poro * hc_fe(3))
+            rl = 0.0_rk
+            do ilay_fe = 1, 3
+               if (hl_fe(ilay_fe) > 0.0_rk) then
+                  call iron_extents(self%fep, ETW_s, poro, Fe2_b, Fe3_b, FeS_b, FeS2_b, S0b(ilay_fe), &
+                                    qH2S_l(ilay_fe), qO2_l(ilay_fe), rx)
+                  rl(:, ilay_fe) = rx * hl_fe(ilay_fe)
+               end if
+            end do
+            ! the sulfur oxidation laws of MUSE (R6, R7, R8) in place of the O2 / PAR gate
+            call sulfur_ox_extents(self%k_hs_tot, 1.0_rk - self%f_ox_direct, self%k_s0ox, self%q10_hs, self%q10_s0ox, &
+                                   ETW_s, poro, S0b(1), qH2S_l(1), qO2_l(1), r10_fe, r11_fe, r12_fe)
+            R_H2S_ox_1 = (r10_fe + r11_fe) * hl_fe(1)
+            R_ox_direct = self%f_ox_direct * R_H2S_ox_1
+            R_ox_to_S0 = R_H2S_ox_1 - R_ox_direct
+            R_S0_ox_1 = r12_fe * hl_fe(1)
+            R_FeS_1 = 0.0_rk; R_FeS_2 = 0.0_rk; R_FeS_3 = 0.0_rk; R_FeS_ben = 0.0_rk
+            ! the Fe(III) branch of the anaerobic carbon flux (sulfate reduction placements: layer-1 share and layer 3)
+            Cflux = remin_rate / CMass
+            qFe3_s = Fe3_b / (1.0_rk - poro)
+            sh_fe = 0.0_rk
+            if (self%isw_fe3red == 1) then
+               sh_fe(1) = fe3_share(self%fep, qFe3_s, self%SO4_ref, qO2_l(1), qNO3_l(1))
+               sh_fe(2) = fe3_share(self%fep, qFe3_s, self%SO4_ref, 0.0_rk, 0.0_rk)
+            end if
+            xC1 = share_1 * Cflux * sh_fe(1)
+            xC3 = (1.0_rk - share_1) * Cflux * sh_fe(2)
+            if (.not. hl_fe(1) > 0.0_rk) xC1 = 0.0_rk     ! a collapsed layer carries no Fe(III) reduction
+            if (.not. hl_fe(3) > 0.0_rk) xC3 = 0.0_rk
+         end if
+         !<--- jsasaki 2026-10-07
 
          ! ============================================================
          ! Set ODEs
@@ -1085,6 +1323,85 @@ contains
          if (self%isw_ledger == 1) then
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_barrier_O2_pel, -0.5_rk * R_barrier_ox)
          end if
+
+         !---> jsasaki 2026-10-07: unification family D wave 2 part 2 (isw_fe = 1): sources of the iron cycle, from the SAME
+         ! stoichiometry matrix as the equivalence test (iron_stoich), added to the legacy terms above. The Fe(III) branch takes
+         ! its carbon out of sulfate reduction: H2S -K_H2S_prod per C and the sulfate-reduction alkalinity -2 per S are removed
+         ! from the legacy terms, +8 TA per C and Fe3 -> Fe2 added.
+         if (self%isw_fe == 1) then
+            call iron_stoich(sm)
+            dH2S = 0.0_rk; dS0 = 0.0_rk; dTA = 0.0_rk; dFe2 = 0.0_rk; dFe3 = 0.0_rk; dFeS = 0.0_rk; dFeS2 = 0.0_rk; dO2 = 0.0_rk
+            do ilay_fe = 1, 3
+               dO2 = dO2 + sum(sm(sO2, 1:7) * rl(1:7, ilay_fe))
+               dH2S(ilay_fe) = sum(sm(sH2S, 1:7) * rl(1:7, ilay_fe))
+               dS0(ilay_fe) = sum(sm(sS0, 1:7) * rl(1:7, ilay_fe))
+               dTA(ilay_fe) = sum(sm(sTA, 1:7) * rl(1:7, ilay_fe))
+               dFe2 = dFe2 + sum(sm(sFe2, 1:7) * rl(1:7, ilay_fe))
+               dFe3 = dFe3 + sum(sm(sFe3, 1:7) * rl(1:7, ilay_fe))
+               dFeS = dFeS + sum(sm(sFeS, 1:7) * rl(1:7, ilay_fe))
+               dFeS2 = dFeS2 + sum(sm(sFeS2, 1:7) * rl(1:7, ilay_fe))
+            end do
+            ! Fe(III) reduction replaces part of the sulfate reduction (layer 1: xC1, layer 3: xC3)
+            dH2S(1) = dH2S(1) - self%K_H2S_prod * xC1
+            dH2S(3) = dH2S(3) - self%K_H2S_prod * xC3
+            dTA(1) = dTA(1) + (sm(sTA, jFE3RED) - 2.0_rk * self%K_H2S_prod) * xC1
+            dTA(3) = dTA(3) + (sm(sTA, jFE3RED) - 2.0_rk * self%K_H2S_prod) * xC3
+            dFe3 = dFe3 + sm(sFe3, jFE3RED) * (xC1 + xC3)
+            dFe2 = dFe2 + sm(sFe2, jFE3RED) * (xC1 + xC3)
+            R_sulfate_red = R_sulfate_red - self%K_H2S_prod * (xC1 + xC3)   ! review round 1 #12: the diagnostic is the net sulfate reduction
+            _SET_BOTTOM_ODE_(self%id_Fe2, dFe2)
+            _SET_BOTTOM_ODE_(self%id_Fe3, dFe3)
+            _SET_BOTTOM_ODE_(self%id_FeS, dFeS)
+            _SET_BOTTOM_ODE_(self%id_FeS2, dFeS2)
+            _SET_BOTTOM_ODE_(self%id_G2o, dO2)
+            _SET_BOTTOM_ODE_(self%id_H2S_1, dH2S(1))
+            _SET_BOTTOM_ODE_(self%id_H2S_2, dH2S(2))
+            _SET_BOTTOM_ODE_(self%id_H2S_3, dH2S(3))
+            if (self%isw_S0_solid == 1) then
+               _SET_BOTTOM_ODE_(self%id_S0s, dS0(1))
+            else
+               _SET_BOTTOM_ODE_(self%id_S0_1, dS0(1))
+            end if
+            _SET_BOTTOM_ODE_(self%id_S0f(2), dS0(2))
+            _SET_BOTTOM_ODE_(self%id_S0f(3), dS0(3))
+            if (.not.legacy_ersem_compatibility) then
+               _SET_BOTTOM_ODE_(self%id_benTA, dTA(1))
+               _SET_BOTTOM_ODE_(self%id_benTA2, dTA(2))
+               _SET_BOTTOM_ODE_(self%id_benTA3, dTA(3))
+            end if
+            do ilay_fe = 1, 7
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_Rfe(ilay_fe), sum(rl(ilay_fe, :)))
+            end do
+            ! the source terms of this block exactly as applied (review round 1 #6), for the independent check
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_app(1), dO2)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_app(2), dH2S(1))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_app(3), dH2S(2))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_app(4), dH2S(3))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_app(5), dS0(1))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_app(6), dS0(2))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_app(7), dS0(3))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_app(8), dTA(1))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_app(9), dTA(2))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_app(10), dTA(3))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_Rdirect, R_ox_direct)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_Rfe(jFE3RED), xC1 + xC3)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_Fe_total, max(0.0_rk, Fe2_t) + max(0.0_rk, Fe3_t) + max(0.0_rk, FeS_t) + max(0.0_rk, FeS2_t))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_S_in_Fe, max(0.0_rk, FeS_t) + 2.0_rk * max(0.0_rk, FeS2_t))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_qO2_1, qO2_l(1))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_qNO3_1, qNO3_l(1))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_qNO3_2, qNO3_l(2))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_share(1), sh_fe(1))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_share(2), sh_fe(2))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_qH2S(1), qH2S_l(1))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_qH2S(2), qH2S_l(2))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_qH2S(3), qH2S_l(3))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_qFe3, qFe3_s)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_S0(1), S0_1)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_S0(2), S0_2f)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_S0(3), S0_3)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fe_qFe2, Fe2_b / fe2_capacity(self%fep, poro))
+         end if
+         !<--- jsasaki 2026-10-07
 
          ! Set diagnostics
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_sulfate_red, R_sulfate_red)
