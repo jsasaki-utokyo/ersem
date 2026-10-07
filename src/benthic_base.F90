@@ -59,7 +59,7 @@ contains
       call self%initialize_ersem_benthic_base()
 
       call self%get_parameter(composition, 'composition', '', 'elemental composition')
-      call self%get_parameter(self%reminQIX, 'remin', '1/d','remineralisation rate at 10 degrees Celsius',default=0.0_rk)
+      call self%get_parameter(self%reminQIX, 'remin', '1/d','remineralisation rate at the reference temperature Tref (default 20 degrees Celsius)',default=0.0_rk)
       if (self%reminQIX /= 0.0_rk) then
          call self%get_parameter(self%q10, 'q10', '-', 'Q_10 temperature coefficient', default=1.0_rk, minimum=1.0_rk)
          call self%get_parameter(self%Tref, 'Tref', 'degrees_Celsius', &

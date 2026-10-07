@@ -608,7 +608,7 @@ contains
       else
          call self%get_parameter(self%maximum_depth,'maximum_depth','m','maximum depth',default=0.0_rk)
       end if
-      call self%get_parameter(remin,'remin','1/d','remineralization rate at 10 degrees Celsius',default=0.0_rk)
+      call self%get_parameter(remin,'remin','1/d','remineralization rate at the reference temperature Tref (default 20 degrees Celsius)',default=0.0_rk)
       if  (remin /= 0._rk) then
          call self%get_parameter(q10, 'q10', '-', 'Q_10 temperature coefficient', default=1.0_rk, minimum=1.0_rk)
          call self%get_parameter(Tref, 'Tref', 'degrees_Celsius', &
