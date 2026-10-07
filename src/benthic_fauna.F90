@@ -59,6 +59,7 @@ module ersem_benthic_fauna
       real(rk) :: hO2resp
       integer  :: isw_osupply   ! jsasaki 2026-10-07: family B wave 2: 0 = main (default), 1 = realised respiration extent limited by the O2 supply
       real(rk) :: EDZ_osup      ! jsasaki 2026-10-07: m2/d, oxic-layer solute diffusivity of the O2 supply (baseline irr_min*EDZ_1)
+      real(rk) :: osup_share    ! jsasaki 2026-10-07: share of the O2 supply this group can draw (the groups of one site must sum to <= 1)
       real(rk) :: tau_o2        ! jsasaki 2026-10-07: d, turnover time of the O2 inventory G2o as a supply
       real(rk) :: ptur,pirr, dwat,dQ6
    contains
@@ -124,11 +125,12 @@ contains
 
       !---> jsasaki 2026-10-07: family B wave 2 (plan amendment 3): explicit O2 supply constraint, shared law with MUSE (f_osupply, f_tau_o2).
       ! Realised respiration extent R = D (1 + (D/S)^4)^(-1/4), a smooth minimum (benthos_shared_laws o2_supply_extent), with D the demanded rate and
-      ! S = O2o/(cmix + D1m/EDZ_osup) + G2o/tau_o2 (mmol O2 m-2 d-1): the water-O2 supply across the diffusive boundary layer and the
+      ! S = osup_share (O2o/(cmix + D1m/EDZ_osup) + G2o/tau_o2) (mmol O2 m-2 d-1): the water-O2 supply across the diffusive boundary layer and the
       ! oxic layer (baseline diffusivity), plus the oxic inventory over its turnover time. R is applied to C loss, DIC and O2 alike.
       call self%get_parameter(self%isw_osupply,'isw_osupply','','1: respiration extent limited by the O2 supply (shared law with MUSE); 0: off',default=0,minimum=0,maximum=1)
       call self%get_parameter(self%tau_o2,'tau_o2','d','turnover time of the oxic O2 inventory as a supply (isw_osupply = 1)',default=0.05_rk,minimum=0.0_rk)
       call self%get_parameter(self%EDZ_osup,'EDZ_osup','m^2/d','oxic-layer solute diffusivity of the O2 supply, baseline value (= irr_min*EDZ_1 of ben_col; the fauna-enhanced diffusivity would be a circular dependency)',default=1.0e-4_rk,minimum=0.0_rk)
+      call self%get_parameter(self%osup_share,'osup_share','-','share of the O2 supply that this fauna group can draw (shares of all groups sum to <= 1; MUSE f_osup_share)',default=1.0_rk/3.0_rk,minimum=0.0_rk,maximum=1.0_rk)
       if (self%isw_osupply == 1) then
          if (.not.(self%EDZ_osup > 0.0_rk .and. self%EDZ_osup < huge(1.0_rk))) call self%fatal_error('initialize','EDZ_osup must be positive and finite')
          if (.not.(self%tau_o2 > 0.0_rk .and. self%tau_o2 < huge(1.0_rk))) call self%fatal_error('initialize','tau_o2 must be positive and finite')
@@ -496,7 +498,7 @@ contains
             real(rk) :: G2o_, cmix_, supply_
             _GET_HORIZONTAL_(self%id_G2o,G2o_)
             _GET_HORIZONTAL_(self%id_cmix,cmix_)
-            supply_ = max(0.0_rk,G2o_)/self%tau_o2 + max(0.0_rk,O2o)/(cmix_ + Dm/self%EDZ_osup)
+            supply_ = self%osup_share * (max(0.0_rk,G2o_)/self%tau_o2 + max(0.0_rk,O2o)/(cmix_ + Dm/self%EDZ_osup))
             fYG3c = realised_resp(fYG3c, supply_)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_osupply,supply_)
          end block
