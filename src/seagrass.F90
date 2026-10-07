@@ -281,7 +281,7 @@ contains
       ! previous behaviour bit for bit; 1.0 retains everything. Carbon and
       ! oxygen fluxes are untouched, and so are the below-ground (Rb) terms.
       call self%get_parameter(self%f_rspn, 'f_rspn', '-', &
-         'fraction of AG respiratory N and P retained by the plant', &
+         'fraction of respiratory N and P retained by the plant (isw_uni = 1: structural respiration of AG and BG)', &
          default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
 
       call self%get_parameter(self%srs_ag, 'srs_ag', '1/d', &
@@ -413,18 +413,19 @@ contains
          call self%get_parameter(self%V_r4, 'V_r4', 'mmol N/mg C/d', 'maximum root NH4 uptake', default=0.0161_rk / CMass, minimum=0.0_rk)
          call self%get_parameter(self%V_r3, 'V_r3', 'mmol N/mg C/d', 'maximum root NO3 uptake', default=0.02645_rk / CMass, minimum=0.0_rk)
          call self%get_parameter(self%V_rP, 'V_rP', 'mmol P/mg C/d', 'maximum root PO4 uptake', default=0.002645_rk / CMass, minimum=0.0_rk)
-         call self%get_parameter(self%K_l4, 'K_l4', 'mmol N/m^3', 'leaf NH4 half-saturation', default=9.2_rk, minimum=1.0e-6_rk)
-         call self%get_parameter(self%K_l3, 'K_l3', 'mmol N/m^3', 'leaf NO3 half-saturation', default=23.0_rk, minimum=1.0e-6_rk)
-         call self%get_parameter(self%K_lP, 'K_lP', 'mmol P/m^3', 'leaf PO4 half-saturation', default=1.5_rk, minimum=1.0e-6_rk)
+         call self%get_parameter(self%K_l4, 'K_l4', 'mmol N/m^3', 'leaf NH4 half-saturation', default=58.9_rk, minimum=1.0e-6_rk)
+         call self%get_parameter(self%K_l3, 'K_l3', 'mmol N/m^3', 'leaf NO3 half-saturation', default=42.8_rk, minimum=1.0e-6_rk)
+         call self%get_parameter(self%K_lP, 'K_lP', 'mmol P/m^3', 'leaf PO4 half-saturation', default=7.6_rk, minimum=1.0e-6_rk)
          call self%get_parameter(self%K_r4, 'K_r4', 'mmol N/m^3', 'root NH4 half-saturation (pore-water concentration)', &
-            default=104.0_rk, minimum=1.0e-6_rk)
+            default=48.6_rk, minimum=1.0e-6_rk)
          call self%get_parameter(self%K_r3, 'K_r3', 'mmol N/m^3', 'root NO3 half-saturation (pore-water concentration)', &
-            default=8.9_rk, minimum=1.0e-6_rk)
+            default=53.3_rk, minimum=1.0e-6_rk)
          call self%get_parameter(self%K_rP, 'K_rP', 'mmol P/m^3', 'root PO4 half-saturation (pore-water concentration)', &
-            default=1.5_rk, minimum=1.0e-6_rk)
+            default=6.0_rk, minimum=1.0e-6_rk)
          call self%get_parameter(self%no3_red, 'no3_red', '', 'nitrate assimilation oxidises 2 C per N (leaves: water DIC; roots: pore DIC)', &
             default=.false.)
-         if (.not. (self%Tmin < self%Topt .and. self%Topt < self%Tmax)) call self%fatal_error('initialize', 'CTMI order')
+         if (.not. (self%Tmin < self%Topt .and. self%Topt < self%Tmax .and. 2.0_rk * self%Topt >= self%Tmin + self%Tmax)) &
+            call self%fatal_error('initialize', 'isw_uni = 1: the cardinal-temperature model needs Tmin < Topt < Tmax and Topt >= (Tmin + Tmax)/2')
          if (.not. (self%K_nsc > 0.0_rk .and. self%rs > 0.0_rk .and. self%qn_bg > 0.0_rk .and. self%qp_bg > 0.0_rk .and. self%q_nsc > 0.0_rk)) &
             call self%fatal_error('initialize', 'isw_uni = 1: K_nsc, rs, qn_bg, qp_bg and q_nsc must be positive')
       end if
@@ -1164,7 +1165,7 @@ contains
          ! U3: light with canopy self-shading
          tau = self%k_can * self%a_lai * AGc
          I_can = max(0.0_rk, par)
-         if (tau > epsC) I_can = I_can * (1.0_rk - exp(-tau)) / tau
+         if (tau > 1.0e-8_rk) I_can = I_can * (1.0_rk - exp(-tau)) / tau
          eI = tanh(self%alpha * I_can)
          ! U4: quota; U5: DIC and water O2
          qn = max(AGn, 0.0_rk) / max(AGc, epsC); qp = max(AGp, 0.0_rk) / max(AGc, epsC)
