@@ -55,10 +55,10 @@ module ersem_seagrass
    private
 
    ! jsasaki 2026-10-07: diagnostics of the unified formulation (isw_uni = 1): the rate terms the equivalence test compares
-   integer, parameter :: nuni = 36
+   integer, parameter :: nuni = 37
    character(len=12), parameter :: uni_name(nuni) = [character(len=12) :: 'Pg', 'Ract', 'RmA', 'RmB', 'phi', 'Tst', 'Alloc', 'Mob', &
       'ExuL', 'ExuR', 'MA', 'MB', 'MN', 'dAGc', 'dBGc', 'dNSC', 'L4', 'L3', 'LP', 'U4', 'U3', 'UP', 'w1', 'c4_1', 'c4_2', 'c3_1', &
-      'c3_2', 'cP_1', 'cP_2', 'dic_w', 'o2_w', 'ta_w', 'nh4_w', 'po4_w', 'dic_pw', 'ta_pw']
+      'c3_2', 'cP_1', 'cP_2', 'dic_w', 'o2_w', 'ta_w', 'nh4_w', 'po4_w', 'dic_pw', 'ta_pw', 'par_in']
 
    type,extends(type_base_model),public :: type_ersem_seagrass
       ! Own bottom state variables
@@ -1315,6 +1315,7 @@ contains
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(33), -L4 + RmAr * qn)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(34), -LP + RmAr * qp)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(35), RmB / CMass + 2.0_rk * (u3(1) + u3(2)) * merge(1.0_rk, 0.0_rk, self%no3_red))
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(37), par)                      ! the bottom PAR the plant was given
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(36), (u3(1) + u3(2)) - (u4(1) + u4(2)) + (up(1) + up(2)) + rbn - rbp)
 
       _HORIZONTAL_LOOP_END_
