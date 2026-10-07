@@ -54,6 +54,8 @@ module ersem_seagrass
 
    use fabm_types
    use ersem_shared
+   ! jsasaki 2026-10-07: wave 2 family A review r1 #4: NaN for invalid light-operator input
+   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_value, ieee_quiet_nan
 
    implicit none
 
@@ -179,6 +181,14 @@ module ersem_seagrass
       ! Defaults (0, 1, 0) leave the module bit-identical to the former one.
       integer  :: isw_no3red, isw_matdiag
       real(rk) :: f_dk
+      ! jsasaki 2026-10-07: wave 2 family A (muse docs/UNIFY_MAT_LIGHT_SPEC_20261007.md): layered mat light operator, legacy path, per instance.
+      ! isw_light = 1: eI = mean over the mat slab (thickness z_mat, uniform biomass) of tanh(alpha I(z)), I(z) = PAR exp(-k_sed z - a_lai k_can AGc z / z_mat);
+      ! 0 (default): tanh of the canopy-mean PAR, bit-identical to the former code.
+      integer  :: isw_light
+      real(rk) :: z_mat, k_sed
+      ! jsasaki 2026-10-07: wave 2 family A: isw_exu_dest = 1: the exudate (f_exu x gross fixation) goes to the benthic dissolved carbon Q1c (pore-water DOC, as MUSE's
+      ! cell DOC) instead of the pelagic semi-labile DOC R2c; 0 (default): R2c as before (bit-identical). Legacy path only; needs the coupling Q1c.
+      integer  :: isw_exu_dest
       type (type_horizontal_diagnostic_variable_id) :: id_uPl, id_mAG, id_redC, id_xO3c, id_xO2, id_xTA, id_dAG, id_xG3c
       type (type_bottom_state_variable_id) :: id_Q1c
       type (type_horizontal_dependency_id) :: id_K1p1w, id_K1p2w, id_K3n1w, id_K3n2w, id_K4n1w, id_K4n2w
@@ -329,7 +339,7 @@ contains
       ! fixed carbon goes does. Default 0 = the former model, and the R2
       ! coupling is then not even requested (bit-identical).
       call self%get_parameter(self%f_exu, 'f_exu', '-', &
-           'fraction of gross production exuded as DOC to pelagic R2 (isw_uni = 0 only; the unified formulation uses e_leaf)', default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+           'fraction of gross production exuded as DOC (to pelagic R2, or to benthic Q1 with isw_exu_dest = 1; isw_uni = 0 only; the unified formulation uses e_leaf)', default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
       call self%get_parameter(self%tau_mob, 'tau_mob', '1/d', &
          'NSC remobilisation rate (isw_fix = 0: under light limitation; 1: when AG is below its share)', &
          default=0.05_rk, minimum=0.0_rk)
@@ -447,6 +457,15 @@ contains
          call self%fatal_error('initialize', 'f_dk must be finite and in [0, 1]')
       call self%get_parameter(self%isw_matdiag, 'isw_matdiag', '', 'register the mat diagnostics upt_P, mort_AG, red_C [0: none]', &
          default=0, minimum=0, maximum=1)
+      ! jsasaki 2026-10-07: wave 2 family A: layered mat light operator (legacy path)
+      call self%get_parameter(self%isw_light, 'isw_light', '', 'mat light operator: 1 = mean of tanh over the mat slab with sediment '// &
+         'attenuation k_sed and self-shading (as MUSE light_op = 1), 0 = tanh of the canopy-mean PAR [0: as before]', default=0, minimum=0, maximum=1)
+      call self%get_parameter(self%z_mat, 'z_mat', 'm', 'thickness of the mat slab (uniform biomass) for isw_light = 1', default=0.0_rk, minimum=0.0_rk)
+      call self%get_parameter(self%k_sed, 'k_sed', '1/m', 'PAR attenuation in the sediment for isw_light = 1', default=0.0_rk, minimum=0.0_rk)
+      if (.not. (self%z_mat >= 0.0_rk .and. self%z_mat < huge(1.0_rk) .and. self%k_sed >= 0.0_rk .and. self%k_sed < huge(1.0_rk))) &
+         call self%fatal_error('initialize', 'z_mat and k_sed must be finite and non-negative')
+      if (self%isw_uni == 1 .and. self%isw_light /= 0) &
+         call self%fatal_error('initialize', 'isw_light belongs to the legacy path (isw_uni = 0)')
       if (self%isw_uni == 1 .and. (self%isw_no3red /= 0 .or. self%f_dk < 1.0_rk .or. self%isw_matdiag /= 0)) &
          call self%fatal_error('initialize', 'isw_no3red, f_dk and isw_matdiag belong to the legacy path (isw_uni = 0)')
       if (self%f_dk < 1.0_rk .and. self%isw_nupt == 0) &
@@ -621,8 +640,15 @@ contains
       call self%register_state_dependency(self%id_N3n, 'N3n', 'mmol N/m^3', 'pelagic nitrate')
       call self%register_state_dependency(self%id_N4n, 'N4n', 'mmol N/m^3', 'pelagic ammonium')
       call self%register_state_dependency(self%id_R6c, 'R6c', 'mg C/m^3', 'pelagic POM carbon')
-      if (self%f_exu > 0.0_rk) &
+      ! jsasaki 2026-10-07: wave 2 family A: the exudate destination (isw_exu_dest = 1: benthic Q1c instead of pelagic R2c)
+      call self%get_parameter(self%isw_exu_dest, 'isw_exu_dest', '', 'destination of the exudate f_exu x Pg: 0 = pelagic semi-labile DOC R2c, '// &
+         '1 = benthic dissolved carbon Q1c (couples Q1c; legacy path) [0: as before]', default=0, minimum=0, maximum=1)
+      if (self%isw_exu_dest /= 0 .and. (self%isw_uni == 1 .or. self%isw_ledger == 1)) &
+         call self%fatal_error('initialize', 'isw_exu_dest belongs to the legacy path without ledger counters (isw_uni = 0, isw_ledger = 0)')
+      if (self%f_exu > 0.0_rk .and. self%isw_exu_dest == 0) &
          call self%register_state_dependency(self%id_R2c, 'R2c', 'mg C/m^3', 'pelagic semi-labile DOC carbon')
+      if (self%f_exu > 0.0_rk .and. self%isw_exu_dest == 1) &
+         call self%register_state_dependency(self%id_Q1c, 'Q1c', 'mg C/m^2', 'benthic dissolved organic carbon (exudate)')
       if (uni) then
          if (self%e_leaf > 0.0_rk .and. .not. self%f_exu > 0.0_rk) &
             call self%register_state_dependency(self%id_R2c, 'R2c', 'mg C/m^3', 'pelagic semi-labile DOC carbon')
@@ -805,6 +831,8 @@ contains
             I_can = max(0.0_rk, par)
          end if
          eI = tanh(self%alpha * I_can)
+         ! jsasaki 2026-10-07: wave 2 family A: layered operator, the mean of tanh over the slab of optical thickness k_sed z_mat + k_can a_lai AGc
+         if (self%isw_light == 1) eI = mat_light_mean(self%alpha * max(0.0_rk, par), self%k_sed * self%z_mat + tau)
 
          qn = AGn / max(AGc, 1.0e-8_rk)
          qp = AGp / max(AGc, 1.0e-8_rk)
@@ -1105,7 +1133,9 @@ contains
          end if
 
          ! Exudate: the diverted share of gross fixation, carbon only
-         if (self%f_exu > 0.0_rk) _SET_BOTTOM_EXCHANGE_(self%id_R2c, self%f_exu * Pg)
+         ! jsasaki 2026-10-07: wave 2 family A: isw_exu_dest = 1 sends the exudate to the benthic Q1c (same carbon, removed from AG by dAGc above)
+         if (self%f_exu > 0.0_rk .and. self%isw_exu_dest == 0) _SET_BOTTOM_EXCHANGE_(self%id_R2c, self%f_exu * Pg)
+         if (self%f_exu > 0.0_rk .and. self%isw_exu_dest == 1) _SET_BOTTOM_ODE_(self%id_Q1c, self%f_exu * Pg)
          if (self%isw_ledger == 1) then
             if (self%f_exu > 0.0_rk) then
                _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_exu_R2c, self%f_exu * Pg)
@@ -1449,6 +1479,66 @@ contains
       _HORIZONTAL_LOOP_END_
 
    end subroutine do_bottom_uni
+
+   ! jsasaki 2026-10-07: wave 2 family A. Mean over a layer of the saturating light response, M(u0, tau) = Integral_0^1 tanh(u0 exp(-tau xi)) d xi,
+   ! u0 = alpha I_top >= 0, tau >= 0 the optical thickness of the layer. The same algorithm as muse src/sed_network_x.F90 mat_light_mean (the equivalence
+   ! test tests/mat_light compares the two): linear (analytic, relative error < 3.4e-13) below u_lin = 1e-6, otherwise composite 5-point Gauss-Legendre over the part of the layer
+   ! where u > u_lin in sub-intervals of optical thickness <= dtau (0.5; error <= 1.2e-11 over u0 1e-9 - 1e3, tau 0 - 1e4, muse tests/mat_light/test_quadrature.py).
+   pure real(rk) function one_minus_exp(x) result(y)
+      real(rk), intent(in) :: x
+      if (x < 1.0e-4_rk) then
+         y = x * (1.0_rk - 0.5_rk * x * (1.0_rk - x / 3.0_rk * (1.0_rk - 0.25_rk * x)))
+      else
+         y = 1.0_rk - exp(-x)
+      end if
+   end function one_minus_exp
+
+   pure real(rk) function mat_light_mean(u0, tau) result(m)
+      real(rk), intent(in) :: u0, tau
+      real(rk), parameter :: u_lin = 1.0e-6_rk, dtau = 0.5_rk
+      real(rk), parameter :: r10 = sqrt(10.0_rk / 7.0_rk), s70 = sqrt(70.0_rk)
+      real(rk), parameter :: xg(5) = [0.5_rk - sqrt(5.0_rk + 2.0_rk * r10) / 6.0_rk, 0.5_rk - sqrt(5.0_rk - 2.0_rk * r10) / 6.0_rk, 0.5_rk, &
+                                      0.5_rk + sqrt(5.0_rk - 2.0_rk * r10) / 6.0_rk, 0.5_rk + sqrt(5.0_rk + 2.0_rk * r10) / 6.0_rk]
+      real(rk), parameter :: wg(5) = [(322.0_rk - 13.0_rk * s70) / 1800.0_rk, (322.0_rk + 13.0_rk * s70) / 1800.0_rk, 64.0_rk / 225.0_rk, &
+                                      (322.0_rk + 13.0_rk * s70) / 1800.0_rk, (322.0_rk - 13.0_rk * s70) / 1800.0_rk]
+      real(rk) :: xc, h, a, lr, nr
+      integer :: n, j, k
+      ! invalid input is visible, never a plausible light factor: NaN, infinite or negative u0 or tau give NaN; u0 = 0 (darkness) gives 0
+      if (.not. (ieee_is_finite(u0) .and. ieee_is_finite(tau) .and. u0 >= 0.0_rk .and. tau >= 0.0_rk)) then
+         m = ieee_value(m, ieee_quiet_nan)
+         return
+      end if
+      if (u0 == 0.0_rk) then
+         m = 0.0_rk
+         return
+      end if
+      if (tau < 1.0e-9_rk) then
+         ! an optically thin layer: tanh(u0) to first order in tau; sech^2 = 4 e / (1 + e)^2, e = exp(-2 u0) (underflows to 0 for large u0)
+         a = 0.0_rk
+         if (u0 < 350.0_rk) a = exp(-2.0_rk * u0)
+         m = tanh(u0) - 0.5_rk * tau * u0 * 4.0_rk * a / (1.0_rk + a)**2
+         return
+      end if
+      if (u0 <= u_lin) then
+         m = u0 * (one_minus_exp(tau) / tau)
+         return
+      end if
+      ! the layer fraction above the linear tail; the logarithm of the ratio, not the ratio (u0 / u_lin overflows for u0 > 1e302)
+      lr = log(u0) - log(u_lin)
+      xc = 1.0_rk
+      if (tau > lr) xc = lr / tau
+      nr = min(tau * xc / dtau, 1.0e5_rk)
+      n = max(1, ceiling(nr))
+      h = xc / real(n, rk)
+      m = 0.0_rk
+      do j = 1, n
+         a = real(j - 1, rk) * h
+         do k = 1, 5
+            m = m + wg(k) * h * tanh(u0 * exp(-tau * (a + xg(k) * h)))
+         end do
+      end do
+      if (xc < 1.0_rk) m = m + u_lin * one_minus_exp(tau * (1.0_rk - xc)) / tau
+   end function mat_light_mean
 
    ! the integral over [za, zb] of the root profile (x/zp) e^(1 - x/zp), stably: e zp e^(-ua) [ua (1 - e^-d) + 1 - (1 + d) e^-d]
    pure real(rk) function root_int(za, zb, zp) result(F)
