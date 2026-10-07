@@ -159,7 +159,7 @@ module ersem_seagrass
       ! Defaults (0, 1, 0) leave the module bit-identical to the former one.
       integer  :: isw_no3red, isw_matdiag
       real(rk) :: f_dk
-      type (type_horizontal_diagnostic_variable_id) :: id_uPl, id_mAG, id_redC, id_xO3c, id_xO2, id_xTA, id_dAG
+      type (type_horizontal_diagnostic_variable_id) :: id_uPl, id_mAG, id_redC, id_xO3c, id_xO2, id_xTA, id_dAG, id_xG3c
       type (type_bottom_state_variable_id) :: id_Q1c
       type (type_horizontal_dependency_id) :: id_K1p1w, id_K1p2w, id_K3n1w, id_K3n2w, id_K4n1w, id_K4n2w
       type (type_horizontal_dependency_id) :: id_D1m, id_D2m, id_poro
@@ -673,6 +673,8 @@ contains
             domain=domain_bottom, source=source_do_bottom)
          call self%register_diagnostic_variable(self%id_xTA, 'x_TA', 'mmol eq/m^2/d', 'alkalinity exchange with the water', &
             domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_xG3c, 'x_G3c', 'mmol C/m^2/d', 'reductant DIC into the pore-water layers (root nitrate)', &
+            domain=domain_bottom, source=source_do_bottom)
          call self%register_diagnostic_variable(self%id_dAG, 'd_AGc', 'mg C/m^2/d', 'AG carbon tendency (without grazing)', &
             domain=domain_bottom, source=source_do_bottom)
       end if
@@ -719,6 +721,7 @@ contains
       real(rk) :: gr1c, gr2c, F_gr, resp_gr, eges_gr
       real(rk) :: gTm, rbn, rbp, f1, rbw
       real(rk) :: Rred_l, Rred_r       ! jsasaki 2026-10-07: nitrate reductant carbon, leaf and root (isw_no3red = 1), mg C/m^2/d
+      real(rk) :: xred_w, xred_s       ! jsasaki 2026-10-07: reductant DIC to the water and to the pore-water layers, mmol C/m^2/d (applied values)
 
       ! jsasaki 2026-10-07: the unified formulation (isw_uni = 1) has its own routine
       if (self%isw_uni == 1) then
@@ -974,14 +977,17 @@ contains
                                              - self%rq_o2c * Ra_bas - self%rq_o2c * Rn) / CMass)
          end if
          ! jsasaki 2026-10-07: reductant DIC: leaf part to the water, root part to the pore-water layers of the uptake (isw_fix = 1) or the water
+         xred_w = 0.0_rk; xred_s = 0.0_rk
          if (self%isw_no3red == 1) then
             if (self%isw_fix == 1) then
-               _SET_BOTTOM_EXCHANGE_(self%id_O3c, Rred_l / CMass)
-               _SET_BOTTOM_ODE_(self%id_G3c1, Rred_r * fK3 / CMass)
-               _SET_BOTTOM_ODE_(self%id_G3c2, Rred_r * (1.0_rk - fK3) / CMass)
+               xred_w = Rred_l / CMass
+               xred_s = Rred_r / CMass
+               _SET_BOTTOM_ODE_(self%id_G3c1, xred_s * fK3)
+               _SET_BOTTOM_ODE_(self%id_G3c2, xred_s * (1.0_rk - fK3))
             else
-               _SET_BOTTOM_EXCHANGE_(self%id_O3c, (Rred_l + Rred_r) / CMass)
+               xred_w = (Rred_l + Rred_r) / CMass
             end if
+            _SET_BOTTOM_EXCHANGE_(self%id_O3c, xred_w)
          end if
          ! BG respiration draws benthic layer-1 oxygen instead
          _SET_BOTTOM_ODE_(self%id_G2o, -self%rq_o2c * Rb / CMass)
@@ -1137,7 +1143,8 @@ contains
 
          ! --- Diagnostics --------------------------------------------------
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_gpp, Pg)
-         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_npp, Pg - Ra_act - Ra_bas - Rn - Rb)
+         ! jsasaki 2026-10-07: review round 1 #2: the nitrate reductant carbon is respired carbon (Rred = 0 unless isw_no3red = 1)
+         _SET_HORIZONTAL_DIAGNOSTIC_(self%id_npp, Pg - Ra_act - Ra_bas - Rn - Rb - Rred_l - Rred_r)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_resp, Ra_act + Ra_bas + Rn + Rb)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fT, eT)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fI, eI)
@@ -1153,12 +1160,13 @@ contains
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uPl, jP_leaf)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_mAG, M_ag)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_redC, Rred_l + Rred_r)
-            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_xO3c, (-Pg + Ra_act + Ra_bas + Rn + rbw * Rb + Rred_l) / CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_xO3c, (-Pg + Ra_act + Ra_bas + Rn + rbw * Rb) / CMass + xred_w)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_xO2, (self%pq * Pg - self%rq_o2c * (Ra_act + Ra_bas + Rn)) / CMass)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_xTA, jN3_leaf - jN4_leaf + jP_leaf &
                + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn &
                - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - rbw * rbp)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_dAG, dAGc)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_xG3c, xred_s)
          end if
 
       _HORIZONTAL_LOOP_END_
