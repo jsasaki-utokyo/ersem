@@ -59,18 +59,16 @@ contains
    ! jsasaki 2026-10-07: family B wave 2 (amendment 3), the explicit O2 SUPPLY constraint of fauna respiration.
    ! D = demanded O2 consumption, S = O2 that can be supplied to the same place in the same time (same unit, per day).
    ! The REALISED extent R = D (1 + (D/S)^4)^(-1/4) is a smooth minimum of D and S (R -> D for S >> D, R -> S for S << D,
-   ! R <= min(D, S), R = 0.84 D at D = S, 0.985 D at D = S/2); it is the single number the caller applies to the carbon loss, the
+   ! R <= min(D, S), R = 0.84 D at D = S, 0.985 D at D = S/2; identical to D (1 + (D/S)^4)^(-1/4) in exact arithmetic); it is the single number the caller applies to the carbon loss, the
    ! DIC production and the O2 consumption (one extent, no negative-O2 clipping), and it is smooth in S so that Newton iterations
    ! stay well conditioned as S -> 0 (dR/dS <= 1).  D <= 0 or S <= 0 gives 0.
    pure elemental function o2_supply_extent(D, S) result(R)
       real(rk), intent(in) :: D, S
-      real(rk) :: R
+      real(rk) :: R, lo, hi
       if (D > 0._rk .and. S > 0._rk) then
-         if (D > 1.e60_rk * S) then
-            R = S
-         else
-            R = D * (1._rk + (D / S)**4)**(-0.25_rk)
-         end if
+         ! evaluated through the ratio of the smaller to the larger operand (<= 1): no overflow for any finite positive D, S
+         lo = min(D, S); hi = max(D, S)
+         R = lo * (1._rk + (lo / hi)**4)**(-0.25_rk)
       else
          R = 0._rk
       end if

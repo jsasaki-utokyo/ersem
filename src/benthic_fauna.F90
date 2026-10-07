@@ -38,7 +38,8 @@ module ersem_benthic_fauna
       type (type_bottom_state_variable_id) :: id_G3c,id_G2o,id_K4n,id_K1p,id_K4n2,id_K1p2
       type (type_horizontal_dependency_id) :: id_Dm
       ! jsasaki 2026-10-07: family B wave 2 (amendment 3): interface and oxic-layer coupling of the O2 supply constraint (isw_osupply = 1 only)
-      type (type_horizontal_dependency_id) :: id_cmix
+      type (type_horizontal_dependency_id) :: id_cmix,id_osup_tot
+      type (type_horizontal_diagnostic_variable_id) :: id_osup_share_c
       type (type_horizontal_diagnostic_variable_id) :: id_osupply
       type (type_horizontal_diagnostic_variable_id) :: id_bioirr,id_biotur,id_fYG3c, id_fYKIn,id_fYK1p,id_fYQPc,id_fYQPn,id_fYQPp
       ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
@@ -132,6 +133,10 @@ contains
       if (self%isw_osupply == 1) then
          if (.not.(self%tau_o2 > 0.0_rk .and. self%tau_o2 < huge(1.0_rk))) call self%fatal_error('initialize','tau_o2 must be positive and finite')
          call self%register_dependency(self%id_cmix,pelagic_benthic_transfer_constant)
+         ! the shares of all groups of the site are summed (aggregate of constant diagnostics) and used as share/max(1, sum): the supply is never allocated twice
+         call self%register_diagnostic_variable(self%id_osup_share_c,'osup_share_c','-','O2 supply share of this group',missing_value=self%osup_share,output=output_none,source=source_none)
+         call self%add_to_aggregate_variable(total_osup_share,self%id_osup_share_c)
+         call self%register_dependency(self%id_osup_tot,total_osup_share,domain=domain_bottom)
          call self%register_diagnostic_variable(self%id_osupply,'osupply','mmol O2/m^2/d','O2 supply available to the respiration',source=source_do_bottom)
       end if
       !<--- jsasaki 2026-10-07
@@ -492,16 +497,19 @@ contains
       !---> jsasaki 2026-10-07: family B wave 2 (amendment 3): the realised extent under the O2 supply constraint (mg C m-2 d-1)
       if (self%isw_osupply == 1) then
          block
-            real(rk) :: G2o_, cmix_, supply_
+            real(rk) :: G2o_, cmix_, supply_, tot_
             _GET_HORIZONTAL_(self%id_G2o,G2o_)
             _GET_HORIZONTAL_(self%id_cmix,cmix_)
+            _GET_HORIZONTAL_(self%id_osup_tot,tot_)
             supply_ = max(0.0_rk,G2o_)/self%tau_o2
             if (cmix_ > 0.0_rk) then
                supply_ = supply_ + max(0.0_rk,O2o)/cmix_
+            else if (O2o > 0.0_rk .or. G2o_ > 0.0_rk) then
+               supply_ = 1.0e30_rk     ! no interface resistance and some O2 present: the interface does not limit the supply
             else
-               supply_ = 1.0e30_rk     ! no interface resistance: nothing limits the supply
+               supply_ = 0.0_rk        ! no O2 anywhere (also for a NaN resistance)
             end if
-            supply_ = self%osup_share * supply_
+            supply_ = self%osup_share/max(1.0_rk,tot_) * supply_
             fYG3c = realised_resp(fYG3c, supply_)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_osupply,supply_)
          end block
