@@ -159,7 +159,7 @@ module ersem_seagrass
       ! Defaults (0, 1, 0) leave the module bit-identical to the former one.
       integer  :: isw_no3red, isw_matdiag
       real(rk) :: f_dk
-      type (type_horizontal_diagnostic_variable_id) :: id_uPl, id_mAG, id_redC
+      type (type_horizontal_diagnostic_variable_id) :: id_uPl, id_mAG, id_redC, id_xO3c, id_xO2, id_xTA, id_dAG
       type (type_bottom_state_variable_id) :: id_Q1c
       type (type_horizontal_dependency_id) :: id_K1p1w, id_K1p2w, id_K3n1w, id_K3n2w, id_K4n1w, id_K4n2w
       type (type_horizontal_dependency_id) :: id_D1m, id_D2m, id_poro
@@ -667,6 +667,14 @@ contains
             domain=domain_bottom, source=source_do_bottom)
          call self%register_diagnostic_variable(self%id_redC, 'red_C', 'mg C/m^2/d', 'AG carbon oxidised as nitrate reductant', &
             domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_xO3c, 'x_O3c', 'mmol C/m^2/d', 'DIC exchange with the water (leaf and AG terms)', &
+            domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_xO2, 'x_O2', 'mmol O_2/m^2/d', 'oxygen exchange with the water', &
+            domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_xTA, 'x_TA', 'mmol eq/m^2/d', 'alkalinity exchange with the water', &
+            domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_dAG, 'd_AGc', 'mg C/m^2/d', 'AG carbon tendency (without grazing)', &
+            domain=domain_bottom, source=source_do_bottom)
       end if
 
       ! jsasaki 2026-10-07: couplings and diagnostics of the unified formulation (nothing is registered with isw_uni = 0)
@@ -1145,6 +1153,12 @@ contains
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_uPl, jP_leaf)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_mAG, M_ag)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_redC, Rred_l + Rred_r)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_xO3c, (-Pg + Ra_act + Ra_bas + Rn + rbw * Rb + Rred_l) / CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_xO2, (self%pq * Pg - self%rq_o2c * (Ra_act + Ra_bas + Rn)) / CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_xTA, jN3_leaf - jN4_leaf + jP_leaf &
+               + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn &
+               - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - rbw * rbp)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_dAG, dAGc)
          end if
 
       _HORIZONTAL_LOOP_END_
