@@ -7,6 +7,7 @@ module ersem_benthic_fauna
    use fabm_particle
    use ersem_shared
    use ersem_benthic_base
+   use benthos_shared_laws, only: o2_supply_extent   ! jsasaki 2026-10-07: family B wave 2 (amendment 3)
 
    implicit none
 
@@ -36,6 +37,9 @@ module ersem_benthic_fauna
       type (type_bottom_state_variable_id) :: id_Q6c,id_Q6n,id_Q6p,id_Q6s,id_benTA,id_benTA2
       type (type_bottom_state_variable_id) :: id_G3c,id_G2o,id_K4n,id_K1p,id_K4n2,id_K1p2
       type (type_horizontal_dependency_id) :: id_Dm
+      ! jsasaki 2026-10-07: family B wave 2 (amendment 3): interface and oxic-layer coupling of the O2 supply constraint (isw_osupply = 1 only)
+      type (type_horizontal_dependency_id) :: id_diff1,id_cmix
+      type (type_horizontal_diagnostic_variable_id) :: id_osupply
       type (type_horizontal_diagnostic_variable_id) :: id_bioirr,id_biotur,id_fYG3c, id_fYKIn,id_fYK1p,id_fYQPc,id_fYQPn,id_fYQPp
       ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
       integer :: isw_ledger
@@ -53,6 +57,8 @@ module ersem_benthic_fauna
       real(rk) :: sd,sdmO2,sdc,xdc
       real(rk) :: sr,pur
       real(rk) :: hO2resp
+      integer  :: isw_osupply   ! jsasaki 2026-10-07: family B wave 2: 0 = main (default), 1 = realised respiration extent limited by the O2 supply
+      real(rk) :: tau_o2        ! jsasaki 2026-10-07: d, turnover time of the O2 inventory G2o as a supply
       real(rk) :: ptur,pirr, dwat,dQ6
    contains
       procedure :: initialize
@@ -114,6 +120,20 @@ contains
       if (.not.(self%hO2 >= self%rlO2 .and. self%rlO2 >= 0.0_rk .and. self%hO2 < huge(1.0_rk) .and. &
                 self%hO2resp >= 0.0_rk .and. self%hO2resp < huge(1.0_rk))) &
          call self%fatal_error('initialize','the O2 parameters must be finite with hO2 >= rlO2 >= 0 and hO2resp >= 0')
+
+      !---> jsasaki 2026-10-07: family B wave 2 (plan amendment 3): explicit O2 supply constraint, shared law with MUSE (f_osupply, f_tau_o2).
+      ! Realised respiration extent R = D S/(D + S) (benthos_shared_laws o2_supply_extent) with D the demanded rate and
+      ! S = O2o/(cmix + D1m/diff1) + G2o/tau_o2 (mmol O2 m-2 d-1): the water-O2 supply across the diffusive boundary layer and the
+      ! bioirrigation-enhanced oxic layer, plus the oxic inventory over its turnover time. R is applied to C loss, DIC and O2 alike.
+      call self%get_parameter(self%isw_osupply,'isw_osupply','','1: respiration extent limited by the O2 supply (shared law with MUSE); 0: off',default=0,minimum=0,maximum=1)
+      call self%get_parameter(self%tau_o2,'tau_o2','d','turnover time of the oxic O2 inventory as a supply (isw_osupply = 1)',default=0.05_rk,minimum=0.0_rk)
+      if (self%isw_osupply == 1) then
+         if (.not.(self%tau_o2 > 0.0_rk .and. self%tau_o2 < huge(1.0_rk))) call self%fatal_error('initialize','tau_o2 must be positive and finite')
+         call self%register_dependency(self%id_diff1,diffusivity_in_sediment_layer_1)
+         call self%register_dependency(self%id_cmix,pelagic_benthic_transfer_constant)
+         call self%register_diagnostic_variable(self%id_osupply,'osupply','mmol O2/m^2/d','O2 supply available to the respiration',source=source_do_bottom,output=output_none)
+      end if
+      !<--- jsasaki 2026-10-07
 
       ! Add carbon pool as our only state variable.
       call self%add_constituent('c',3000._rk,c0,qn=self%qnc,qp=self%qpc)
@@ -459,6 +479,20 @@ contains
       ! Respiration fluxes = basal respiration (proportional to biomass)+ activity respiration (proportional to carbon assimilation)
       ! Limited by O2 availability via Monod factor (jsasaki 2026-02-15)
       fYG3c = (self%sr * cP * eT + self%pur * nfBTYc) * f_O2_resp
+      !---> jsasaki 2026-10-07: family B wave 2 (amendment 3): the realised extent under the O2 supply constraint (mg C m-2 d-1)
+      if (self%isw_osupply == 1) then
+         block
+            real(rk) :: G2o_, diff1_, cmix_, supply_
+            _GET_HORIZONTAL_(self%id_G2o,G2o_)
+            _GET_HORIZONTAL_(self%id_diff1,diff1_)
+            _GET_HORIZONTAL_(self%id_cmix,cmix_)
+            supply_ = max(0.0_rk,G2o_)/self%tau_o2
+            if (diff1_ > 0.0_rk) supply_ = supply_ + max(0.0_rk,O2o)/(cmix_ + Dm/diff1_)
+            fYG3c = CMass * o2_supply_extent(fYG3c/CMass, supply_)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_osupply,supply_)
+         end block
+      end if
+      !<--- jsasaki 2026-10-07
 
       ! Store carbon flux resulting from respiration for later use (note: respiration does not affect nitrogen, phosphorus).
       ! Also account for its production of benthic CO2 and consumption of benthic oxygen.
