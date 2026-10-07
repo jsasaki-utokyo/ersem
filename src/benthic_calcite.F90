@@ -26,6 +26,7 @@ module ersem_benthic_calcite
       real(rk) :: fdissmax, fdissmin, ndiss, KcalomX
       real(rk) :: K_prec, K_par_prec, n_prec
       integer  :: iswcal
+      integer  :: iswdiss   ! jsasaki 2026-10-07: family E: 0 = the specific rate floor fdissmin (old); 1 = no floor (unified law with MUSE)
       ! E5 C1 (nippon-steel docs/125 s21): CO2*-promoted dissolution, default off
       real(rk) :: k_co2diss, co2_ref_diss
       type (type_dependency_id)                     :: id_CO2aq
@@ -79,6 +80,10 @@ contains
          call self%get_parameter(self%fdissmin, 'fdissmin', '1/d','minimum specific dissolution rate', minimum=0._rk, default=0.001_rk * self%fdissmax)
          call self%register_dependency(self%id_Om_Cal,'Om_Cal','-','calcite saturation')
       end if
+      ! jsasaki 2026-10-07: family E (docs/UNIFY_E_SPEC_20261007.md in muse). The floor fdissmin dissolves calcite also in
+      ! supersaturated water (Omega > 1), which no mechanism supports; MUSE has none by default. iswdiss = 1 removes it, so the
+      ! law is fdissmax (1 - Omega)^ndiss for Omega < 1 and zero above, as in MUSE calcite_coef. 0 (default) = old behaviour.
+      call self%get_parameter(self%iswdiss,'iswdiss','','dissolution rate floor (0: fdissmin applies at every Omega, 1: no floor, unified law)',default=0,minimum=0,maximum=1)
       ! Light-driven mat calcification (jsasaki 2026-08-15; design:
       ! nippon-steel/docs/15-mat-calcification.md). Benthic photosynthesis
       ! elevates the mat microenvironment's pH/saturation in the light and
@@ -225,7 +230,11 @@ contains
             fdiss = max(0._rk,(1._rk-om_cal)/(1._rk-om_cal+self%KcalomX))
          end if
 
-         fdiss = max(fdiss * self%fdissmax, self%fdissmin)
+         if (self%iswdiss == 0 .or. self%iswcal == 0) then   ! iswcal = 0: fdissmin is the constant rate fdiss
+            fdiss = max(fdiss * self%fdissmax, self%fdissmin)
+         else
+            fdiss = fdiss * self%fdissmax   ! jsasaki 2026-10-07: family E: unified law without the floor
+         end if
 
          _SET_BOTTOM_ODE_(self%id_c, -fdiss*bL2c)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_dissolution, -fdiss*bL2c)
