@@ -134,7 +134,13 @@ contains
 
          ! Ammonium state for nitrogen species transformation
          _GET_WITH_BACKGROUND_(self%id_N4n,N4n)
-         n4state = N4n**3/(N4n**3 + self%chN4nX) ! half saturation
+         ! jsasaki 2026-10-07: unification family D review round 1 #6: with the default chN4n = 0 and N4n = 0 this was 0/0 = NaN;
+         ! the factor is exactly 1 for N4n > 0 (x/x), so only the singular state changes
+         if (self%chN4nX > 0.0_rk) then
+            n4state = N4n**3/(N4n**3 + self%chN4nX) ! half saturation
+         else
+            n4state = 1.0_rk
+         end if
 
          !..Nitrification..
          _GET_(self%id_N4n,N4nP)

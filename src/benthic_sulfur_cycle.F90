@@ -133,6 +133,8 @@ module ersem_benthic_sulfur_cycle
 
       ! Bottom PAR for light-driven interface oxidation (jsasaki 2026-08-15)
       type(type_dependency_id) :: id_par
+      ! jsasaki 2026-10-07: unification family D: bottom temperature for the optional per-reaction Q10 factors
+      type(type_dependency_id) :: id_ETW_s
 
       ! Alkalinity coupling
       type(type_bottom_state_variable_id) :: id_benTA   ! Alkalinity in Layer 1
@@ -189,6 +191,10 @@ module ersem_benthic_sulfur_cycle
       real(rk) :: K_barrier      ! Oxic barrier effectiveness (1/m)
       real(rk) :: K_barrier_rate ! Rate at which barrier oxidizes H2S (1/d)
       real(rk) :: K_FeS_ben      ! FeS precipitation rate in benthic layers (1/d)
+      ! jsasaki 2026-10-07: unification family D (docs/UNIFY_D_SPEC_20261007.md in muse): per-reaction Q10 of the sulfur
+      ! chemistry, as MUSE sed_network_c q10(); isw_temp_s = 0 (default) leaves every rate untouched (bit-identical)
+      integer  :: isw_temp_s
+      real(rk) :: q10_hs, q10_s0ox, Tref_s
       integer  :: isw_barrier_dest  ! 0: barrier S0 to the water (legacy), 1: to bed layer 1
       integer  :: isw_S0_solid      ! 0: layer-1 S0 in the dissolved column (legacy), 1: own solid pool
       real(rk) :: K_FeS_pel      ! FeS precipitation rate in pelagic (1/d)
@@ -505,6 +511,24 @@ contains
 
       call self%register_dependency(self%id_par, standard_variables%downwelling_photosynthetic_radiative_flux)
 
+      !---> jsasaki 2026-10-07: unification family D: temperature factors of the sulfur reactions
+      ! isw_temp_s = 1: the H2S oxidation (interface, layer-1 sink and oxic barrier)
+      ! x q10_hs^(.), the S0 oxidation x q10_s0ox^(.). Defaults are MUSE's Q10 (sed_network_c.F90 q10 array: H2S+O2 2.3,
+      ! S0+O2 2.0). Sulfate reduction gets NO factor here (review round 1 #2): it is K_H2S_prod x the anaerobic bacteria's
+      ! respiration remin_rate, which already carries the bacterial Q10 (benthic_bacteria eT), and scaling only the sulfur
+      ! product would break the electron balance between the carbon respiration and its H2S, TA and oxygen-debt bookkeeping.
+      call self%get_parameter(self%isw_temp_s, 'isw_temp_s', '', &
+           'Q10 temperature factors of H2S and S0 oxidation by O2 (0: none, legacy); sulfate reduction keeps its bacterial Q10', default=0, &
+           minimum=0, maximum=1)
+      call self%get_parameter(self%Tref_s, 'Tref_s', 'degrees_Celsius', 'reference temperature of the sulfur Q10 factors', &
+           default=20.0_rk)
+      call self%get_parameter(self%q10_hs, 'q10_hs', '-', 'Q10 of H2S oxidation by O2 (Millero 1987; MUSE q10(10:11))', &
+           default=2.3_rk, minimum=1.0_rk)
+      call self%get_parameter(self%q10_s0ox, 'q10_s0ox', '-', 'Q10 of S0 oxidation by O2 (MUSE q10(12))', &
+           default=2.0_rk, minimum=1.0_rk)
+      if (self%isw_temp_s == 1) call self%register_dependency(self%id_ETW_s, standard_variables%temperature)
+      !<--- jsasaki 2026-10-07
+
       ! Register dependencies for layer-specific sulfur variables
       ! These link to variables created by benthic_column_dissolved_matter with composition 'h' and 'e'
       if (self%isw_h2s_layers == 1) call self%fatal_error('initialize', &
@@ -621,6 +645,7 @@ contains
       real(rk) :: r_no3, r_ta
       real(rk) :: f_barrier, R_barrier_ox
       real(rk) :: par, f_par
+      real(rk) :: ETW_s, fT_hs, fT_s0   ! jsasaki 2026-10-07: unification family D
       real(rk) :: share_1, poro, NO3_1, f_ex
       real(rk), allocatable :: mh(:), fr(:, :), ov(:, :)
       integer  :: kbox
@@ -696,6 +721,14 @@ contains
          ! Stoichiometry: 53 SO4 per 106 C -> 0.5 mol S per mol C
          ! remin_rate is in mg C/m^2/d (from H2/fHG3c); convert to mmol C via CMass
          R_sulfate_red = self%K_H2S_prod * remin_rate / CMass
+         !---> jsasaki 2026-10-07: unification family D: Q10 factors (all exactly 1 and not evaluated when isw_temp_s = 0)
+         fT_hs = 1.0_rk; fT_s0 = 1.0_rk
+         if (self%isw_temp_s == 1) then
+            _GET_(self%id_ETW_s, ETW_s)
+            fT_hs = self%q10_hs**((ETW_s - self%Tref_s) / 10.0_rk)
+            fT_s0 = self%q10_s0ox**((ETW_s - self%Tref_s) / 10.0_rk)
+         end if
+         !<--- jsasaki 2026-10-07
 
          ! SR2: the layer-1 share (legacy: the constant p_sr_1)
          share_1 = self%p_sr_1
@@ -745,12 +778,14 @@ contains
          end if
 
          ! H2S + 0.5 O2 -> S0
-         R_H2S_ox_1 = self%K_H2S_ox * H2S_1 * f_O2
+         ! jsasaki 2026-10-07: unification family D: fT_hs = 1 unless isw_temp_s = 1
+         R_H2S_ox_1 = self%K_H2S_ox * H2S_1 * f_O2 * fT_hs
          R_ox_direct = self%f_ox_direct * R_H2S_ox_1      ! completed to SO4 in place
          R_ox_to_S0  = R_H2S_ox_1 - R_ox_direct            ! legacy route via S0
 
          ! S0 + 1.5 O2 -> SO4 (removed from system)
-         R_S0_ox_1 = self%K_S0_ox * S0_1 * f_O2
+         ! jsasaki 2026-10-07: unification family D: fT_s0 = 1 unless isw_temp_s = 1
+         R_S0_ox_1 = self%K_S0_ox * S0_1 * f_O2 * fT_s0
 
          ! S0 burial (settling into deeper sediment, irreversible removal)
          ! Elemental sulfur settles/buries into anoxic layers where it may
@@ -819,7 +854,8 @@ contains
 
          ! H2S oxidation rate by barrier (removes H2S from bottom water)
          ! This is proportional to H2S concentration and barrier strength
-         R_barrier_ox = self%K_barrier_rate * H2S_pel * f_barrier * h_bottom
+         ! jsasaki 2026-10-07: unification family D: the barrier is H2S oxidation, same Q10 (fT_hs = 1 unless isw_temp_s = 1)
+         R_barrier_ox = self%K_barrier_rate * H2S_pel * f_barrier * h_bottom * fT_hs
 
          ! ============================================================
          ! FeS PRECIPITATION (IRON SULFIDE BURIAL)
@@ -864,7 +900,8 @@ contains
             ! fixed grid: sulfate reduction placed by each cell's length in layers 1 and 3; the layers' first-order sink
             ! constants weighted by the cell's fractions (their cell sums are R_H2S_ox_1 + R_FeS_1, R_H2S_NO3_ox + R_FeS_2
             ! and R_FeS_3 above)
-            kl = (/ self%K_H2S_ox * f_O2 + self%K_FeS_ben * 0.1_rk, self%K_H2S_NO3_ox * f_NO3 + self%K_FeS_ben * 0.5_rk, &
+            ! jsasaki 2026-10-07: unification family D: H2S oxidation sink constant carries fT_hs
+            kl = (/ self%K_H2S_ox * f_O2 * fT_hs + self%K_FeS_ben * 0.1_rk, self%K_H2S_NO3_ox * f_NO3 + self%K_FeS_ben * 0.5_rk, &
                     self%K_FeS_ben /)
             Pl1 = share_1 * R_sulfate_red
             Pl3 = (1.0_rk - share_1) * R_sulfate_red
