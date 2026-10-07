@@ -518,7 +518,7 @@ contains
       ! respiration remin_rate, which already carries the bacterial Q10 (benthic_bacteria eT), and scaling only the sulfur
       ! product would break the electron balance between the carbon respiration and its H2S, TA and oxygen-debt bookkeeping.
       call self%get_parameter(self%isw_temp_s, 'isw_temp_s', '', &
-           'per-reaction Q10 temperature factors of sulfate reduction and H2S/S0 oxidation (0: none, legacy)', default=0, &
+           'Q10 temperature factors of H2S and S0 oxidation by O2 (0: none, legacy); sulfate reduction keeps its bacterial Q10', default=0, &
            minimum=0, maximum=1)
       call self%get_parameter(self%Tref_s, 'Tref_s', 'degrees_Celsius', 'reference temperature of the sulfur Q10 factors', &
            default=20.0_rk)
