@@ -1514,12 +1514,13 @@ contains
       end if
       if (tau < 1.0e-9_rk) then
          ! an optically thin layer: tanh(u0) to first order in tau; sech^2 = 4 e / (1 + e)^2, e = exp(-2 u0) (underflows to 0 for large u0)
-         a = exp(-2.0_rk * u0)
+         a = 0.0_rk
+         if (u0 < 350.0_rk) a = exp(-2.0_rk * u0)
          m = tanh(u0) - 0.5_rk * tau * u0 * 4.0_rk * a / (1.0_rk + a)**2
          return
       end if
       if (u0 <= u_lin) then
-         m = u0 * one_minus_exp(tau) / tau
+         m = u0 * (one_minus_exp(tau) / tau)
          return
       end if
       ! the layer fraction above the linear tail; the logarithm of the ratio, not the ratio (u0 / u_lin overflows for u0 > 1e302)
