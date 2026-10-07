@@ -56,6 +56,7 @@ module ersem_benthic_bacteria
       ! jsasaki 2026-10-07: family B unification (docs/UNIFY_FAUNA_BACTERIA_SPEC_20261007.md in the muse repository): the
       ! diagnostic / saturating uptake law and the overflow respiration, all off by default
       integer  :: isw_diag, isw_overflow
+      type (type_horizontal_diagnostic_variable_id) :: id_Bres   ! jsasaki 2026-10-07: review round 3 #3: c + Bbal, must stay 0 (isw_diag = 1)
       type (type_bottom_state_variable_id) :: id_Bbal   ! jsasaki 2026-10-07: bookkeeping counterpart of the diagnostic biomass (isw_diag = 1)
       real(rk) :: B_ref, K_B, q10_decay, bge, bact_m, c_init
    contains
@@ -215,6 +216,9 @@ contains
          write (strindex,'(i0)') ifood
          call self%get_parameter(self%food(ifood)%q10d, 'q10_decay'//trim(strindex), '-', &
             'Q10 of the uptake of substrate '//trim(strindex)//' (isw_diag > 0; default q10_decay)', default=self%q10_decay, minimum=1.0_rk)
+         ! review round 3 #2: NaN-safe (a NaN passes FABM's range test)
+         if (.not.(self%food(ifood)%q10d >= 1.0_rk .and. self%food(ifood)%q10d < huge(1.0_rk))) &
+            call self%fatal_error('initialize','q10_decay'//trim(strindex)//' must be finite and >= 1')
       end do
       call self%get_parameter(self%c_init, 'c_init', 'mg C/m^2', &
          'initial diagnostic biomass, equal to the initialisation of c (isw_diag = 1 only: the bookkeeping state starts at -c_init)', &
@@ -243,6 +247,8 @@ contains
          call self%add_to_aggregate_variable(standard_variables%total_carbon, self%id_Bbal, scale_factor=1._rk/CMass)
          call self%add_to_aggregate_variable(standard_variables%total_nitrogen, self%id_Bbal, scale_factor=self%qnc)
          call self%add_to_aggregate_variable(standard_variables%total_phosphorus, self%id_Bbal, scale_factor=self%qpc)
+         call self%register_diagnostic_variable(self%id_Bres, 'Bbal_residual', 'mg C/m^2', &
+            'diagnostic biomass plus its bookkeeping counterpart: 0 when c_init equals the initialisation of c', source=source_do_bottom)
       end if
       ! isw_overflow = 1: the carbon the biomass quotas cannot support (excess_c) is respired (to G3c, with the same
       ! electron-acceptor routing as the other respiration) instead of being returned to POM Q6c (overflow respiration;
@@ -352,6 +358,7 @@ contains
       real(rk) :: par_b
       real(rk) :: O2o, f_O2_resp  ! Monod O2 limitation for respiration (jsasaki 2026-02-15)
       real(rk) :: eTu, Beff       ! jsasaki 2026-10-07: uptake temperature factor and effective biomass (isw_diag > 0)
+      real(rk) :: Bbal_v          ! jsasaki 2026-10-07: bookkeeping state value (isw_diag = 1)
       real(rk) :: excess_resp     ! jsasaki 2026-10-07: overflow respiration actually realised (isw_overflow = 1)
 
       _HORIZONTAL_LOOP_BEGIN_
@@ -483,6 +490,8 @@ contains
             ! the diagnostic biomass (not a carbon sink of the budget)
             _SET_BOTTOM_ODE_(self%id_c, self%bge/(1._rk-self%bge)*fHG3c - self%bact_m*HcP)
             _SET_BOTTOM_ODE_(self%id_Bbal, -(self%bge/(1._rk-self%bge)*fHG3c - self%bact_m*HcP))   ! review round 1 #1
+            _GET_HORIZONTAL_(self%id_Bbal, Bbal_v)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_Bres, HcP + Bbal_v)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHKIn,-fK4Hn)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHK1p,-fK1Hp)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fHQ1c,sum(fQc*self%food%pue))
