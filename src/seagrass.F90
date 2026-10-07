@@ -419,6 +419,9 @@ contains
          'per NO3-N, no O2; requires pq = rq_o2c = 1) [0: as before]', default=0, minimum=0, maximum=1)
       call self%get_parameter(self%f_dk, 'f_dk', '-', 'dark/light ratio of nitrate uptake: jN3 x (f_dk + (1 - f_dk) eI) [1: as before]', &
          default=1.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+      ! jsasaki 2026-10-07: review round 2 #7: FABM's bounds checks do not reject NaN
+      if (.not. (self%f_dk >= 0.0_rk .and. self%f_dk <= 1.0_rk)) &
+         call self%fatal_error('initialize', 'f_dk must be finite and in [0, 1]')
       call self%get_parameter(self%isw_matdiag, 'isw_matdiag', '', 'register the mat diagnostics upt_P, mort_AG, red_C [0: none]', &
          default=0, minimum=0, maximum=1)
       if (self%isw_uni == 1 .and. (self%isw_no3red /= 0 .or. self%f_dk < 1.0_rk .or. self%isw_matdiag /= 0)) &
