@@ -109,6 +109,11 @@ contains
          default=0.0_rk, minimum=0.0_rk)
       if (self%hO2resp > 0.0_rk .and. self%hO2resp <= self%rlO2) &
          call self%fatal_error('initialize','hO2resp must exceed rlO2')
+      ! jsasaki 2026-10-07: review round 1 #8: the feeding Hill law (O2-rlO2)^3/((O2-rlO2)^3+(hO2-rlO2)^3) is singular unless
+      ! hO2 >= rlO2 (review round 2 #4: hO2 = rlO2 is a well-defined step response, kept); NaN is refused (#12)
+      if (.not.(self%hO2 >= self%rlO2 .and. self%rlO2 >= 0.0_rk .and. self%hO2 < huge(1.0_rk) .and. &
+                self%hO2resp >= 0.0_rk .and. self%hO2resp < huge(1.0_rk))) &
+         call self%fatal_error('initialize','the O2 parameters must be finite with hO2 >= rlO2 >= 0 and hO2resp >= 0')
 
       ! Add carbon pool as our only state variable.
       call self%add_constituent('c',3000._rk,c0,qn=self%qnc,qp=self%qpc)
