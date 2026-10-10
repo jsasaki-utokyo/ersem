@@ -64,6 +64,9 @@ module ersem_primary_producer
       real(rk) :: xqcn,xqn,xqp,qun3,qun4,qurp,qsc,esni,snplux
       real(rk) :: resm,sdo
       real(rk) :: alpha,beta,phim
+      ! jsasaki 2026-10-11: Stage Y diagnostic: isw_o2inh = 1 divides the gross productivity by 1 + max(0, O2 - o2ref_inh)/K_o2inh; 0 (default): bit-identical
+      integer  :: isw_o2inh
+      real(rk) :: o2ref_inh, K_o2inh
       real(rk) :: R1R2,uB1c_O2,urB1_O2
       real(rk) :: qflc,qfRc,qurf
       integer :: Limnut
@@ -190,6 +193,10 @@ contains
       call self%get_parameter(self%resm,   'resm',   'm/d',     'maximum nutrient-limitation-induced sinking velocity', default=0.0_rk)
       call self%get_parameter(self%esni,   'esni',   '-',       'level of nutrient limitation below which sinking commences')
       call self%get_parameter(self%cenh,   'cenh',   '',        'enable atmospheric CO2 influence on photosynthesis', default=.false.)
+      ! jsasaki 2026-10-11: Stage Y diagnostic: O2 inhibition of gross productivity
+      call self%get_parameter(self%isw_o2inh, 'isw_o2inh', '', 'O2 inhibition of gross productivity: 1 = sum / (1 + max(0, O2 - o2ref_inh)/K_o2inh) [0: none]', default=0, minimum=0, maximum=1)
+      call self%get_parameter(self%o2ref_inh, 'o2ref_inh', 'mmol O_2/m^3', 'O2 above which the productivity is inhibited (isw_o2inh = 1)', default=200.0_rk, minimum=0.0_rk)
+      call self%get_parameter(self%K_o2inh, 'K_o2inh', 'mmol O_2/m^3', 'O2 excess giving a halved productivity (isw_o2inh = 1)', default=1.0e30_rk, minimum=1.0e-6_rk)
 
       ! Register state variables (handled by type_ersem_pelagic_base)
       call self%initialize_ersem_base(sedimentation=.true.)
@@ -348,6 +355,7 @@ contains
       real(rk) :: fPIRPs,fPIN5s,fN5PIs
 
       real(rk) :: sdo,sum,sug,seo,sea,sra,sun,run,sPIRP
+      real(rk) :: O2o_inh   ! jsasaki 2026-10-11: Stage Y diagnostic: water O2 for the inhibition factor
       real(rk) :: runp,misp,rump
       real(rk) :: runn,misn,rumn,rumn3,rumn4,DIN_total
       real(rk) :: et,pe_RP
@@ -472,6 +480,12 @@ contains
          else
             sum = 0._rk
             rho = ChlCmin
+         end if
+
+         ! jsasaki 2026-10-11: Stage Y diagnostic: O2 inhibition of gross productivity (isw_o2inh = 0: unchanged)
+         if (self%isw_o2inh == 1) then
+            _GET_(self%id_O2o,O2o_inh)
+            sum = sum / (1.0_rk + max(0.0_rk, O2o_inh - self%o2ref_inh) / self%K_o2inh)
          end if
 
          if (self%cenh) then

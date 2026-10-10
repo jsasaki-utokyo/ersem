@@ -186,6 +186,10 @@ module ersem_seagrass
       ! 0 (default): tanh of the canopy-mean PAR, bit-identical to the former code.
       integer  :: isw_light
       real(rk) :: z_mat, k_sed
+      ! jsasaki 2026-10-11: Stage Y diagnostic: isw_o2inh = 1 divides the gross production by 1 + max(0, O2 - o2ref_inh)/K_o2inh (O2 inhibition / photorespiration at
+      ! supersaturation; one-sided, = 1 below o2ref_inh); 0 (default): no factor, bit-identical to the former code. Same law as MUSE mpb%isw_o2inh.
+      integer  :: isw_o2inh
+      real(rk) :: o2ref_inh, K_o2inh
       ! jsasaki 2026-10-07: wave 2 family A: isw_exu_dest = 1: the exudate (f_exu x gross fixation) goes to the benthic dissolved carbon Q1c (pore-water DOC, as MUSE's
       ! cell DOC) instead of the pelagic semi-labile DOC R2c; 0 (default): R2c as before (bit-identical). Legacy path only; needs the coupling Q1c.
       integer  :: isw_exu_dest
@@ -462,6 +466,11 @@ contains
          'attenuation k_sed and self-shading (as MUSE light_op = 1), 0 = tanh of the canopy-mean PAR [0: as before]', default=0, minimum=0, maximum=1)
       call self%get_parameter(self%z_mat, 'z_mat', 'm', 'thickness of the mat slab (uniform biomass) for isw_light = 1', default=0.0_rk, minimum=0.0_rk)
       call self%get_parameter(self%k_sed, 'k_sed', '1/m', 'PAR attenuation in the sediment for isw_light = 1', default=0.0_rk, minimum=0.0_rk)
+      ! jsasaki 2026-10-11: Stage Y diagnostic: O2 inhibition of gross production (see the type declaration)
+      call self%get_parameter(self%isw_o2inh, 'isw_o2inh', '', 'O2 inhibition of gross production: 1 = Pg / (1 + max(0, O2 - o2ref_inh)/K_o2inh) [0: none]', &
+         default=0, minimum=0, maximum=1)
+      call self%get_parameter(self%o2ref_inh, 'o2ref_inh', 'mmol O_2/m^3', 'O2 above which the production is inhibited (isw_o2inh = 1)', default=200.0_rk, minimum=0.0_rk)
+      call self%get_parameter(self%K_o2inh, 'K_o2inh', 'mmol O_2/m^3', 'O2 excess giving a halved production (isw_o2inh = 1)', default=1.0e30_rk, minimum=1.0e-6_rk)
       if (.not. (self%z_mat >= 0.0_rk .and. self%z_mat < huge(1.0_rk) .and. self%k_sed >= 0.0_rk .and. self%k_sed < huge(1.0_rk))) &
          call self%fatal_error('initialize', 'z_mat and k_sed must be finite and non-negative')
       if (self%isw_uni == 1 .and. self%isw_light /= 0) &
@@ -844,6 +853,8 @@ contains
          Pg = self%p_max * eT * eI * eQ * AGc
          ! no fixation from exhausted water DIC (isw_fix = 1; review p11 #17)
          if (self%isw_fix == 1) Pg = Pg * max(O3c, 0.0_rk) / (max(O3c, 0.0_rk) + self%K_dic)
+         ! jsasaki 2026-10-11: Stage Y diagnostic: O2 inhibition (isw_o2inh = 0: unchanged)
+         if (self%isw_o2inh == 1) Pg = Pg / (1.0_rk + max(0.0_rk, O2o - self%o2ref_inh) / self%K_o2inh)
          fO2ag = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
          fO2bg = max(0.0_rk, G2o) / (max(0.0_rk, G2o) + self%hG2o)
          Ra_act = self%pu_ra * Pg
@@ -1295,6 +1306,8 @@ contains
 
          ! U6-U8: production, respiration, the reserve's share
          Pg = self%p_max * eT * eI * eQ * fC * AGc
+         ! jsasaki 2026-10-11: Stage Y diagnostic: O2 inhibition (isw_o2inh = 0: unchanged)
+         if (self%isw_o2inh == 1) Pg = Pg / (1.0_rk + max(0.0_rk, O2o - self%o2ref_inh) / self%K_o2inh)
          Ract = self%pu_ra * Pg
          RmA = self%srs_ag * gT * AGc * fO2
          RmB = self%srs_bg * gT * BGc * fO2
