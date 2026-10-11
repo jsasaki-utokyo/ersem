@@ -46,6 +46,7 @@ contains
       ! jsasaki 2026-10-11: Stage Z: prescribed TOTAL PAR attenuation (measured Kd); < 0 = off (the particulate + silt + background sum, bit-identical)
       call self%get_parameter(self%EPS_totalX,'EPS_total','1/m','prescribed total attenuation replacing background + particulate + silt terms (< 0: off)', default=-1._rk)
       ! jsasaki 2026-10-11: Stage Z review r2 #107: zero optical thickness makes the layer-mean light 0/0; accept the off value (< 0) or a positive attenuation only
+      if (self%EPS_totalX /= self%EPS_totalX) call self%fatal_error('initialize','EPS_total must be finite')      ! jsasaki 2026-10-11: Stage Z review r5 #401 (NaN compares false)
       if (self%EPS_totalX >= 0._rk .and. self%EPS_totalX < 1.e-6_rk) call self%fatal_error('initialize','EPS_total must be negative (off) or >= 1e-6 1/m')
 
       ! Register diagnostic variables
