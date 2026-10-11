@@ -21,6 +21,8 @@ module ersem_benthic_calcite
       type (type_horizontal_diagnostic_variable_id) :: id_precipitation
       type (type_dependency_id)                     :: id_Om_Cal
       type (type_dependency_id)                     :: id_par
+      type (type_horizontal_dependency_id) :: id_par_bot   ! jsasaki 2026-10-11: Stage Z bed light
+      integer :: isw_par_bot = 0   ! jsasaki 2026-10-11: Stage Z bed light
 
       ! Parameters
       real(rk) :: fdissmax, fdissmin, ndiss, KcalomX
@@ -110,6 +112,9 @@ contains
       if (self%K_prec > 0.0_rk .and. self%iswcal == 0) &
          call self%register_dependency(self%id_Om_Cal,'Om_Cal','-','calcite saturation')
       call self%register_dependency(self%id_par, standard_variables%downwelling_photosynthetic_radiative_flux)
+      ! jsasaki 2026-10-11: Stage Z bed light: optional bottom PAR (default 0 = off, bit-identical)
+      call self%get_parameter(self%isw_par_bot, 'isw_par_bot', '', 'bed light: 0 = bottom-layer mean PAR, 1 = PAR at the bottom of the column (light/parEIR_bot)', default=0, minimum=0, maximum=1)
+      if (self%isw_par_bot == 1) call self%register_dependency(self%id_par_bot, type_horizontal_standard_variable(name='ersem_bottom_downwelling_photosynthetic_radiative_flux'))
       call self%register_diagnostic_variable(self%id_precipitation,'precipitation','mg C/m^2/d','light-driven calcification',source=source_do_bottom)
       ! E5 C1 (2026-09-22, nippon-steel docs/125 s21, s21.9): acid-promoted
       ! bed-carbonate dissolution, a restricted comparator. CaCO3 + CO2 + H2O ->
@@ -261,7 +266,12 @@ contains
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_prec_TA, 0.0_rk)
          end if
          if (self%K_prec > 0.0_rk) then
-            _GET_(self%id_par, par)
+            ! jsasaki 2026-10-11: Stage Z bed light switch
+            if (self%isw_par_bot == 1) then
+               _GET_HORIZONTAL_(self%id_par_bot, par)
+            else
+               _GET_(self%id_par, par)
+            end if
             F_prec = self%K_prec &
                    * max(0.0_rk, par) / (max(0.0_rk, par) + self%K_par_prec) &
                    * (max(0.0_rk, om_cal - 1.0_rk))**self%n_prec

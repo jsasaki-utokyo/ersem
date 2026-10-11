@@ -136,6 +136,8 @@ module ersem_benthic_sulfur_cycle
 
       ! Bottom PAR for light-driven interface oxidation (jsasaki 2026-08-15)
       type(type_dependency_id) :: id_par
+      type (type_horizontal_dependency_id) :: id_par_bot   ! jsasaki 2026-10-11: Stage Z bed light
+      integer :: isw_par_bot = 0   ! jsasaki 2026-10-11: Stage Z bed light
       ! jsasaki 2026-10-07: unification family D: bottom temperature for the optional per-reaction Q10 factors
       type(type_dependency_id) :: id_ETW_s
 
@@ -661,6 +663,9 @@ contains
       end if
 
       call self%register_dependency(self%id_par, standard_variables%downwelling_photosynthetic_radiative_flux)
+      ! jsasaki 2026-10-11: Stage Z bed light: optional bottom PAR (default 0 = off, bit-identical)
+      call self%get_parameter(self%isw_par_bot, 'isw_par_bot', '', 'bed light: 0 = bottom-layer mean PAR, 1 = PAR at the bottom of the column (light/parEIR_bot)', default=0, minimum=0, maximum=1)
+      if (self%isw_par_bot == 1) call self%register_dependency(self%id_par_bot, type_horizontal_standard_variable(name='ersem_bottom_downwelling_photosynthetic_radiative_flux'))
 
       !---> jsasaki 2026-10-07: unification family D: temperature factors of the sulfur reactions
       ! isw_temp_s = 1: the H2S oxidation (interface, layer-1 sink and oxic barrier)
@@ -906,7 +911,12 @@ contains
                f_ex = f_ex * max(0.0_rk, 1.0_rk - max(0.0_rk, NO3_1) / (poro * D1m) / self%NO3_thr_sr)
             end if
             if (self%PAR_thr_sr > 0.0_rk) then
-               _GET_(self%id_par, par)
+               ! jsasaki 2026-10-11: Stage Z bed light switch
+               if (self%isw_par_bot == 1) then
+                  _GET_HORIZONTAL_(self%id_par_bot, par)
+               else
+                  _GET_(self%id_par, par)
+               end if
                f_ex = f_ex * max(0.0_rk, 1.0_rk - max(0.0_rk, par) / self%PAR_thr_sr)
             end if
             share_1 = self%p_sr_1 * min(1.0_rk, max(0.0_rk, f_ex))
@@ -932,7 +942,12 @@ contains
          if (self%K_par_ox > 0.0_rk) then
             ! Mat-photosynthesis oxygenation: light guarantees interface
             ! oxidation regardless of the water-column O2 (docs/14 sec. 6)
-            _GET_(self%id_par, par)
+            ! jsasaki 2026-10-11: Stage Z bed light switch
+            if (self%isw_par_bot == 1) then
+               _GET_HORIZONTAL_(self%id_par_bot, par)
+            else
+               _GET_(self%id_par, par)
+            end if
             f_par = max(0.0_rk, par) / (max(0.0_rk, par) + self%K_par_ox)
             f_O2 = max(f_O2, f_par)
          end if

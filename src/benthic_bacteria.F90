@@ -50,6 +50,8 @@ module ersem_benthic_bacteria
       real(rk) :: h_h2s_inh        ! half-saturation of free-sulfide inhibition of uptake (mmol S/m^2); 0 = off (2026-09-10)
       real(rk) :: i_par, K_par_inh ! light suppression of uptake (docs/114 EQ, 2026-09-11); i_par = 0 = off
       type (type_dependency_id) :: id_par
+      type (type_horizontal_dependency_id) :: id_par_bot   ! jsasaki 2026-10-11: Stage Z bed light
+      integer :: isw_par_bot = 0   ! jsasaki 2026-10-11: Stage Z bed light
       real(rk) :: pur,sr
       real(rk) :: pdQ1
       real(rk) :: sd
@@ -165,6 +167,9 @@ contains
          'half-saturation PAR of the light suppression', default=20.0_rk, minimum=1.0e-6_rk)
       if (self%i_par > 0.0_rk) &
          call self%register_dependency(self%id_par, standard_variables%downwelling_photosynthetic_radiative_flux)
+      ! jsasaki 2026-10-11: Stage Z bed light: optional bottom PAR (default 0 = off, bit-identical)
+      call self%get_parameter(self%isw_par_bot, 'isw_par_bot', '', 'bed light: 0 = bottom-layer mean PAR, 1 = PAR at the bottom of the column (light/parEIR_bot)', default=0, minimum=0, maximum=1)
+      if (self%isw_par_bot == 1) call self%register_dependency(self%id_par_bot, type_horizontal_standard_variable(name='ersem_bottom_downwelling_photosynthetic_radiative_flux'))
       call self%get_parameter(self%h_h2s_inh, 'h_h2s_inh', 'mmol S/m^2', &
          'half-saturation of free-sulfide inhibition of uptake (0 = off)', &
          default=0.0_rk, minimum=0.0_rk)
@@ -430,7 +435,12 @@ contains
          end if
          ! Light suppression (docs/114 EQ); i_par = 0 leaves sfQ untouched.
          if (self%i_par > 0.0_rk) then
-            _GET_(self%id_par, par_b)
+            ! jsasaki 2026-10-11: Stage Z bed light switch
+            if (self%isw_par_bot == 1) then
+               _GET_HORIZONTAL_(self%id_par_bot, par_b)
+            else
+               _GET_(self%id_par, par_b)
+            end if
             par_b = max(par_b, 0.0_rk)
             sfQ = sfQ * (1.0_rk - self%i_par * par_b / (par_b + self%K_par_inh))
          end if

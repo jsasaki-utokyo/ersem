@@ -107,6 +107,8 @@ module ersem_seagrass
 
       ! Environment
       type (type_dependency_id) :: id_ETW, id_par
+      type (type_horizontal_dependency_id) :: id_par_bot   ! jsasaki 2026-10-11: Stage Z bed light
+      integer :: isw_par_bot = 0   ! jsasaki 2026-10-11: Stage Z bed light
 
       ! Diagnostics
       type (type_horizontal_diagnostic_variable_id) :: id_gpp, id_npp
@@ -699,6 +701,9 @@ contains
 
       call self%register_dependency(self%id_ETW, standard_variables%temperature)
       call self%register_dependency(self%id_par, standard_variables%downwelling_photosynthetic_radiative_flux)
+      ! jsasaki 2026-10-11: Stage Z bed light: optional bottom PAR (default 0 = off, bit-identical)
+      call self%get_parameter(self%isw_par_bot, 'isw_par_bot', '', 'bed light: 0 = bottom-layer mean PAR, 1 = PAR at the bottom of the column (light/parEIR_bot)', default=0, minimum=0, maximum=1)
+      if (self%isw_par_bot == 1) call self%register_dependency(self%id_par_bot, type_horizontal_standard_variable(name='ersem_bottom_downwelling_photosynthetic_radiative_flux'))
 
       ! --- Diagnostics ----------------------------------------------------
       call self%register_diagnostic_variable(self%id_gpp, 'GPP', 'mg C/m^2/d', &
@@ -821,7 +826,12 @@ contains
          _GET_(self%id_N3n, N3n)
          _GET_(self%id_N4n, N4n)
          _GET_(self%id_ETW, ETW)
-         _GET_(self%id_par, par)
+         ! jsasaki 2026-10-11: Stage Z bed light switch
+         if (self%isw_par_bot == 1) then
+            _GET_HORIZONTAL_(self%id_par_bot, par)
+         else
+            _GET_(self%id_par, par)
+         end if
 
          ! --- Environmental factors ---------------------------------------
          if (ETW <= self%Tmin .or. ETW >= self%Tmax) then
@@ -1282,6 +1292,8 @@ contains
          _GET_HORIZONTAL_(self%id_D1m, D1m); _GET_HORIZONTAL_(self%id_D2m, D2m); _GET_HORIZONTAL_(self%id_poro, poro)
          _GET_(self%id_O2o, O2o); _GET_(self%id_O3c, O3c); _GET_(self%id_N1p, N1p)
          _GET_(self%id_N3n, N3n); _GET_(self%id_N4n, N4n); _GET_(self%id_ETW, ETW); _GET_(self%id_par, par)
+         ! jsasaki 2026-10-11: Stage Z bed light switch
+         if (self%isw_par_bot == 1) then; _GET_HORIZONTAL_(self%id_par_bot, par); end if
 
          AGc = max(AGc, 0.0_rk); BGc = max(BGc, 0.0_rk); NSCc = max(NSCc, 0.0_rk)
 

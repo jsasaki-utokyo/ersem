@@ -11,11 +11,12 @@ module ersem_light
    type,extends(type_base_model),public :: type_ersem_light
       ! Identifiers for diagnostic variables
       type (type_diagnostic_variable_id)   :: id_EIR, id_parEIR, id_xEPS
+      type (type_horizontal_diagnostic_variable_id) :: id_parEIR_bot   ! jsasaki 2026-10-11: Stage Z bed light: PAR at the bottom of the column
       type (type_dependency_id)            :: id_dz, id_xEPSp, id_ESS
       type (type_horizontal_dependency_id) :: id_I_0
 
       ! Parameters
-      real(rk) :: EPSESSX,EPS0X,pEIR_eowX
+      real(rk) :: EPSESSX,EPS0X,pEIR_eowX,EPS_totalX   ! jsasaki 2026-10-11: EPS_totalX added (Stage Z)
    contains
 !     Model procedures
       procedure :: initialize
@@ -42,6 +43,9 @@ contains
       call self%get_parameter(self%EPSESSX,  'EPSESS',  'm^2/mg','specific shortwave attenuation of silt', default=4.E-5_rk)
       call self%get_parameter(self%pEIR_eowX,'pEIR_eow','-',     'photosynthetically active fraction of shortwave radiation', default=.5_rk)
 
+      ! jsasaki 2026-10-11: Stage Z: prescribed TOTAL PAR attenuation (measured Kd); < 0 = off (the particulate + silt + background sum, bit-identical)
+      call self%get_parameter(self%EPS_totalX,'EPS_total','1/m','prescribed total attenuation replacing background + particulate + silt terms (< 0: off)', default=-1._rk)
+
       ! Register diagnostic variables
       call self%register_diagnostic_variable(self%id_EIR,'EIR','W/m^2','shortwave radiation', &
               standard_variable=standard_variables%downwelling_shortwave_flux,source=source_do_column)
@@ -49,6 +53,11 @@ contains
               standard_variable=standard_variables%downwelling_photosynthetic_radiative_flux,source=source_do_column)
       call self%register_diagnostic_variable(self%id_xEPS,'xEPS','1/m','attenuation coefficient of shortwave flux', &
               source=source_do_column)
+
+      ! jsasaki 2026-10-11: Stage Z: PAR at the bottom of the column, for the bed light consumers (isw_par_bot = 1); an own standard variable, no yaml coupling needed
+      call self%register_diagnostic_variable(self%id_parEIR_bot,'parEIR_bot','W/m^2','photosynthetically active radiation at the bottom of the column', &
+              standard_variable=type_horizontal_standard_variable(name='ersem_bottom_downwelling_photosynthetic_radiative_flux'), &
+              domain=domain_horizontal,source=source_do_column)
 
       ! Register environmental dependencies (temperature, shortwave radiation)
       call self%register_dependency(self%id_I_0,standard_variables%surface_downwelling_shortwave_flux)
@@ -72,6 +81,8 @@ contains
          _GET_(self%id_xEPSp,xEPS) ! Extinction coefficient of shortwave radiation, due to particulate organic material (m-1)
          _GET_(self%id_ESS,ESS)   ! Suspended silt
          xEPS = xEPS + self%EPS0X + self%EPSESSX*ESS
+         ! jsasaki 2026-10-11: Stage Z: the prescribed total attenuation replaces the sum
+         if (self%EPS_totalX >= 0._rk) xEPS = self%EPS_totalX
          xtnc = xEPS*dz
          EIR = buffer/xtnc*(1.0_rk-exp(-xtnc))  ! Note: this computes the vertical average, not the value at the layer centre.
          buffer = buffer*exp(-xtnc)
@@ -79,6 +90,9 @@ contains
          _SET_DIAGNOSTIC_(self%id_parEIR,EIR*self%pEIR_eowX)   ! Local photosynthetically active radiation
          _SET_DIAGNOSTIC_(self%id_xEPS,xEPS)                   ! Vertical attenuation of shortwave radiation
       _VERTICAL_LOOP_END_
+
+      ! jsasaki 2026-10-11: Stage Z: the flux left after the last layer is the bottom flux
+      _SET_HORIZONTAL_DIAGNOSTIC_(self%id_parEIR_bot,buffer*self%pEIR_eowX)
 
    end subroutine get_light
 
