@@ -471,6 +471,9 @@ contains
          default=0, minimum=0, maximum=1)
       call self%get_parameter(self%o2ref_inh, 'o2ref_inh', 'mmol O_2/m^3', 'O2 above which the production is inhibited (isw_o2inh = 1)', default=200.0_rk, minimum=0.0_rk)
       call self%get_parameter(self%K_o2inh, 'K_o2inh', 'mmol O_2/m^3', 'O2 excess giving a halved production (isw_o2inh = 1)', default=1.0e30_rk, minimum=1.0e-6_rk)
+      ! jsasaki 2026-10-11: review r2 #109: both O2-inhibition constants must be finite (NaN passes the bounds comparisons of the parameter reader)
+      if (.not. (self%o2ref_inh >= 0.0_rk .and. self%o2ref_inh <= huge(1.0_rk) .and. self%K_o2inh >= 1.0e-6_rk .and. self%K_o2inh <= huge(1.0_rk))) &
+         call self%fatal_error('initialize', 'o2ref_inh and K_o2inh must be finite (o2ref_inh >= 0, K_o2inh >= 1e-6)')
       if (.not. (self%z_mat >= 0.0_rk .and. self%z_mat < huge(1.0_rk) .and. self%k_sed >= 0.0_rk .and. self%k_sed < huge(1.0_rk))) &
          call self%fatal_error('initialize', 'z_mat and k_sed must be finite and non-negative')
       if (self%isw_uni == 1 .and. self%isw_light /= 0) &
