@@ -200,6 +200,16 @@ module ersem_seagrass
       real(rk) :: K_clim, dbl_clim, D_clim
       type (type_dependency_id) :: id_co2w
       type (type_horizontal_diagnostic_variable_id) :: id_fclim
+      !---> jsasaki 2026-10-12: Stage AB diagnostic (limitation-function design): isw_qshape = 1 replaces each linear quota factor x = (q - qmin)/(qmax - qmin)
+      ! (clipped to [0, 1]) by the normalised quota function of Flynn (2008) f = (1 + kq) x / (1 + kq x), kq = 1/KQ (kq_n for N, kq_p for P; kq = 0 is the linear factor,
+      ! kq > 0 concave (Droop-like), -1 < kq < 0 convex). isw_ishape = 1 replaces tanh(u) of the P-I curve by g(u) = tanh(u**n_ishape)**(1/n_ishape) (n = 1: tanh;
+      ! n > 1: sharper, towards Blackman min(u, 1); n < 1: softer), the same initial slope and maximum. isw_lab = 1 (legacy path): production-coupled (labile)
+      ! respiration r_lab gTm L fO2 added to the AG basal respiration, with the labile memory L (mg C m-2, a share of AGc, not a separate mass) dL/dt = f_lab Pg - r_lab gTm L.
+      ! 0 (default): unchanged, bit-identical. Same laws as MUSE mp%isw_qshape, mp%isw_ishape, mp%isw_lab and sgp%isw_qshape, sgp%isw_ishape.
+      integer  :: isw_qshape, isw_ishape, isw_lab
+      real(rk) :: kq_n, kq_p, n_ishape, f_lab, r_lab
+      type (type_bottom_state_variable_id) :: id_lab
+      !<--- jsasaki 2026-10-12
       ! jsasaki 2026-10-07: wave 2 family A: isw_exu_dest = 1: the exudate (f_exu x gross fixation) goes to the benthic dissolved carbon Q1c (pore-water DOC, as MUSE's
       ! cell DOC) instead of the pelagic semi-labile DOC R2c; 0 (default): R2c as before (bit-identical). Legacy path only; needs the coupling Q1c.
       integer  :: isw_exu_dest
@@ -496,6 +506,23 @@ contains
       if (self%isw_clim == 2) call self%register_dependency(self%id_co2w, 'CarbA', 'mmol/m^3', 'CO2* of the water (carbonic acid concentration of the carbonate module)')
       if (self%isw_clim /= 0) call self%register_diagnostic_variable(self%id_fclim, 'fClim', '-', 'inorganic-carbon limitation factor of gross production', &
          source=source_do_bottom)
+      !<--- jsasaki 2026-10-12
+      !---> jsasaki 2026-10-12: Stage AB diagnostic: limitation-function shapes and labile respiration (see the type declaration)
+      call self%get_parameter(self%isw_qshape, 'isw_qshape', '', 'quota factor: 1 = Flynn (2008) normalised quota function with curvature kq_n, kq_p [0: linear]', &
+         default=0, minimum=0, maximum=1)
+      call self%get_parameter(self%kq_n, 'kq_n', '-', 'curvature 1/KQ of the N quota function (isw_qshape = 1; 0 = linear)', default=0.0_rk, minimum=-0.95_rk, maximum=1.0e3_rk)
+      call self%get_parameter(self%kq_p, 'kq_p', '-', 'curvature 1/KQ of the P quota function (isw_qshape = 1; 0 = linear)', default=0.0_rk, minimum=-0.95_rk, maximum=1.0e3_rk)
+      call self%get_parameter(self%isw_ishape, 'isw_ishape', '', 'P-I shape: 1 = tanh(u**n_ishape)**(1/n_ishape) [0: tanh]', default=0, minimum=0, maximum=1)
+      call self%get_parameter(self%n_ishape, 'n_ishape', '-', 'sharpness exponent of the P-I curve (isw_ishape = 1; 1 = tanh)', default=1.0_rk, minimum=0.2_rk, maximum=20.0_rk)
+      call self%get_parameter(self%isw_lab, 'isw_lab', '', 'production-coupled (labile) respiration of the AG carbon: 1 = on (legacy path only) [0: off]', &
+         default=0, minimum=0, maximum=1)
+      call self%get_parameter(self%f_lab, 'f_lab', '-', 'fraction of gross production entering the labile memory (isw_lab = 1)', default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+      call self%get_parameter(self%r_lab, 'r_lab', '1/d', 'respiration rate of the labile memory at Tref_m (isw_lab = 1)', default=0.84_rk, minimum=0.0_rk, maximum=100.0_rk)
+      if (.not. all(abs([self%kq_n, self%kq_p, self%n_ishape, self%f_lab, self%r_lab]) <= huge(1.0_rk))) &
+         call self%fatal_error('initialize', 'kq_n, kq_p, n_ishape, f_lab and r_lab must be finite')
+      if (self%isw_lab == 1 .and. self%isw_uni == 1) call self%fatal_error('initialize', 'isw_lab = 1 is implemented on the legacy path (isw_uni = 0) only')
+      if (self%isw_lab == 1) call self%register_state_variable(self%id_lab, 'lab', 'mg C/m^2', 'labile memory of recent gross production (a share of AGc)', &
+         initial_value=0.0_rk, minimum=0.0_rk)
       !<--- jsasaki 2026-10-12
       if (.not. (self%z_mat >= 0.0_rk .and. self%z_mat < huge(1.0_rk) .and. self%k_sed >= 0.0_rk .and. self%k_sed < huge(1.0_rk))) &
          call self%fatal_error('initialize', 'z_mat and k_sed must be finite and non-negative')
@@ -808,6 +835,7 @@ contains
       real(rk) :: eT, lai, I_can, eI, qn, qp, eQ
       real(rk) :: tau
       real(rk) :: Pg, Ra_act, Ra_bas, Rn, Rb, fO2ag, fO2bg
+      real(rk) :: Lab      ! jsasaki 2026-10-12: Stage AB diagnostic (labile memory)
       real(rk) :: Pnet_ag, T_st, T_mb, G_bg, G_bg_c
       real(rk) :: relE, nsc_gap, G_alloc, G_res, gscale
       real(rk) :: cap_n, cap_p, upt_leaf, upt_root
@@ -875,14 +903,21 @@ contains
             I_can = max(0.0_rk, par)
          end if
          eI = tanh(self%alpha * I_can)
+         ! jsasaki 2026-10-12: Stage AB diagnostic: P-I shape (isw_ishape = 0: unchanged)
+         if (self%isw_ishape == 1) eI = pi_shape(self%alpha * I_can, self%n_ishape)
          ! jsasaki 2026-10-07: wave 2 family A: layered operator, the mean of tanh over the slab of optical thickness k_sed z_mat + k_can a_lai AGc
          if (self%isw_light == 1) eI = mat_light_mean(self%alpha * max(0.0_rk, par), self%k_sed * self%z_mat + tau)
+         ! jsasaki 2026-10-12: Stage AB diagnostic: the slab mean of the shaped P-I curve (isw_ishape = 0: unchanged)
+         if (self%isw_light == 1 .and. self%isw_ishape == 1) eI = mat_light_mean_g(self%alpha * max(0.0_rk, par), self%k_sed * self%z_mat + tau, self%n_ishape)
 
          qn = AGn / max(AGc, 1.0e-8_rk)
          qp = AGp / max(AGc, 1.0e-8_rk)
          eQ = min(max(0.0_rk, (qn - self%qn_min) / (self%qn_max - self%qn_min)), &
                   max(0.0_rk, (qp - self%qp_min) / (self%qp_max - self%qp_min)))
          eQ = min(1.0_rk, eQ)
+         ! jsasaki 2026-10-12: Stage AB diagnostic: Flynn (2008) quota shape (isw_qshape = 0: unchanged)
+         if (self%isw_qshape == 1) eQ = min(q_shape((qn - self%qn_min) / (self%qn_max - self%qn_min), self%kq_n), &
+                                            q_shape((qp - self%qp_min) / (self%qp_max - self%qp_min), self%kq_p))
 
          ! --- Production and respiration (mg C/m^2/d) ---------------------
          Pg = self%p_max * eT * eI * eQ * AGc
@@ -911,6 +946,14 @@ contains
             gTm = eT
          end if
          Ra_bas = self%srs_ag * gTm * AGc * fO2ag
+         !---> jsasaki 2026-10-12: Stage AB diagnostic: production-coupled (labile) respiration (isw_lab = 0: unchanged)
+         if (self%isw_lab == 1) then
+            _GET_HORIZONTAL_(self%id_lab, Lab)
+            Lab = max(Lab, 0.0_rk)
+            Ra_bas = Ra_bas + self%r_lab * gTm * Lab * fO2ag
+            _SET_BOTTOM_ODE_(self%id_lab, self%f_lab * Pg - self%r_lab * gTm * Lab)
+         end if
+         !<--- jsasaki 2026-10-12
          Rn = self%r_nsc * gTm * NSCc * fO2ag
          Rb = self%srs_bg * gTm * BGc * fO2bg
 
@@ -1346,10 +1389,15 @@ contains
          I_can = max(0.0_rk, par)
          if (tau > 1.0e-8_rk) I_can = I_can * (1.0_rk - exp(-tau)) / tau
          eI = tanh(self%alpha * I_can)
+         ! jsasaki 2026-10-12: Stage AB diagnostic: P-I shape (isw_ishape = 0: unchanged)
+         if (self%isw_ishape == 1) eI = pi_shape(self%alpha * I_can, self%n_ishape)
          ! U4: quota; U5: DIC and water O2
          qn = max(AGn, 0.0_rk) / max(AGc, epsC); qp = max(AGp, 0.0_rk) / max(AGc, epsC)
          eQ = min(max(0.0_rk, (qn - self%qn_min) / (self%qn_max - self%qn_min)), &
                   max(0.0_rk, (qp - self%qp_min) / (self%qp_max - self%qp_min)), 1.0_rk)
+         ! jsasaki 2026-10-12: Stage AB diagnostic: Flynn (2008) quota shape (isw_qshape = 0: unchanged)
+         if (self%isw_qshape == 1) eQ = min(q_shape((qn - self%qn_min) / (self%qn_max - self%qn_min), self%kq_n), &
+                                            q_shape((qp - self%qp_min) / (self%qp_max - self%qp_min), self%kq_p))
          fC = max(O3c, 0.0_rk) / (max(O3c, 0.0_rk) + self%K_dic)
          fO2 = max(O2o, 0.0_rk) / (max(O2o, 0.0_rk) + self%hO2)
 
@@ -1678,6 +1726,47 @@ contains
          f = 1.0_rk
       end select
    end function clim_factor
+   !<--- jsasaki 2026-10-12
+
+   !---> jsasaki 2026-10-12: Stage AB diagnostic: limitation-function shapes (same code as muse src/sed_network_x.F90)
+   ! Flynn (2008) normalised quota function of the linear quota factor x (clipped to [0, 1]): f = (1 + k) x / (1 + k x), k = 1/KQ > -1; f(0) = 0, f(1) = 1, k = 0 linear.
+   pure real(rk) function q_shape(x, k) result(f)
+      real(rk), intent(in) :: x, k
+      real(rk) :: xc
+      xc = min(1.0_rk, max(0.0_rk, x))
+      f = (1.0_rk + k) * xc / (1.0_rk + k * xc)
+   end function q_shape
+
+   ! P-I shape: g(u) = tanh(u**n)**(1/n), u >= 0 (n = 1: tanh; n -> infinity: min(u, 1)); g ~ u for small u.
+   pure real(rk) function pi_shape(u, n) result(g)
+      real(rk), intent(in) :: u, n
+      if (u <= 0.0_rk) then
+         g = 0.0_rk
+      else
+         g = tanh(u**n)**(1.0_rk / n)
+      end if
+   end function pi_shape
+
+   ! Mean over a layer of optical thickness tau of g(u0 exp(-tau xi)), xi in [0, 1]: composite 5-point Gauss-Legendre on 24 equal sub-intervals.
+   pure real(rk) function mat_light_mean_g(u0, tau, n) result(m)
+      real(rk), intent(in) :: u0, tau, n
+      real(rk), parameter :: r10 = sqrt(10.0_rk / 7.0_rk), s70 = sqrt(70.0_rk)
+      real(rk), parameter :: xg(5) = [0.5_rk - sqrt(5.0_rk + 2.0_rk * r10) / 6.0_rk, 0.5_rk - sqrt(5.0_rk - 2.0_rk * r10) / 6.0_rk, 0.5_rk, &
+                                      0.5_rk + sqrt(5.0_rk - 2.0_rk * r10) / 6.0_rk, 0.5_rk + sqrt(5.0_rk + 2.0_rk * r10) / 6.0_rk]
+      real(rk), parameter :: wg(5) = [(322.0_rk - 13.0_rk * s70) / 1800.0_rk, (322.0_rk + 13.0_rk * s70) / 1800.0_rk, 64.0_rk / 225.0_rk, &
+                                      (322.0_rk + 13.0_rk * s70) / 1800.0_rk, (322.0_rk - 13.0_rk * s70) / 1800.0_rk]
+      integer, parameter :: nsub = 24
+      integer :: j, k
+      real(rk) :: h
+      m = 0.0_rk
+      if (u0 <= 0.0_rk) return
+      h = 1.0_rk / nsub
+      do j = 0, nsub - 1
+         do k = 1, 5
+            m = m + wg(k) * h * pi_shape(u0 * exp(-tau * (j + xg(k)) * h), n)
+         end do
+      end do
+   end function mat_light_mean_g
    !<--- jsasaki 2026-10-12
 
 end module ersem_seagrass
