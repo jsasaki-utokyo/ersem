@@ -617,8 +617,10 @@ contains
    !    r = k_CO2 + k_OH Kw / [H+]   (hydration by water and by hydroxide; Johnson 1982, Limnol. Oceanogr. 27:849),
    ! k = the unenhanced transfer velocity of CO2 at the in-situ Schmidt number (m/d), D = the diffusion coefficient of CO2 (Jaehne et al. 1987,
    ! J. Geophys. Res. 92:10767, fresh water, reduced by 6 % at S = 35). K1 and K2 are taken from the species of this step's speciation on its own
-   ! pH scale, so tau is exact for the solver's constants; the hydroxide term uses the same [H+] (the scale difference to Johnson's a_H is neglected:
-   ! the term is about a fifth of r at pH 8). Returns 1 for a non-positive k or species.
+   ! pH scale, so tau is exact for the solver's constants; the hydroxide term uses the same [H+], whereas Johnson's rate law is written with the activity a_H
+   ! of an NBS-calibrated electrode (about 0.13 pH units above the total scale): the hydroxide term is therefore underestimated by about a quarter (it is
+   ! about a quarter of r at pH 8, so r is low by 5-10 % and alpha by less). The 6 % reduction of D at S = 35 is an extrapolation (Jaehne et al. measured CO2 in
+   ! distilled water only). Returns 1 for a non-positive k or species.
    pure function chem_enhancement(k_md,T,S,pH,H2CO3,HCO3,CO3) result(alpha)
       real(rk), intent(in) :: k_md,T,S,pH,H2CO3,HCO3,CO3
       real(rk) :: alpha
@@ -630,7 +632,7 @@ contains
       K1 = h*HCO3/H2CO3
       K2 = h*CO3/HCO3
       tau = 1.0_rk + h*h/(K1*K2 + K1*h)
-      r = exp(1246.98_rk - 6.19e4_rk/TK - 183.0_rk*log(TK)) + exp(-930.13_rk + 0.0110_rk*S + 3.10e4_rk/TK + 140.9_rk*log(TK))/h   ! 1/s
+      r = exp(1246.98_rk - 6.19e4_rk/TK - 183.0_rk*log(TK)) + exp(-930.13_rk + 0.110_rk*sqrt(max(S,0.0_rk)) + 3.10e4_rk/TK + 140.9_rk*log(TK))/h   ! 1/s; Johnson (1982) eq. 19, Table 4: the salinity term is 0.110 S^0.5
       D = 5.019e-6_rk*exp(-19510.0_rk/(8.314462618_rk*TK))*(1.0_rk - 0.06_rk*S/35.0_rk)                                           ! m2/s
       z = D/(k_md/86400.0_rk)                                                                                                       ! m
       Qz = sqrt(r*tau/D)*z
