@@ -192,6 +192,14 @@ module ersem_seagrass
       ! supersaturation; one-sided, = 1 below o2ref_inh); 0 (default): no factor, bit-identical to the former code. Same law as MUSE mpb%isw_o2inh.
       integer  :: isw_o2inh
       real(rk) :: o2ref_inh, K_o2inh
+      ! jsasaki 2026-10-12: Stage AA diagnostic (candidate A): inorganic-carbon limitation of the gross production, Pg x C/(C + K_clim). isw_clim = 1: C = the water DIC;
+      ! 2: C = the water CO2* (the carbonate module's CarbA, needs the coupling CarbA); 3: C = the DIC at the producer surface behind a diffusive boundary layer of
+      ! thickness dbl_clim (supply D_clim/dbl_clim x (DIC - C) = the limited gross fixation; a quadratic); 0 (default): no factor, bit-identical to the former code.
+      ! Same family as MUSE mpb%isw_clim (bulk laws 1, 2 identical; the local law of MUSE reads its resolved pore water instead of a boundary layer).
+      integer  :: isw_clim
+      real(rk) :: K_clim, dbl_clim, D_clim
+      type (type_dependency_id) :: id_co2w
+      type (type_horizontal_diagnostic_variable_id) :: id_fclim
       ! jsasaki 2026-10-07: wave 2 family A: isw_exu_dest = 1: the exudate (f_exu x gross fixation) goes to the benthic dissolved carbon Q1c (pore-water DOC, as MUSE's
       ! cell DOC) instead of the pelagic semi-labile DOC R2c; 0 (default): R2c as before (bit-identical). Legacy path only; needs the coupling Q1c.
       integer  :: isw_exu_dest
@@ -476,6 +484,19 @@ contains
       ! jsasaki 2026-10-11: review r2 #109: both O2-inhibition constants must be finite (NaN passes the bounds comparisons of the parameter reader)
       if (.not. (self%o2ref_inh >= 0.0_rk .and. self%o2ref_inh <= huge(1.0_rk) .and. self%K_o2inh >= 1.0e-6_rk .and. self%K_o2inh <= huge(1.0_rk))) &
          call self%fatal_error('initialize', 'o2ref_inh and K_o2inh must be finite (o2ref_inh >= 0, K_o2inh >= 1e-6)')
+      !---> jsasaki 2026-10-12: Stage AA diagnostic (candidate A): inorganic-carbon limitation of the gross production (see the type declaration)
+      call self%get_parameter(self%isw_clim, 'isw_clim', '', 'inorganic-carbon limitation of gross production, Pg x C/(C + K_clim): 1 = water DIC, 2 = water CO2*, '// &
+         '3 = DIC behind a diffusive boundary layer [0: none]', default=0, minimum=0, maximum=3)
+      call self%get_parameter(self%K_clim, 'K_clim', 'mmol C/m^3', 'half-saturation of the inorganic-carbon limitation (isw_clim > 0)', default=310.0_rk, minimum=1.0e-6_rk)
+      call self%get_parameter(self%dbl_clim, 'dbl_clim', 'm', 'thickness of the diffusive boundary layer (isw_clim = 3)', default=5.0e-4_rk, minimum=1.0e-6_rk)
+      call self%get_parameter(self%D_clim, 'D_clim', 'm^2/d', 'diffusion coefficient of DIC in the boundary layer (isw_clim = 3)', default=8.2e-5_rk, minimum=1.0e-9_rk)
+      if (.not. (self%K_clim >= 1.0e-6_rk .and. self%K_clim <= huge(1.0_rk) .and. self%dbl_clim >= 1.0e-6_rk .and. self%dbl_clim <= huge(1.0_rk) &
+                 .and. self%D_clim >= 1.0e-9_rk .and. self%D_clim <= huge(1.0_rk))) &
+         call self%fatal_error('initialize', 'K_clim, dbl_clim and D_clim must be finite and positive')
+      if (self%isw_clim == 2) call self%register_dependency(self%id_co2w, 'CarbA', 'mmol/m^3', 'CO2* of the water (carbonic acid concentration of the carbonate module)')
+      if (self%isw_clim /= 0) call self%register_diagnostic_variable(self%id_fclim, 'fClim', '-', 'inorganic-carbon limitation factor of gross production', &
+         source=source_do_bottom)
+      !<--- jsasaki 2026-10-12
       if (.not. (self%z_mat >= 0.0_rk .and. self%z_mat < huge(1.0_rk) .and. self%k_sed >= 0.0_rk .and. self%k_sed < huge(1.0_rk))) &
          call self%fatal_error('initialize', 'z_mat and k_sed must be finite and non-negative')
       if (self%isw_uni == 1 .and. self%isw_light /= 0) &
@@ -781,6 +802,7 @@ contains
 
       real(rk) :: AGc, AGn, AGp, BGc, BGn, BGp, NSCc
       real(rk) :: O2o, N1p, N3n, N4n, O3c, fK1, fK3, fP1
+      real(rk) :: fcl, co2w_cl      ! jsasaki 2026-10-12: Stage AA diagnostic (candidate A)
       real(rk) :: K1p1, K1p2, K3n1, K3n2, K4n1, K4n2, G2o
       real(rk) :: ETW, par
       real(rk) :: eT, lai, I_can, eI, qn, qp, eQ
@@ -868,6 +890,17 @@ contains
          if (self%isw_fix == 1) Pg = Pg * max(O3c, 0.0_rk) / (max(O3c, 0.0_rk) + self%K_dic)
          ! jsasaki 2026-10-11: Stage Y diagnostic: O2 inhibition (isw_o2inh = 0: unchanged)
          if (self%isw_o2inh == 1) Pg = Pg / (1.0_rk + max(0.0_rk, O2o - self%o2ref_inh) / self%K_o2inh)
+         !---> jsasaki 2026-10-12: Stage AA diagnostic (candidate A): inorganic-carbon limitation (isw_clim = 0: unchanged)
+         if (self%isw_clim /= 0) then
+            co2w_cl = 0.0_rk
+            if (self%isw_clim == 2) then
+               _GET_(self%id_co2w, co2w_cl)
+            end if
+            fcl = clim_factor(self%isw_clim, self%K_clim, self%D_clim / self%dbl_clim, max(O3c, 0.0_rk), max(co2w_cl, 0.0_rk), Pg / CMass)
+            Pg = Pg * fcl
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fclim, fcl)
+         end if
+         !<--- jsasaki 2026-10-12
          fO2ag = max(0.0_rk, O2o) / (max(0.0_rk, O2o) + self%hO2)
          fO2bg = max(0.0_rk, G2o) / (max(0.0_rk, G2o) + self%hG2o)
          Ra_act = self%pu_ra * Pg
@@ -1275,6 +1308,7 @@ contains
       real(rk) :: dd(2), zt(2), zb(2), dF(2), wl(2), cn4(2), cn3(2), cp(2), u4(2), u3(2), up(2)
       real(rk) :: dAGc, dBGc, dNSC, dAGn, dAGp, dBGn, dBGp, qlost
       real(rk) :: red3l, red3r, rbn, rbp
+      real(rk) :: fcl, co2w_cl      ! jsasaki 2026-10-12: Stage AA diagnostic (candidate A)
       integer :: k
       real(rk), parameter :: epsC = 1.0e-8_rk * CMass      ! the MUSE carbon floor 1e-8 mmol C, in mg C
 
@@ -1323,6 +1357,17 @@ contains
          Pg = self%p_max * eT * eI * eQ * fC * AGc
          ! jsasaki 2026-10-11: Stage Y diagnostic: O2 inhibition (isw_o2inh = 0: unchanged)
          if (self%isw_o2inh == 1) Pg = Pg / (1.0_rk + max(0.0_rk, O2o - self%o2ref_inh) / self%K_o2inh)
+         !---> jsasaki 2026-10-12: Stage AA diagnostic (candidate A): inorganic-carbon limitation (isw_clim = 0: unchanged)
+         if (self%isw_clim /= 0) then
+            co2w_cl = 0.0_rk
+            if (self%isw_clim == 2) then
+               _GET_(self%id_co2w, co2w_cl)
+            end if
+            fcl = clim_factor(self%isw_clim, self%K_clim, self%D_clim / self%dbl_clim, max(O3c, 0.0_rk), max(co2w_cl, 0.0_rk), Pg / CMass)
+            Pg = Pg * fcl
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fclim, fcl)
+         end if
+         !<--- jsasaki 2026-10-12
          Ract = self%pu_ra * Pg
          RmA = self%srs_ag * gT * AGc * fO2
          RmB = self%srs_bg * gT * BGc * fO2
@@ -1609,5 +1654,30 @@ contains
          f1 = 0.0_rk; j = 0.0_rk
       end if
    end subroutine
+
+   !---> jsasaki 2026-10-12: Stage AA diagnostic (candidate A): the inorganic-carbon limitation factor C/(C + K) of the gross production.
+   ! law 1: C = dic (water DIC, mmol m-3); law 2: C = co2 (water CO2*, mmol m-3); law 3: C = the DIC at the producer surface behind a diffusive
+   ! boundary layer of conductance kl (m/d): kl (dic - C) = pm C/(C + K) with pm the unlimited areal gross fixation (mmol C m-2 d-1), the positive root of
+   ! kl C^2 + (kl (K - dic) + pm) C - kl K dic = 0. The gross fixation is used as the demand (the producer's own respiration returns carbon inside the layer,
+   ! so the drawdown is an upper estimate).
+   pure real(rk) function clim_factor(law, K, kl, dic, co2, pm) result(f)
+      integer, intent(in) :: law
+      real(rk), intent(in) :: K, kl, dic, co2, pm
+      real(rk) :: b, cs
+      select case (law)
+      case (1)
+         f = dic / (dic + K)
+      case (2)
+         f = co2 / (co2 + K)
+      case (3)
+         b = kl * (K - dic) + max(pm, 0.0_rk)
+         cs = (-b + sqrt(b * b + 4.0_rk * kl * kl * K * dic)) / (2.0_rk * kl)
+         cs = max(0.0_rk, min(cs, dic))
+         f = cs / (cs + K)
+      case default
+         f = 1.0_rk
+      end select
+   end function clim_factor
+   !<--- jsasaki 2026-10-12
 
 end module ersem_seagrass

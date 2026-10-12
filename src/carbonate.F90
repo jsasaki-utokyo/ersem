@@ -22,6 +22,11 @@ module ersem_carbonate
       type (type_diagnostic_variable_id) :: id_ph_selected
 
       type (type_horizontal_diagnostic_variable_id) :: id_fair,id_wnd_diag
+      ! jsasaki 2026-10-12: Stage AA diagnostic (candidate B): isw_chem_enh = 1 multiplies the CO2 transfer velocity by the chemical enhancement factor of the
+      ! stagnant-film model (Hoover and Berkshire 1969, as used by Wanninkhof and Knox 1996): CO2 hydration/hydroxylation inside the film; no free parameter.
+      ! 0 (default): no factor, bit-identical to the former code. The O2 exchange (ersem/oxygen) is not touched.
+      type (type_horizontal_diagnostic_variable_id) :: id_chem_enh
+      integer :: isw_chem_enh
 
       integer :: iswCO2X,iswtalk,iswASFLUX,phscale
       integer :: engine   ! carbonate engine (0: legacy ERSEM, 1: carbonate-engine)
@@ -66,6 +71,8 @@ contains
 !BOC
       call self%get_parameter(self%iswCO2X,'iswCO2','','carbonate system diagnostics (0: off, 1: on)',default=1,minimum=0,maximum=1)
       call self%get_parameter(self%iswASFLUX,'iswASFLUX','','air-sea CO2 exchange (0: none, 1: Nightingale et al. 2000, 2: Wanninkhof 1992 without chemical enhancement, 3: Wanninkhof 1992 with chemical enhancement, 4: Wanninkhof and McGillis 1999, 5: Wanninkhof 1992 switching to Wanninkhof and McGillis 1999, 6: Wanninkhof 2014)',default=6,minimum=0, maximum=6)
+      ! jsasaki 2026-10-12: Stage AA diagnostic (candidate B): chemical enhancement of the air-sea CO2 exchange (see the type declaration)
+      call self%get_parameter(self%isw_chem_enh,'isw_chem_enh','','chemical enhancement of the air-sea CO2 transfer velocity (0: none, 1: Hoover and Berkshire 1969 stagnant film)',default=0,minimum=0,maximum=1)
       call self%get_parameter(self%iswtalk,'iswtalk','','alkalinity formulation (1-4: from salinity and temperature, 5: dynamic alkalinity)',default=5, minimum=1, maximum=6)
       call self%get_parameter(self%phscale,'pHscale','','pH scale (1: total, 0: SWS, -1: SWS backward compatible)',default=1,minimum=-1,maximum=1)
       call self%get_parameter(self%engine,'engine','','carbonate engine (0: legacy ERSEM, 1: carbonate-engine)',default=0,minimum=0,maximum=1)
@@ -232,6 +239,8 @@ contains
       if (self%iswASFLUX>=1) then
          call self%register_diagnostic_variable(self%id_fair,'fair','mmol C/m^2/d','air-sea flux of CO2',source=source_do_surface)
          call self%register_diagnostic_variable(self%id_wnd_diag,'wind','m/s','surface wind speed',source=source_do_surface)
+         ! jsasaki 2026-10-12: Stage AA diagnostic (candidate B): the enhancement factor (registered only when the switch is on)
+         if (self%isw_chem_enh==1) call self%register_diagnostic_variable(self%id_chem_enh,'chem_enh','-','chemical enhancement factor of the air-sea CO2 transfer velocity',source=source_do_surface)
       end if
 
       call self%register_dependency(self%id_ETW, standard_variables%temperature)
@@ -481,6 +490,7 @@ contains
       real(rk) :: ctot,TA,pH,PCO2,H2CO3,HCO3,CO3,Hplus,k0co2
       logical  :: success
       real(rk) :: PTm,SiTm,NH3Tm,H2STm   ! jsasaki 2026-10-07: family E
+      real(rk) :: enh                    ! jsasaki 2026-10-12: Stage AA diagnostic (candidate B)
 
       if (self%iswASFLUX<=0) return
 
@@ -583,6 +593,15 @@ contains
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_wnd_diag,wnd) ! diagnostic in m/s
 
          fwind = fwind*24._rk/100._rk   ! convert from cm/hr to m/day
+         !---> jsasaki 2026-10-12: Stage AA diagnostic (candidate B): chemical enhancement of the CO2 transfer velocity (isw_chem_enh = 0: unchanged).
+         ! Without a successful speciation of this step (pH and the species are then not defined) no enhancement is applied.
+         if (self%isw_chem_enh==1) then
+            enh = 1.0_rk
+            if (success) enh = chem_enhancement(fwind,T,S,pH,H2CO3,HCO3,CO3)
+            fwind = fwind*enh
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_chem_enh,enh)
+         end if
+         !<--- jsasaki 2026-10-12
          UPTAKE = fwind * k0co2 * ( PCO2A/1.e6_rk - PCO2 )
 
          FAIRCO2 = UPTAKE * 1.e3_rk * density
@@ -591,6 +610,34 @@ contains
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_fair,FAIRCO2)
       _HORIZONTAL_LOOP_END_
    end subroutine
+
+   !---> jsasaki 2026-10-12: Stage AA diagnostic (candidate B): chemical enhancement factor of the CO2 transfer velocity, stagnant-film model of
+   ! Hoover and Berkshire (1969, J. Geophys. Res. 74:456) in the form of Wanninkhof and Knox (1996, Limnol. Oceanogr. 41:689, their eq. 4):
+   !    alpha = tau / ((tau - 1) + tanh(Q z)/(Q z)),  tau = 1 + [H+]^2/(K1 K2 + K1 [H+]),  Q = sqrt(r tau / D),  z = D / k,
+   !    r = k_CO2 + k_OH Kw / [H+]   (hydration by water and by hydroxide; Johnson 1982, Limnol. Oceanogr. 27:849),
+   ! k = the unenhanced transfer velocity of CO2 at the in-situ Schmidt number (m/d), D = the diffusion coefficient of CO2 (Jaehne et al. 1987,
+   ! J. Geophys. Res. 92:10767, fresh water, reduced by 6 % at S = 35). K1 and K2 are taken from the species of this step's speciation on its own
+   ! pH scale, so tau is exact for the solver's constants; the hydroxide term uses the same [H+] (the scale difference to Johnson's a_H is neglected:
+   ! the term is about a fifth of r at pH 8). Returns 1 for a non-positive k or species.
+   pure function chem_enhancement(k_md,T,S,pH,H2CO3,HCO3,CO3) result(alpha)
+      real(rk), intent(in) :: k_md,T,S,pH,H2CO3,HCO3,CO3
+      real(rk) :: alpha
+      real(rk) :: TK,h,K1,K2,tau,r,D,z,Qz
+      alpha = 1.0_rk
+      if (.not. (k_md > 0.0_rk .and. H2CO3 > 0.0_rk .and. HCO3 > 0.0_rk .and. CO3 > 0.0_rk)) return
+      TK = T + 273.15_rk
+      h = 10.0_rk**(-pH)
+      K1 = h*HCO3/H2CO3
+      K2 = h*CO3/HCO3
+      tau = 1.0_rk + h*h/(K1*K2 + K1*h)
+      r = exp(1246.98_rk - 6.19e4_rk/TK - 183.0_rk*log(TK)) + exp(-930.13_rk + 0.0110_rk*S + 3.10e4_rk/TK + 140.9_rk*log(TK))/h   ! 1/s
+      D = 5.019e-6_rk*exp(-19510.0_rk/(8.314462618_rk*TK))*(1.0_rk - 0.06_rk*S/35.0_rk)                                           ! m2/s
+      z = D/(k_md/86400.0_rk)                                                                                                       ! m
+      Qz = sqrt(r*tau/D)*z
+      if (.not. (Qz > 1.0e-8_rk)) return
+      alpha = tau/((tau - 1.0_rk) + tanh(Qz)/Qz)
+   end function chem_enhancement
+   !<--- jsasaki 2026-10-12
 
 !-----------------------------------------------------------------------
 !BOP
