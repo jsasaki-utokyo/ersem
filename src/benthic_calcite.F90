@@ -57,6 +57,13 @@ module ersem_benthic_calcite
       type (type_horizontal_diagnostic_variable_id) :: id_om_pore(3), id_pdiss(3), id_pfail
       type (type_horizontal_diagnostic_variable_id) :: id_ledger_pdiss_c, id_ledger_pdiss_benDIC(3), id_ledger_pdiss_benTA(3)
       !<--- jsasaki 2026-10-17
+      !---> jsasaki 2026-10-18: carbonate Step 4b (review round 3 astra #2, Fable #2): isw_omega_pore = 2 reads the LOCAL layer
+      ! pore water concentrations (lagged copies of the transport reconstruction <name><i>_conc, mmol m-3) instead of the uniform
+      ! split of the column inventory; ksp_scale multiplies the solubility product (1 calcite, ~1.5 aragonite / high-Mg calcite)
+      real(rk) :: ksp_scale = 1.0_rk
+      type (type_horizontal_dependency_id)          :: id_cDIC(3), id_cTA(3), id_cH2S(3), id_cNH4(3), id_cPO4(3), id_cSi(3)
+      type (type_horizontal_diagnostic_variable_id) :: id_om_arg_pore(3)
+      !<--- jsasaki 2026-10-18
 
    contains
       procedure :: initialize
@@ -179,8 +186,10 @@ contains
       ! isw_fe laws), so the layer values differ only through what the layers hold. The stock is spread uniformly over the top
       ! z_cal metres; each layer dissolves its share at its own Omega, and the products (DIC +1, TA +2 per C) go into that
       ! layer's pore water instead of the overlying water. 0 (default) registers nothing: bit-identical.
-      call self%get_parameter(self%isw_omega_pore,'isw_omega_pore','','dissolution driver: 0 = Om_Cal coupling (as before), 1 = pore-water calcite saturation per benthic layer',default=0,minimum=0,maximum=1)
-      if (self%isw_omega_pore == 1) then
+      ! jsasaki 2026-10-18: Step 4b: value 2 added (local lagged layer concentrations); 0 and 1 unchanged
+      call self%get_parameter(self%isw_omega_pore,'isw_omega_pore','','dissolution driver: 0 = Om_Cal coupling (as before), 1 = pore-water calcite saturation per benthic layer from the uniform split of the column inventories, 2 = from the local (lagged) layer pore water concentrations',default=0,minimum=0,maximum=2)
+      ! jsasaki 2026-10-18: Step 4b: modes 1 and 2 share the registration below (mode 2 adds the local concentrations)
+      if (self%isw_omega_pore >= 1) then
          if (self%iswcal /= 1) call self%fatal_error('initialize','isw_omega_pore = 1 requires iswcal = 1 (power law)')
          if (.not. (self%ndiss > 0.0_rk .and. self%ndiss < huge(1.0_rk))) call self%fatal_error('initialize','isw_omega_pore = 1 requires a positive finite ndiss')
          if (self%fdissmin /= 0.0_rk .and. self%iswdiss == 0) call self%fatal_error('initialize','isw_omega_pore = 1 requires no rate floor (fdissmin = 0 or iswdiss = 1)')
@@ -196,6 +205,14 @@ contains
          call register_pore_layer(2, '2')
          call register_pore_layer(3, '3')
          call self%register_diagnostic_variable(self%id_pfail,'om_pore_fail','-','number of layers whose pore-water speciation failed (no dissolution there)',source=source_do_bottom)
+         !---> jsasaki 2026-10-18: Step 4b: solubility multiplier (both pore modes; 1 = calcite, the division by 1 is exact) and mode 2
+         call self%get_parameter(self%ksp_scale,'ksp_scale','-','multiplier of the calcite solubility product in the pore-water driver (1: calcite; ~1.5: aragonite or high-Mg calcite)',default=1.0_rk,minimum=1.0e-6_rk)
+         if (self%isw_omega_pore == 2) then
+            call register_local_layer(1, '1')
+            call register_local_layer(2, '2')
+            call register_local_layer(3, '3')
+         end if
+         !<--- jsasaki 2026-10-18
       end if
       !<--- jsasaki 2026-10-17
       call self%get_parameter(c0,'c0','mg C/m^2','background calcite concentration',default=0.0_rk)
@@ -251,7 +268,8 @@ contains
          end if
       end if
       ! jsasaki 2026-10-17: carbonate Step 2 CARB_OMEGA=pore: its ledger counters (isw_ledger is read above)
-      if (self%isw_ledger == 1 .and. self%isw_omega_pore == 1) then
+      ! jsasaki 2026-10-18: Step 4b: also for mode 2
+      if (self%isw_ledger == 1 .and. self%isw_omega_pore >= 1) then
          call self%register_diagnostic_variable(self%id_ledger_pdiss_c,'ledger_pdiss_c','mg C/m^2/d', &
               'ledger: pore-water-driven calcite dissolution -> benthic calcite', source=source_do_bottom)
          call register_pore_ledger(1, '1')
@@ -276,6 +294,22 @@ contains
          call self%register_diagnostic_variable(self%id_om_pore(l),'om_cal_pore'//lab,'-','pore-water calcite saturation of layer '//lab,source=source_do_bottom)
          call self%register_diagnostic_variable(self%id_pdiss(l),'pdissolution'//lab,'mg C/m^2/d','pore-water-driven dissolution in layer '//lab,source=source_do_bottom)
       end subroutine register_pore_layer
+
+      !---> jsasaki 2026-10-18: Step 4b isw_omega_pore = 2: the local pore water concentrations of one layer (mmol m-3; couplings
+      ! set in the yaml to the lagged states of the dissolved-matter columns, e.g. DIC_conc1: G3/c1_lag, TA_conc1: G5/a1_lag,
+      ! H2S_conc1: G2_H2S/h1_lag, NH4_conc1: K4/n1_lag, PO4_conc1: K1/p1_lag, Si_conc1: K5/s1_lag) and the aragonite diagnostic
+      subroutine register_local_layer(l, lab)
+         integer,          intent(in) :: l
+         character(len=*), intent(in) :: lab
+         call self%register_dependency(self%id_cDIC(l),'DIC_conc'//lab,'mmol/m^3','local pore-water DIC of layer '//lab)
+         call self%register_dependency(self%id_cTA(l),'TA_conc'//lab,'mmol/m^3','local pore-water alkalinity of layer '//lab)
+         call self%register_dependency(self%id_cH2S(l),'H2S_conc'//lab,'mmol/m^3','local pore-water sulfide of layer '//lab)
+         call self%register_dependency(self%id_cNH4(l),'NH4_conc'//lab,'mmol/m^3','local pore-water ammonium of layer '//lab)
+         call self%register_dependency(self%id_cPO4(l),'PO4_conc'//lab,'mmol/m^3','local pore-water phosphate of layer '//lab)
+         call self%register_dependency(self%id_cSi(l),'Si_conc'//lab,'mmol/m^3','local pore-water silicate of layer '//lab)
+         call self%register_diagnostic_variable(self%id_om_arg_pore(l),'om_arg_pore'//lab,'-','pore-water aragonite saturation of layer '//lab//' (mode 2)',source=source_do_bottom)
+      end subroutine register_local_layer
+      !<--- jsasaki 2026-10-18
 
       subroutine register_pore_ledger(l, lab)
          integer,          intent(in) :: l
@@ -302,6 +336,7 @@ contains
       ! jsasaki 2026-10-17: carbonate Step 2 CARB_OMEGA=pore
       real(rk) :: ETW_p, X1X_p, dens_p, poro_p, Dm_p(3), top_p, thk_p, w_p, vol_p, R_p(3), om_p(3), nfail_p
       real(rk) :: qDIC, qTA, qH2S, qNH4, qPO4, qSi, pH_p, fco2_p, h2co3_p, hco3_p, co3_p, k0_p, om_arg_p
+      real(rk) :: cDIC, cTA, cH2S, cNH4, cPO4, cSi   ! jsasaki 2026-10-18: Step 4b mode 2 (mmol m-3)
       logical  :: ok_p
       integer  :: l_p
 
@@ -350,11 +385,16 @@ contains
             end do
             R_p = 0.0_rk; om_p = 1.0_rk; nfail_p = 0.0_rk; top_p = 0.0_rk
             do l_p = 1, 3
+               ! jsasaki 2026-10-18: Step 4b mode 2: aragonite diagnostic 1 where the layer is skipped or fails
+               if (self%isw_omega_pore == 2) then
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_om_arg_pore(l_p), 1.0_rk)
+               end if
                thk_p = Dm_p(l_p) - top_p
                w_p = max(0.0_rk, min(Dm_p(l_p), self%z_cal) - min(top_p, self%z_cal)) / self%z_cal
                top_p = Dm_p(l_p)
                vol_p = poro_p * thk_p
                if (.not. (vol_p > 1.0e-9_rk)) cycle
+               if (self%isw_omega_pore == 1) then   ! jsasaki 2026-10-18: Step 4b: mode 1 unchanged
                _GET_HORIZONTAL_(self%id_pDIC(l_p), qDIC)
                _GET_HORIZONTAL_(self%id_pTA(l_p), qTA)
                _GET_HORIZONTAL_(self%id_pH2S(l_p), qH2S)
@@ -367,11 +407,34 @@ contains
                     max(qPO4, 0.0_rk)/vol_p/1.0e3_rk/dens_p, max(qSi, 0.0_rk)/vol_p/1.0e3_rk/dens_p, &
                     max(qH2S, 0.0_rk)/vol_p/1.0e3_rk/dens_p, max(qNH4, 0.0_rk)/vol_p/1.0e3_rk/dens_p, &
                     1, 10, 2, pH_p, fco2_p, h2co3_p, hco3_p, co3_p, k0_p, ok_p)
+               !---> jsasaki 2026-10-18: Step 4b mode 2: the local (lagged) layer concentrations, mmol m-3 -> mol kg-1; a layer
+               ! whose reconstructed DIC or TA is not positive counts as a failed speciation (no dissolution there)
+               else
+                  _GET_HORIZONTAL_(self%id_cDIC(l_p), cDIC)
+                  _GET_HORIZONTAL_(self%id_cTA(l_p), cTA)
+                  _GET_HORIZONTAL_(self%id_cH2S(l_p), cH2S)
+                  _GET_HORIZONTAL_(self%id_cNH4(l_p), cNH4)
+                  _GET_HORIZONTAL_(self%id_cPO4(l_p), cPO4)
+                  _GET_HORIZONTAL_(self%id_cSi(l_p), cSi)
+                  ok_p = cDIC > 0.0_rk .and. cTA > 0.0_rk
+                  if (ok_p) call carbonate_engine_solve_porewater(ETW_p, X1X_p, 0.0_rk, &
+                       cDIC/1.0e3_rk/dens_p, cTA/1.0e3_rk/dens_p, &
+                       max(cPO4, 0.0_rk)/1.0e3_rk/dens_p, max(cSi, 0.0_rk)/1.0e3_rk/dens_p, &
+                       max(cH2S, 0.0_rk)/1.0e3_rk/dens_p, max(cNH4, 0.0_rk)/1.0e3_rk/dens_p, &
+                       1, 10, 2, pH_p, fco2_p, h2co3_p, hco3_p, co3_p, k0_p, ok_p)
+               end if
+               !<--- jsasaki 2026-10-18
                if (.not. ok_p) then
                   nfail_p = nfail_p + 1.0_rk
                   cycle
                end if
                call CaCO3_Saturation(ETW_p, X1X_p, 0.0_rk, co3_p, om_p(l_p), om_arg_p, calcium_of_salinity(X1X_p))
+               !---> jsasaki 2026-10-18: Step 4b: solubility multiplier (exact no-op at 1) and the aragonite diagnostic of mode 2
+               om_p(l_p) = om_p(l_p) / self%ksp_scale
+               if (self%isw_omega_pore == 2) then
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_om_arg_pore(l_p), om_arg_p)
+               end if
+               !<--- jsasaki 2026-10-18
                R_p(l_p) = self%fdissmax * (max(1.0_rk - om_p(l_p), 0.0_rk))**self%ndiss * w_p * bL2c
             end do
             fdiss = 0.0_rk

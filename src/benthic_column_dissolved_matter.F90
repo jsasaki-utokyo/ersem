@@ -21,6 +21,7 @@ module ersem_benthic_column_dissolved_matter
       type (type_horizontal_dependency_id) :: id_pw_sms(nlayers) ! sources-sinks specified for layer-integrated pore water concentration
       type (type_horizontal_diagnostic_variable_id) :: id_pbf    ! pelagic-benthic flux
       type (type_horizontal_diagnostic_variable_id) :: id_cut
+      type (type_bottom_state_variable_id) :: id_lag(nlayers)    ! jsasaki 2026-10-18: Step 4b: lagged layer pore water concentration (conc_lag > 0 only)
       logical :: nonnegative = .true.                            ! Flag specifying whether constituent is non-negative
    end type
 
@@ -38,6 +39,7 @@ module ersem_benthic_column_dissolved_matter
       real(rk) :: ads(nlayers)
       real(rk) :: relax
       real(rk) :: h_supply, minD
+      real(rk) :: conc_lag = 0.0_rk     ! jsasaki 2026-10-18: Step 4b: relaxation time (d) of the lagged layer concentrations; 0 = off
       real(rk) :: cmix_scale = 1.0_rk   ! jsasaki 2026-10-07: unification family C wave 2: per-solute scale of the interface resistance (R_i/R_O2)
       integer :: last_layer
       logical :: correction
@@ -154,6 +156,14 @@ contains
          call self%get_parameter(self%ads(ilayer),'ads'//trim(index),'-','adsorption in layer '//trim(index)//' (total:dissolved)',default=1.0_rk)
       end do
       call self%get_parameter(self%correction,'correction','','move losses in oxygenic layer to deeper layers if pelagic concentration is limiting',default=.false.)
+      !---> jsasaki 2026-10-18: carbonate Step 4b (review round 3, astra #2 / Fable #2): a lagged copy of the layer pore water
+      ! concentrations <name><i>_conc (the mass-consistent transport reconstruction: the layer means integrate to the column
+      ! inventory) as bottom states <name><i>_lag relaxed toward them with time scale conc_lag. A reaction that must read the local
+      ! pore chemistry while writing sources into the same layers (benthic_calcite isw_omega_pore = 2) reads the lagged state; reading
+      ! the diagnostic itself would be a circular dependency. conc_lag = 0 (default) registers nothing: bit-identical.
+      call self%get_parameter(self%conc_lag,'conc_lag','d','relaxation time of the lagged layer pore water concentrations (0: off)',default=0.0_rk,minimum=0.0_rk)
+      if (self%conc_lag > 0.0_rk .and. self%last_layer /= nlayers) call self%fatal_error('benthic_dissolved_matter_initialize','conc_lag > 0 requires last_layer = 3 (the layer concentrations exist only then)')
+      !<--- jsasaki 2026-10-18
 
       ! Create model that computes concentrations per benthic layer.
       allocate(profile)
@@ -283,6 +293,8 @@ contains
          if (self%last_layer==nlayers) then
             call self%register_diagnostic_variable(self%id_conc_eq(ilayer),trim(name)//trim(index)//'_eq_conc','mmol/m^3','equilibrium pore water concentration of '//trim(long_name)// ' in layer '//trim(index),domain=domain_bottom,source=source_do_bottom)
             call self%register_diagnostic_variable(self%id_conc_tot(ilayer),trim(name)//trim(index)//'_conc','mmol/m^3','pore water concentration of '//trim(long_name)// ' in layer '//trim(index),domain=domain_bottom,source=source_do_bottom)
+            ! jsasaki 2026-10-18: Step 4b: the lagged layer concentration (conc_lag > 0 only)
+            if (self%conc_lag > 0.0_rk) call self%register_state_variable(info%id_lag(ilayer),trim(name)//trim(index)//'_lag','mmol/m^3','pore water concentration of '//trim(long_name)//' in layer '//trim(index)//', lagged (relaxed toward '//trim(name)//trim(index)//'_conc over conc_lag)')
          end if
       end do
 
@@ -318,6 +330,7 @@ contains
       real(rk) :: smscorr
       real(rk) :: diff(nlayers),poro,cmix
       real(rk) :: residual_per_layer(nlayers)
+      real(rk) :: conc_l, lag_l   ! jsasaki 2026-10-18: Step 4b
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -550,6 +563,14 @@ contains
             else
                _SET_HORIZONTAL_DIAGNOSTIC_(self%id_conc_tot(ilayer),0.0_rk)
             end if
+            !---> jsasaki 2026-10-18: Step 4b: relax the lagged copy toward the layer concentration just diagnosed (conc_lag > 0 only)
+            if (self%conc_lag > 0.0_rk) then
+               conc_l = 0.0_rk
+               if (Dm(ilayer)-d_top > 0.0_rk) conc_l = (P_res_int/Dm(nlayers)*residual_per_layer(ilayer)+c_int_per_layer_eq(ilayer))/(Dm(ilayer)-d_top)
+               _GET_HORIZONTAL_(info%id_lag(ilayer),lag_l)
+               _SET_BOTTOM_ODE_(info%id_lag(ilayer),(conc_l-lag_l)/self%conc_lag)
+            end if
+            !<--- jsasaki 2026-10-18
             d_top = Dm(ilayer)
          end do
 
