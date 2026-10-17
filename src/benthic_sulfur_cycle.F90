@@ -171,6 +171,8 @@ module ersem_benthic_sulfur_cycle
       type(type_horizontal_diagnostic_variable_id) :: id_ledger_thio_G4n, id_ledger_thio_K4n2, id_ledger_thio_benTA2
       type(type_horizontal_diagnostic_variable_id) :: id_ledger_srox_H2S_1, id_ledger_oxbur_S0s, id_ledger_oxbur_S0_1
       type(type_horizontal_diagnostic_variable_id) :: id_ledger_ox1_G2o, id_ledger_srox_benTA, id_ledger_sr3_benTA3
+      ! jsasaki 2026-10-17: carbonate Step 2 CARB_METER: counters of the isw_fe block (alkalinity, sulfide, oxygen)
+      type(type_horizontal_diagnostic_variable_id) :: id_ledger_fe_benTA(3), id_ledger_fe_H2S(3), id_ledger_fe_G2o
       ! layer-1 acid production diagnostic for reoxidation-driven carbonate dissolution (nippon-steel docs/129, C2)
       integer :: isw_acid_diag = 0
       type(type_horizontal_diagnostic_variable_id) :: id_acid_1
@@ -572,8 +574,27 @@ contains
            'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
            default=0, minimum=0, maximum=1)
       ! jsasaki 2026-10-07: unification family D wave 2 part 2: what isw_fe does not extend
-      if (self%isw_fe == 1 .and. self%isw_ledger == 1) call self%fatal_error('initialize', &
-           'isw_fe = 1 does not extend the ledger counters (isw_ledger must be 0)')
+      !---> jsasaki 2026-10-17: carbonate Step 2 CARB_METER: isw_fe = 1 now carries its own counters (the source terms of the
+      ! iron block exactly as applied, added to the legacy counters, which keep meaning the legacy SET calls), so isw_ledger = 1 is
+      ! accepted with it (it was refused). Diagnostics only.
+      if (self%isw_fe == 1 .and. self%isw_ledger == 1) then
+         call self%register_diagnostic_variable(self%id_ledger_fe_benTA(1), 'ledger_fe_benTA', 'mmol eq/m^2/d', &
+              'ledger: iron block (Fe(III) reduction, Fe2+/FeS/FeS2 oxidation, FeS/FeS2 formation) -> benthic alkalinity layer 1', &
+              domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_fe_benTA(2), 'ledger_fe_benTA2', 'mmol eq/m^2/d', &
+              'ledger: iron block -> benthic alkalinity layer 2', domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_fe_benTA(3), 'ledger_fe_benTA3', 'mmol eq/m^2/d', &
+              'ledger: iron block -> benthic alkalinity layer 3', domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_fe_H2S(1), 'ledger_fe_H2S_1', 'mmol S/m^2/d', &
+              'ledger: iron block -> H2S layer 1', domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_fe_H2S(2), 'ledger_fe_H2S_2', 'mmol S/m^2/d', &
+              'ledger: iron block -> H2S layer 2', domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_fe_H2S(3), 'ledger_fe_H2S_3', 'mmol S/m^2/d', &
+              'ledger: iron block -> H2S layer 3', domain=domain_bottom, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_fe_G2o, 'ledger_fe_G2o', 'mmol O_2/m^2/d', &
+              'ledger: iron block -> benthic oxygen layer 1', domain=domain_bottom, source=source_do_bottom)
+      end if
+      !<--- jsasaki 2026-10-17
       if (self%isw_fe == 1 .and. self%isw_h2s_layers /= 0) call self%fatal_error('initialize', &
            'isw_fe = 1 is implemented for the three-layer H2S column only (isw_h2s_layers = 0)')
       ! jsasaki 2026-10-07: review round 1 #3, #13: the Fe laws treat layer-1 S0 as a solid and use the 20 degC reference of the shared laws
@@ -1385,6 +1406,23 @@ contains
                _SET_BOTTOM_ODE_(self%id_benTA2, dTA(2))
                _SET_BOTTOM_ODE_(self%id_benTA3, dTA(3))
             end if
+            !---> jsasaki 2026-10-17: carbonate Step 2 CARB_METER: the iron block's terms as applied
+            if (self%isw_ledger == 1) then
+               if (.not.legacy_ersem_compatibility) then
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_fe_benTA(1), dTA(1))
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_fe_benTA(2), dTA(2))
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_fe_benTA(3), dTA(3))
+               else
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_fe_benTA(1), 0.0_rk)
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_fe_benTA(2), 0.0_rk)
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_fe_benTA(3), 0.0_rk)
+               end if
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_fe_H2S(1), dH2S(1))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_fe_H2S(2), dH2S(2))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_fe_H2S(3), dH2S(3))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_fe_G2o, dO2)
+            end if
+            !<--- jsasaki 2026-10-17
             do ilay_fe = 1, 7
                _SET_HORIZONTAL_DIAGNOSTIC_(self%id_Rfe(ilay_fe), sum(rl(ilay_fe, :)))
             end do

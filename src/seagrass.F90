@@ -124,6 +124,10 @@ module ersem_seagrass
 
       ! ledger counters (isw_ledger = 1 only; nippon-steel docs/119 FC1)
       integer  :: isw_ledger
+      ! jsasaki 2026-10-17: carbonate Step 2 CARB_METER: carbonate counters valid on every path (legacy incl. isw_no3red and
+      ! isw_exu_dest, and isw_uni), cl_<quantity>_<compartment>_<process>
+      integer  :: isw_carb_ledger = 0
+      type (type_horizontal_diagnostic_variable_id) :: id_cl(14)
       type (type_horizontal_diagnostic_variable_id) :: id_ledger_growth_O3c, id_ledger_growth_O2o
       type (type_horizontal_diagnostic_variable_id) :: id_ledger_bgresp_G2o
       type (type_horizontal_diagnostic_variable_id) :: id_ledger_leaf_N4n, id_ledger_leaf_N3n, id_ledger_leaf_N1p
@@ -573,6 +577,29 @@ contains
       call self%get_parameter(self%isw_ledger, 'isw_ledger', '', &
            'ledger counters: diagnostics of the source terms applied (0: off, 1: on)', &
            default=0, minimum=0, maximum=1)
+      !---> jsasaki 2026-10-17: carbonate Step 2 CARB_METER: isw_carb_ledger = 1 registers one counter per TA and DIC source term
+      ! this module applies (water: leaf N/P uptake, respiratory N/P return, grazer respiration; pore layers 1-2: root uptake and
+      ! below-ground respiration; DIC: growth and respiration, nitrate reductant, grazing), each the expression of its SET call,
+      ! on the legacy path (including isw_no3red and isw_exu_dest, which isw_ledger refuses) and on isw_uni. Diagnostics only.
+      call self%get_parameter(self%isw_carb_ledger, 'isw_carb_ledger', '', &
+           'carbonate counters of the TA and DIC source terms applied (0: off, 1: on)', default=0, minimum=0, maximum=1)
+      if (self%isw_carb_ledger == 1) then
+         call reg_cl(1,  'cl_TA_w_upt',   'mmol eq/m^2/d', 'TA -> water: leaf NO3, NH4, PO4 uptake')
+         call reg_cl(2,  'cl_TA_w_rsp',   'mmol eq/m^2/d', 'TA -> water: respiratory NH4, PO4 return')
+         call reg_cl(3,  'cl_TA_w_grz',   'mmol eq/m^2/d', 'TA -> water: grazer respiration N, P return')
+         call reg_cl(4,  'cl_TA_b1_upt',  'mmol eq/m^2/d', 'TA -> pore layer 1: root uptake')
+         call reg_cl(5,  'cl_TA_b2_upt',  'mmol eq/m^2/d', 'TA -> pore layer 2: root uptake')
+         call reg_cl(6,  'cl_TA_b1_rsp',  'mmol eq/m^2/d', 'TA -> pore layer 1: below-ground respiration N, P')
+         call reg_cl(7,  'cl_TA_b2_rsp',  'mmol eq/m^2/d', 'TA -> pore layer 2: below-ground respiration N, P')
+         call reg_cl(8,  'cl_DIC_w_gro',  'mmol C/m^2/d',  'DIC -> water: gross fixation and respiration')
+         call reg_cl(9,  'cl_DIC_w_red',  'mmol C/m^2/d',  'DIC -> water: nitrate reductant (leaves)')
+         call reg_cl(10, 'cl_DIC_w_grz',  'mmol C/m^2/d',  'DIC -> water: grazer respiration')
+         call reg_cl(11, 'cl_DIC_b1_rsp', 'mmol C/m^2/d',  'DIC -> pore layer 1: below-ground respiration')
+         call reg_cl(12, 'cl_DIC_b2_rsp', 'mmol C/m^2/d',  'DIC -> pore layer 2: below-ground respiration')
+         call reg_cl(13, 'cl_DIC_b1_red', 'mmol C/m^2/d',  'DIC -> pore layer 1: nitrate reductant (roots)')
+         call reg_cl(14, 'cl_DIC_b2_red', 'mmol C/m^2/d',  'DIC -> pore layer 2: nitrate reductant (roots)')
+      end if
+      !<--- jsasaki 2026-10-17
       if (uni .and. self%isw_ledger == 1) call self%fatal_error('initialize', 'isw_uni = 1 has its own diagnostics; use isw_ledger = 0')
       ! jsasaki 2026-10-07: the ledger counters do not carry the nitrate reductant
       if (self%isw_no3red == 1 .and. self%isw_ledger == 1) &
@@ -821,6 +848,14 @@ contains
          end do
       end if
 
+   ! jsasaki 2026-10-17: carbonate Step 2 CARB_METER: registration of one carbonate counter
+   contains
+      subroutine reg_cl(i, name, units, long_name)
+         integer,          intent(in) :: i
+         character(len=*), intent(in) :: name, units, long_name
+         call self%register_diagnostic_variable(self%id_cl(i), name, units, 'carbonate ledger: '//long_name, &
+              domain=domain_bottom, source=source_do_bottom)
+      end subroutine reg_cl
    end subroutine initialize
 
    subroutine do_bottom(self, _ARGUMENTS_DO_BOTTOM_)
@@ -1332,6 +1367,48 @@ contains
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_xG3c, xred_s)
          end if
 
+         !---> jsasaki 2026-10-17: carbonate Step 2 CARB_METER: the TA and DIC terms applied above (legacy path)
+         if (self%isw_carb_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(1), jN3_leaf - jN4_leaf + jP_leaf)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(2), (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn &
+               - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - rbw * rbp)
+            if (self%g_max > 0.0_rk) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(3), (qn - qp) * resp_gr)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(10), resp_gr / CMass)
+            else
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(3), 0.0_rk)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(10), 0.0_rk)
+            end if
+            if (self%isw_fix == 1) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(4), jN3_root * fK3 - jN4_root * fK1 + jP_root * fP1)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(5), jN3_root * (1.0_rk - fK3) - jN4_root * (1.0_rk - fK1) &
+                  + jP_root * (1.0_rk - fP1))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(6), f1 * (rbn - rbp))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(7), (1.0_rk - f1) * (rbn - rbp))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(11), f1 * Rb / CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(12), (1.0_rk - f1) * Rb / CMass)
+               if (self%isw_no3red == 1) then
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(13), xred_s * fK3)
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(14), xred_s * (1.0_rk - fK3))
+               else
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(13), 0.0_rk)
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(14), 0.0_rk)
+               end if
+            else
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(4), jN3_root - jN4_root + jP_root)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(5), 0.0_rk)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(6), 0.0_rk)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(7), 0.0_rk)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(11), 0.0_rk)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(12), 0.0_rk)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(13), 0.0_rk)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(14), 0.0_rk)
+            end if
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(8), (-Pg + Ra_act + Ra_bas + Rn + rbw * Rb) / CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(9), xred_w)
+         end if
+         !<--- jsasaki 2026-10-17
+
       _HORIZONTAL_LOOP_END_
 
    end subroutine do_bottom
@@ -1596,6 +1673,25 @@ contains
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(44), -(u4(1) + u4(2)) + rbn)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(45), -(up(1) + up(2)) + rbp)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_u(36), (u3(1) + u3(2)) - (u4(1) + u4(2)) + (up(1) + up(2)) + rbn - rbp)
+
+         !---> jsasaki 2026-10-17: carbonate Step 2 CARB_METER: the TA and DIC terms applied above (isw_uni path)
+         if (self%isw_carb_ledger == 1) then
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(1), L3 - L4 + LP)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(2), RmAr * (qn - qp))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(3), 0.0_rk)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(4), u3(1) - u4(1) + up(1))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(5), u3(2) - u4(2) + up(2))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(6), wl(1) * (rbn - rbp))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(7), wl(2) * (rbn - rbp))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(8), (-Pg + Ract + RmA) / CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(9), red3l)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(10), 0.0_rk)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(11), wl(1) * RmB / CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(12), wl(2) * RmB / CMass)
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(13), 2.0_rk * u3(1) * merge(1.0_rk, 0.0_rk, self%no3_red))
+            _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(14), 2.0_rk * u3(2) * merge(1.0_rk, 0.0_rk, self%no3_red))
+         end if
+         !<--- jsasaki 2026-10-17
 
       _HORIZONTAL_LOOP_END_
 
