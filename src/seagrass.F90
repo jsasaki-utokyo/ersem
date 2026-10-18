@@ -127,7 +127,10 @@ module ersem_seagrass
       ! jsasaki 2026-10-17: carbonate Step 2 CARB_METER: carbonate counters valid on every path (legacy incl. isw_no3red and
       ! isw_exu_dest, and isw_uni), cl_<quantity>_<compartment>_<process>
       integer  :: isw_carb_ledger = 0
-      type (type_horizontal_diagnostic_variable_id) :: id_cl(14)
+      ! jsasaki 2026-10-18: carbonate Step 4c A1: counters 15-22 of the pore-water transfer (f_pore > 0 only)
+      type (type_horizontal_diagnostic_variable_id) :: id_cl(22)
+      ! jsasaki 2026-10-18: carbonate Step 4c A1 (review round 4: Fable #3, astra #2): pore-water share of the legacy path's exchanges
+      real(rk) :: f_pore = 0.0_rk, f_pore_o2 = 0.0_rk
       type (type_horizontal_diagnostic_variable_id) :: id_ledger_growth_O3c, id_ledger_growth_O2o
       type (type_horizontal_diagnostic_variable_id) :: id_ledger_bgresp_G2o
       type (type_horizontal_diagnostic_variable_id) :: id_ledger_leaf_N4n, id_ledger_leaf_N3n, id_ledger_leaf_N1p
@@ -385,6 +388,20 @@ contains
       call self%get_parameter(self%K_dic, 'K_dic', 'mmol C/m^3', 'half-saturation of gross fixation in the water DIC '// &
          '(isw_fix = 1; a positivity guard: the fixation stops when the DIC is exhausted)', default=dflt(uni, 1.0_rk, 10.0_rk), &
          minimum=0.0_rk)
+      !---> jsasaki 2026-10-18: carbonate Step 4c A1 (review round 4: Fable #3, astra #2). The legacy path (the microphytobenthos mat)
+      ! exchanges its gross fixation and respiration DIC, its O2 and the alkalinity of its leaf nutrient uptake and respiratory
+      ! return with the WATER, although the mat slab (z_mat) lies inside sediment layer 1. f_pore moves that fraction of the DIC
+      ! (gross fixation, AG, NSC and BG respiration, nitrate reductant of the leaves) and of the nutrient alkalinity from the
+      ! water to the layer-1 pore water (G3c1, benTA); f_pore_o2 moves that fraction of the O2 to the layer-1 oxygen G2o. The
+      ! nutrients themselves stay with the water. A transfer added after the legacy terms. MUSE correspondence: f_pore =
+      ! 1 - f_surf (the MUSE mat sits in its pore cells, f_surf = 0). 0 (default) = the water exchange as before, bit-identical.
+      call self%get_parameter(self%f_pore, 'f_pore', '-', 'share of the mat DIC and nutrient-alkalinity exchange moved to the '// &
+         'layer-1 pore water (legacy path; 0: water)', default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+      call self%get_parameter(self%f_pore_o2, 'f_pore_o2', '-', 'share of the mat O2 exchange moved to the layer-1 oxygen G2o '// &
+         '(legacy path; 0: water)', default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+      if ((self%f_pore > 0.0_rk .or. self%f_pore_o2 > 0.0_rk) .and. (uni .or. self%isw_fix /= 1)) &
+         call self%fatal_error('initialize', 'f_pore and f_pore_o2 need the legacy path with isw_fix = 1 (isw_uni = 0)')
+      !<--- jsasaki 2026-10-18
       if (self%isw_fix == 1 .and. .not. (self%K_dic > 0.0_rk)) &
          call self%fatal_error('initialize', 'isw_fix = 1 requires K_dic > 0 (review p12 #8)')
       ! positive O2 half-saturations (a zero one gives 0/0 in anoxia; review p13 #10), and finite values of the
@@ -598,9 +615,24 @@ contains
          call reg_cl(12, 'cl_DIC_b2_rsp', 'mmol C/m^2/d',  'DIC -> pore layer 2: below-ground respiration')
          call reg_cl(13, 'cl_DIC_b1_red', 'mmol C/m^2/d',  'DIC -> pore layer 1: nitrate reductant (roots)')
          call reg_cl(14, 'cl_DIC_b2_red', 'mmol C/m^2/d',  'DIC -> pore layer 2: nitrate reductant (roots)')
+         !---> jsasaki 2026-10-18: Step 4c A1: the f_pore transfer, water side (negative) and layer-1 side (registered only when used)
+         if (self%f_pore > 0.0_rk) then
+            call reg_cl(15, 'cl_TA_b1_leaf', 'mmol eq/m^2/d', 'TA -> pore layer 1: leaf NO3, NH4, PO4 uptake (f_pore share)')
+            call reg_cl(16, 'cl_TA_b1_rspm', 'mmol eq/m^2/d', 'TA -> pore layer 1: respiratory NH4, PO4 return (f_pore share)')
+            call reg_cl(17, 'cl_DIC_b1_gro', 'mmol C/m^2/d',  'DIC -> pore layer 1: gross fixation and respiration (f_pore share)')
+            call reg_cl(18, 'cl_DIC_b1_redl', 'mmol C/m^2/d', 'DIC -> pore layer 1: nitrate reductant, leaves (f_pore share)')
+            call reg_cl(19, 'cl_TA_w_leaf', 'mmol eq/m^2/d', 'TA -> water: leaf uptake, f_pore share removed')
+            call reg_cl(20, 'cl_TA_w_rspm', 'mmol eq/m^2/d', 'TA -> water: respiratory return, f_pore share removed')
+            call reg_cl(21, 'cl_DIC_w_grop', 'mmol C/m^2/d', 'DIC -> water: gross fixation and respiration, f_pore share removed')
+            call reg_cl(22, 'cl_DIC_w_redp', 'mmol C/m^2/d', 'DIC -> water: nitrate reductant, f_pore share removed')
+         end if
+         !<--- jsasaki 2026-10-18
       end if
       !<--- jsasaki 2026-10-17
       if (uni .and. self%isw_ledger == 1) call self%fatal_error('initialize', 'isw_uni = 1 has its own diagnostics; use isw_ledger = 0')
+      ! jsasaki 2026-10-18: Step 4c A1: the FC1 counters do not carry the pore transfer (isw_carb_ledger does)
+      if ((self%f_pore > 0.0_rk .or. self%f_pore_o2 > 0.0_rk) .and. self%isw_ledger == 1) &
+         call self%fatal_error('initialize', 'f_pore > 0 or f_pore_o2 > 0 is not covered by the isw_ledger counters (use isw_carb_ledger)')
       ! jsasaki 2026-10-07: the ledger counters do not carry the nitrate reductant
       if (self%isw_no3red == 1 .and. self%isw_ledger == 1) &
          call self%fatal_error('initialize', 'isw_no3red = 1 is not covered by the isw_ledger counters')
@@ -1279,6 +1311,26 @@ contains
             end if
          end if
 
+         !---> jsasaki 2026-10-18: Step 4c A1: move the f_pore share of the DIC and nutrient-TA exchange, and the f_pore_o2 share of
+         ! the O2 exchange, from the water to the layer-1 pore water (the same expressions as the water terms above)
+         if (self%f_pore > 0.0_rk) then
+            _SET_BOTTOM_EXCHANGE_(self%id_O3c, -self%f_pore * ((-Pg + Ra_act + Ra_bas + Rn + rbw * Rb) / CMass + xred_w))
+            _SET_BOTTOM_ODE_(self%id_G3c1, self%f_pore * ((-Pg + Ra_act + Ra_bas + Rn + rbw * Rb) / CMass + xred_w))
+            _SET_BOTTOM_EXCHANGE_(self%id_TA, -self%f_pore * (jN3_leaf - jN4_leaf + jP_leaf &
+               + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn &
+               - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - rbw * rbp))
+            _SET_BOTTOM_ODE_(self%id_benTA, self%f_pore * (jN3_leaf - jN4_leaf + jP_leaf &
+               + (1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) + rbw * rbn &
+               - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - rbw * rbp))
+         end if
+         if (self%f_pore_o2 > 0.0_rk) then
+            _SET_BOTTOM_EXCHANGE_(self%id_O2o, -self%f_pore_o2 * (self%pq * Pg - self%rq_o2c * Ra_act &
+                                                - self%rq_o2c * Ra_bas - self%rq_o2c * Rn) / CMass)
+            _SET_BOTTOM_ODE_(self%id_G2o, self%f_pore_o2 * (self%pq * Pg - self%rq_o2c * Ra_act &
+                                          - self%rq_o2c * Ra_bas - self%rq_o2c * Rn) / CMass)
+         end if
+         !<--- jsasaki 2026-10-18
+
          ! Mortality routing
          _SET_BOTTOM_EXCHANGE_(self%id_R6c, self%f_pel * M_ag)
          _SET_BOTTOM_EXCHANGE_(self%id_R6n, self%f_pel * qn * M_ag)
@@ -1406,6 +1458,20 @@ contains
             end if
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(8), (-Pg + Ra_act + Ra_bas + Rn + rbw * Rb) / CMass)
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(9), xred_w)
+            !---> jsasaki 2026-10-18: Step 4c A1: the transfer counters (water side negative, layer-1 side positive)
+            if (self%f_pore > 0.0_rk) then
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(15), self%f_pore * (jN3_leaf - jN4_leaf + jP_leaf))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(16), self%f_pore * ((1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) &
+                  + rbw * rbn - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - rbw * rbp))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(17), self%f_pore * (-Pg + Ra_act + Ra_bas + Rn + rbw * Rb) / CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(18), self%f_pore * xred_w)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(19), -self%f_pore * (jN3_leaf - jN4_leaf + jP_leaf))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(20), -self%f_pore * ((1.0_rk - self%f_rspn) * qn * (Ra_act + Ra_bas) &
+                  + rbw * rbn - (1.0_rk - self%f_rspn) * qp * (Ra_act + Ra_bas) - rbw * rbp))
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(21), -self%f_pore * (-Pg + Ra_act + Ra_bas + Rn + rbw * Rb) / CMass)
+               _SET_HORIZONTAL_DIAGNOSTIC_(self%id_cl(22), -self%f_pore * xred_w)
+            end if
+            !<--- jsasaki 2026-10-18
          end if
          !<--- jsasaki 2026-10-17
 

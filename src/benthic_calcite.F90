@@ -64,6 +64,9 @@ module ersem_benthic_calcite
       type (type_horizontal_dependency_id)          :: id_cDIC(3), id_cTA(3), id_cH2S(3), id_cNH4(3), id_cPO4(3), id_cSi(3)
       type (type_horizontal_diagnostic_variable_id) :: id_om_arg_pore(3)
       !<--- jsasaki 2026-10-18
+      ! jsasaki 2026-10-18: carbonate Step 4c P4: pore-water calcite precipitation onto the same stock (MUSE calcite_coef kprec, nprec)
+      real(rk) :: kprec = 0.0_rk, nprec = 1.0_rk
+      type (type_horizontal_diagnostic_variable_id) :: id_pprec(3), id_ledger_pprec_benDIC(3), id_ledger_pprec_benTA(3)
 
    contains
       procedure :: initialize
@@ -213,6 +216,20 @@ contains
             call register_local_layer(3, '3')
          end if
          !<--- jsasaki 2026-10-18
+         !---> jsasaki 2026-10-18: carbonate Step 4c P4 (review round 4: Fable blocker 1, Synthesis "daytime carbonate sink"): calcite
+         ! precipitation from supersaturated pore water onto the stock the dissolution reads, the law of MUSE calcite_coef: in each
+         ! layer kprec (Omega - 1)^nprec times the layer's share of the stock (Omega > 1 only, the Omega of the dissolution law);
+         ! products from that layer's pore water (DIC -1, TA -2 per C). kprec in 1/d per unit stock, plausibility-bounded (the
+         ! literature constants are per unit surface); nprec 1.7-3 (Burton and Walter 1987; Zhong and Mucci 1989). Added after the
+         ! dissolution terms. 0 (default) registers nothing: bit-identical.
+         call self%get_parameter(self%kprec,'kprec','1/d','specific calcite precipitation rate per unit stock in supersaturated pore water (0: off)',default=0.0_rk,minimum=0.0_rk)
+         call self%get_parameter(self%nprec,'nprec','-','power of the pore-water precipitation law (Omega - 1)^nprec',default=1.0_rk,minimum=0.0_rk)
+         if (self%kprec > 0.0_rk) then
+            call self%register_diagnostic_variable(self%id_pprec(1),'pprecipitation1','mg C/m^2/d','pore-water calcite precipitation in layer 1',source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_pprec(2),'pprecipitation2','mg C/m^2/d','pore-water calcite precipitation in layer 2',source=source_do_bottom)
+            call self%register_diagnostic_variable(self%id_pprec(3),'pprecipitation3','mg C/m^2/d','pore-water calcite precipitation in layer 3',source=source_do_bottom)
+         end if
+         !<--- jsasaki 2026-10-18
       end if
       !<--- jsasaki 2026-10-17
       call self%get_parameter(c0,'c0','mg C/m^2','background calcite concentration',default=0.0_rk)
@@ -275,6 +292,12 @@ contains
          call register_pore_ledger(1, '1')
          call register_pore_ledger(2, '2')
          call register_pore_ledger(3, '3')
+         ! jsasaki 2026-10-18: Step 4c P4: the precipitation counters (kprec > 0 only)
+         if (self%kprec > 0.0_rk) then
+            call register_prec_ledger(1, '1')
+            call register_prec_ledger(2, '2')
+            call register_prec_ledger(3, '3')
+         end if
       end if
 
    contains
@@ -320,6 +343,17 @@ contains
               'ledger: pore-water-driven calcite dissolution -> benthic alkalinity, layer '//lab, source=source_do_bottom)
       end subroutine register_pore_ledger
 
+      !---> jsasaki 2026-10-18: Step 4c P4: ledger counters of the pore-water precipitation of one layer
+      subroutine register_prec_ledger(l, lab)
+         integer,          intent(in) :: l
+         character(len=*), intent(in) :: lab
+         call self%register_diagnostic_variable(self%id_ledger_pprec_benDIC(l),'ledger_pprec_benDIC'//lab,'mmol C/m^2/d', &
+              'ledger: pore-water calcite precipitation -> benthic DIC, layer '//lab, source=source_do_bottom)
+         call self%register_diagnostic_variable(self%id_ledger_pprec_benTA(l),'ledger_pprec_benTA'//lab,'mmol eq/m^2/d', &
+              'ledger: pore-water calcite precipitation -> benthic alkalinity, layer '//lab, source=source_do_bottom)
+      end subroutine register_prec_ledger
+      !<--- jsasaki 2026-10-18
+
    end subroutine
 
    subroutine do_bottom(self,_ARGUMENTS_DO_BOTTOM_)
@@ -337,6 +371,7 @@ contains
       real(rk) :: ETW_p, X1X_p, dens_p, poro_p, Dm_p(3), top_p, thk_p, w_p, vol_p, R_p(3), om_p(3), nfail_p
       real(rk) :: qDIC, qTA, qH2S, qNH4, qPO4, qSi, pH_p, fco2_p, h2co3_p, hco3_p, co3_p, k0_p, om_arg_p
       real(rk) :: cDIC, cTA, cH2S, cNH4, cPO4, cSi   ! jsasaki 2026-10-18: Step 4b mode 2 (mmol m-3)
+      real(rk) :: P_p(3), wq_p, tq_p                  ! jsasaki 2026-10-18: Step 4c P4: precipitation per layer, layer share, layer top
       logical  :: ok_p
       integer  :: l_p
 
@@ -459,6 +494,25 @@ contains
                end do
             end if
             !<--- jsasaki 2026-10-17
+            !---> jsasaki 2026-10-18: Step 4c P4: precipitation onto each layer's share of the stock where its pore water is
+            ! supersaturated (om_p = 1, no precipitation, where the layer was skipped or its speciation failed)
+            if (self%kprec > 0.0_rk) then
+               P_p = 0.0_rk; tq_p = 0.0_rk
+               do l_p = 1, 3
+                  wq_p = max(0.0_rk, min(Dm_p(l_p), self%z_cal) - min(tq_p, self%z_cal)) / self%z_cal
+                  tq_p = Dm_p(l_p)
+                  P_p(l_p) = self%kprec * (max(om_p(l_p) - 1.0_rk, 0.0_rk))**self%nprec * wq_p * max(bL2c, 0.0_rk)
+                  _SET_BOTTOM_ODE_(self%id_pDIC(l_p), -P_p(l_p)/CMass)
+                  _SET_BOTTOM_ODE_(self%id_pTA(l_p), -2.0_rk*P_p(l_p)/CMass)
+                  _SET_HORIZONTAL_DIAGNOSTIC_(self%id_pprec(l_p), P_p(l_p))
+                  if (self%isw_ledger == 1) then
+                     _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_pprec_benDIC(l_p), -P_p(l_p)/CMass)
+                     _SET_HORIZONTAL_DIAGNOSTIC_(self%id_ledger_pprec_benTA(l_p), -2.0_rk*P_p(l_p)/CMass)
+                  end if
+               end do
+               _SET_BOTTOM_ODE_(self%id_c, sum(P_p))
+            end if
+            !<--- jsasaki 2026-10-18
          end if
 
          ! Light-driven mat calcification (docs/15; inert when K_prec = 0)

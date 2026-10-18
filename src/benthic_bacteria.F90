@@ -40,6 +40,9 @@ module ersem_benthic_bacteria
       type (type_horizontal_diagnostic_variable_id) :: id_ledger_resp_G2o,id_ledger_resp_G3c
       type (type_horizontal_diagnostic_variable_id) :: id_ledger_nutr_K4n,id_ledger_nutr_K1p,id_ledger_nutr_benTA
       type (type_horizontal_dependency_id) :: id_Dm
+      ! jsasaki 2026-10-18: carbonate Step 4c B: share f_top of the dissolved products moved to a second (upper) layer
+      real(rk) :: f_top = 0.0_rk
+      type (type_bottom_state_variable_id) :: id_G3c_top, id_K4n_top, id_K1p_top, id_benTA_top
 
       integer  :: nfood
       real(rk) :: qnc,qpc
@@ -288,6 +291,22 @@ contains
       end if
       call self%register_state_dependency(self%id_G3c,'G3c','mmol C/m^2','dissolved inorganic carbon')
       if (.not.legacy_ersem_compatibility) call self%register_state_dependency(self%id_benTA,'benTA','mEq/m^2','benthic alkalinity')
+      !---> jsasaki 2026-10-18: carbonate Step 4c B (review round 4: astra #1, Fable #5): f_top > 0 moves that share of the
+      ! respiration DIC, of the NH4 and PO4 released and of their alkalinity from the G3c, K4n, K1p, benTA targets to G3c_top,
+      ! K4n_top, K1p_top, benTA_top (for the anaerobic bacteria H2: the layer-1 pools, with f_top = benthic_sulfur_cycle p_sr_1,
+      ! so that the carbon side of the anaerobic mineralisation is split between layers 1 and 2 as its sulfate-reduction side).
+      ! A transfer added after the legacy terms; diagnostic budget (isw_diag = 1) only. 0 (default) registers nothing.
+      call self%get_parameter(self%f_top, 'f_top', '-', 'share of the dissolved products (DIC, NH4, PO4, their TA) moved to '// &
+         'the *_top targets (0: none)', default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+      if (self%f_top > 0.0_rk) then
+         if (self%isw_diag /= 1) call self%fatal_error('initialize','f_top > 0 requires isw_diag = 1')
+         if (legacy_ersem_compatibility) call self%fatal_error('initialize','f_top > 0 requires the benthic alkalinity coupling')
+         call self%register_state_dependency(self%id_G3c_top,'G3c_top','mmol C/m^2','dissolved inorganic carbon, upper layer')
+         call self%register_state_dependency(self%id_K4n_top,'K4n_top','mmol N/m^2','ammonium, upper layer')
+         call self%register_state_dependency(self%id_K1p_top,'K1p_top','mmol P/m^2','phosphate, upper layer')
+         call self%register_state_dependency(self%id_benTA_top,'benTA_top','mEq/m^2','benthic alkalinity, upper layer')
+      end if
+      !<--- jsasaki 2026-10-18
       call self%register_state_dependency(self%id_Q1c,'Q1c','mmol C/m^2','dissolved organic carbon')
       call self%register_state_dependency(self%id_Q1n,'Q1n','mmol N/m^2','dissolved organic nitrogen')
       call self%register_state_dependency(self%id_Q1p,'Q1p','mmol P/m^2','dissolved organic phosphorus')
@@ -486,6 +505,18 @@ contains
             _SET_BOTTOM_ODE_(self%id_K4n,-fK4Hn)
             _SET_BOTTOM_ODE_(self%id_K1p,-fK1Hp)
             if (.not.legacy_ersem_compatibility) _SET_BOTTOM_ODE_(self%id_benTA,-fK4Hn + fK1Hp)
+            !---> jsasaki 2026-10-18: Step 4c B: move the share f_top of the dissolved products to the upper-layer targets
+            if (self%f_top > 0.0_rk) then
+               _SET_BOTTOM_ODE_(self%id_G3c, -self%f_top*fHG3c/CMass)
+               _SET_BOTTOM_ODE_(self%id_G3c_top, self%f_top*fHG3c/CMass)
+               _SET_BOTTOM_ODE_(self%id_K4n, self%f_top*fK4Hn)
+               _SET_BOTTOM_ODE_(self%id_K4n_top, -self%f_top*fK4Hn)
+               _SET_BOTTOM_ODE_(self%id_K1p, self%f_top*fK1Hp)
+               _SET_BOTTOM_ODE_(self%id_K1p_top, -self%f_top*fK1Hp)
+               _SET_BOTTOM_ODE_(self%id_benTA, -self%f_top*(-fK4Hn + fK1Hp))
+               _SET_BOTTOM_ODE_(self%id_benTA_top, self%f_top*(-fK4Hn + fK1Hp))
+            end if
+            !<--- jsasaki 2026-10-18
             do ifood=1,self%nfood
                _SET_BOTTOM_ODE_(self%food(ifood)%id_c,-fQc(ifood)/CMass)
                _SET_BOTTOM_ODE_(self%food(ifood)%id_n,-fQn(ifood))

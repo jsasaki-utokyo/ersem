@@ -206,6 +206,8 @@ module ersem_benthic_sulfur_cycle
       integer  :: isw_S0_solid      ! 0: layer-1 S0 in the dissolved column (legacy), 1: own solid pool
       real(rk) :: K_FeS_pel      ! FeS precipitation rate in pelagic (1/d)
       real(rk) :: p_sr_1         ! fraction of sulfate reduction delivered at the interface / layer 1 (jsasaki 2026-08-15, docs/14)
+      ! jsasaki 2026-10-18: carbonate Step 4c B (review round 4: astra #1, Fable #5): per-reaction layer allocation (0: legacy)
+      integer  :: isw_alloc = 0
       real(rk) :: K_O2_half_pel  ! bottom-water O2 half-saturation (cubic Hill) for interface oxidation; 0 = legacy layer-1 Monod (jsasaki 2026-08-15, docs/14)
       real(rk) :: K_par_ox       ! PAR half-saturation for light-driven interface oxidation (mat photosynthesis O2); 0 = off (jsasaki 2026-08-15, docs/14)
       ! SR2 (nippon-steel docs/127 s7.2, s8 item 5): interface sulfate reduction excluded where an oxidant is available
@@ -368,6 +370,18 @@ contains
       call self%get_parameter(self%p_sr_1, 'p_sr_1', '-', &
            'fraction of sulfate reduction delivered at the interface (Layer 1)', &
            default=0.0_rk, minimum=0.0_rk, maximum=1.0_rk)
+      !---> jsasaki 2026-10-18: carbonate Step 4c B (review round 4: astra #1, Fable #5). isw_alloc = 1 moves the deep share
+      ! (1 - share_1) of the sulfate reduction (its H2S and +2 TA per S) and of the Fe(III)-reduction branch (its TA and the H2S
+      ! it displaces) from layer 3 into LAYER 2, where the anaerobic bacteria oxidise the carbon; no anaerobic mineralisation
+      ! term then reaches layer 3 directly (layer 3 holds what diffuses into it; the local layer-3 iron reactions, which read
+      ! and write layer 3, are unchanged). Applied as a transfer added after the legacy terms (layer 3 -x, layer 2 +x), so the
+      ! legacy code path is untouched. The carbon side (the anaerobic bacteria's DIC, NH4, PO4 and their TA) is split with the
+      ! same share_1 by benthic_bacteria f_top = p_sr_1 (set together by the driver; constant share only, no SR2 thresholds).
+      ! 0 (default) = legacy allocation, bit-identical.
+      call self%get_parameter(self%isw_alloc, 'isw_alloc', '', &
+           'anaerobic mineralisation allocation (0: legacy, deep share of SR and Fe(III) reduction in layer 3; 1: in layer 2)', &
+           default=0, minimum=0, maximum=1)
+      !<--- jsasaki 2026-10-18
       ! O2 control of the interface oxidation (jsasaki 2026-08-15, docs/14
       ! section 5). The legacy Monod uses the layer-1 CONCENTRATION
       ! G2o/D1m, which in the tank runs sits at a supersaturated
@@ -595,6 +609,9 @@ contains
               'ledger: iron block -> benthic oxygen layer 1', domain=domain_bottom, source=source_do_bottom)
       end if
       !<--- jsasaki 2026-10-17
+      ! jsasaki 2026-10-18: Step 4c B: the per-reaction allocation is implemented for the three-layer H2S column only
+      if (self%isw_alloc == 1 .and. (self%isw_h2s_layers /= 0 .or. self%sr2_on .or. legacy_ersem_compatibility)) &
+         call self%fatal_error('initialize', 'isw_alloc = 1 needs isw_h2s_layers = 0, a constant p_sr_1 share (no SR2) and the benthic alkalinity')
       if (self%isw_fe == 1 .and. self%isw_h2s_layers /= 0) call self%fatal_error('initialize', &
            'isw_fe = 1 is implemented for the three-layer H2S column only (isw_h2s_layers = 0)')
       ! jsasaki 2026-10-07: review round 1 #3, #13: the Fe laws treat layer-1 S0 as a solid and use the 20 degC reference of the shared laws
@@ -837,6 +854,7 @@ contains
       real(rk) :: r10_fe, r11_fe, r12_fe, dH2S(3), dS0(3), dTA(3), dFe2, dFe3, dFeS, dFeS2, dO2, qFe3_s
       integer  :: ilay_fe
       !<--- jsasaki 2026-10-07
+      real(rk) :: x_alloc   ! jsasaki 2026-10-18: Step 4c B: deep-share transfer (layer 3 -> layer 2)
 
       _HORIZONTAL_LOOP_BEGIN_
 
@@ -1468,6 +1486,24 @@ contains
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_FeS_ben, R_FeS_ben)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_R_FeS_pel, R_FeS_pel)
          _SET_HORIZONTAL_DIAGNOSTIC_(self%id_f_barrier, f_barrier)
+
+         !---> jsasaki 2026-10-18: Step 4c B: isw_alloc = 1 moves the deep share of the sulfate reduction (H2S, +2 TA per S) and of
+         ! the Fe(III)-reduction branch (its TA, minus the H2S it displaces) from layer 3 to layer 2 (the same expressions the legacy
+         ! code wrote to layer 3; R_sulfate_red recomputed from remin_rate because the diagnostic above is the net value)
+         if (self%isw_alloc == 1) then
+            x_alloc = (1.0_rk - share_1) * self%K_H2S_prod * remin_rate / CMass
+            _SET_BOTTOM_ODE_(self%id_H2S_3, -x_alloc)
+            _SET_BOTTOM_ODE_(self%id_H2S_2, x_alloc)
+            _SET_BOTTOM_ODE_(self%id_benTA3, -2.0_rk * x_alloc)
+            _SET_BOTTOM_ODE_(self%id_benTA2, 2.0_rk * x_alloc)
+            if (self%isw_fe == 1) then
+               _SET_BOTTOM_ODE_(self%id_H2S_3, self%K_H2S_prod * xC3)
+               _SET_BOTTOM_ODE_(self%id_H2S_2, -self%K_H2S_prod * xC3)
+               _SET_BOTTOM_ODE_(self%id_benTA3, -(sm(sTA, jFE3RED) - 2.0_rk * self%K_H2S_prod) * xC3)
+               _SET_BOTTOM_ODE_(self%id_benTA2, (sm(sTA, jFE3RED) - 2.0_rk * self%K_H2S_prod) * xC3)
+            end if
+         end if
+         !<--- jsasaki 2026-10-18
 
       _HORIZONTAL_LOOP_END_
 
