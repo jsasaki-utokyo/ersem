@@ -27,6 +27,10 @@ module ersem_carbonate
       ! 0 (default): no factor, bit-identical to the former code. The O2 exchange (ersem/oxygen) is not touched.
       type (type_horizontal_diagnostic_variable_id) :: id_chem_enh
       integer :: isw_chem_enh
+      ! jsasaki 2026-10-22: MUSE S10b design review round 1 (astra 1, 4): chem_enh_dph = pH offset converting the model (total-scale) pH to Johnson's
+      ! NBS operational activity scale in the hydroxide term (a_H = 10^-(pH + dph)); chem_enh_mult = m in alpha' = 1 + m (alpha - 1) (exploratory
+      ! plausibility sensitivity). Defaults 0 and 1: the former code, bit identical.
+      real(rk) :: chem_enh_dph, chem_enh_mult
 
       integer :: iswCO2X,iswtalk,iswASFLUX,phscale
       integer :: engine   ! carbonate engine (0: legacy ERSEM, 1: carbonate-engine)
@@ -73,6 +77,10 @@ contains
       call self%get_parameter(self%iswASFLUX,'iswASFLUX','','air-sea CO2 exchange (0: none, 1: Nightingale et al. 2000, 2: Wanninkhof 1992 without chemical enhancement, 3: Wanninkhof 1992 with chemical enhancement, 4: Wanninkhof and McGillis 1999, 5: Wanninkhof 1992 switching to Wanninkhof and McGillis 1999, 6: Wanninkhof 2014)',default=6,minimum=0, maximum=6)
       ! jsasaki 2026-10-12: Stage AA diagnostic (candidate B): chemical enhancement of the air-sea CO2 exchange (see the type declaration)
       call self%get_parameter(self%isw_chem_enh,'isw_chem_enh','','chemical enhancement of the air-sea CO2 transfer velocity (0: none, 1: Hoover and Berkshire 1969 stagnant film)',default=0,minimum=0,maximum=1)
+      !---> jsasaki 2026-10-22: MUSE S10b design review round 1: NBS offset of the hydroxide term and the exploratory multiplier (defaults: former code)
+      call self%get_parameter(self%chem_enh_dph,'chem_enh_dph','','pH offset model scale -> NBS activity in the hydroxide term of the enhancement',default=0.0_rk,minimum=-0.5_rk,maximum=0.5_rk)
+      call self%get_parameter(self%chem_enh_mult,'chem_enh_mult','','multiplier m of (alpha - 1) of the enhancement (exploratory)',default=1.0_rk,minimum=0.0_rk,maximum=10.0_rk)
+      !<--- jsasaki 2026-10-22
       call self%get_parameter(self%iswtalk,'iswtalk','','alkalinity formulation (1-4: from salinity and temperature, 5: dynamic alkalinity)',default=5, minimum=1, maximum=6)
       call self%get_parameter(self%phscale,'pHscale','','pH scale (1: total, 0: SWS, -1: SWS backward compatible)',default=1,minimum=-1,maximum=1)
       call self%get_parameter(self%engine,'engine','','carbonate engine (0: legacy ERSEM, 1: carbonate-engine)',default=0,minimum=0,maximum=1)
@@ -597,7 +605,9 @@ contains
          ! Without a successful speciation of this step (pH and the species are then not defined) no enhancement is applied.
          if (self%isw_chem_enh==1) then
             enh = 1.0_rk
-            if (success) enh = chem_enhancement(fwind,T,S,pH,H2CO3,HCO3,CO3)
+            ! jsasaki 2026-10-22: MUSE S10b review round 1: NBS offset and multiplier (defaults 0 and 1 reproduce the former call exactly)
+            if (success) enh = chem_enhancement(fwind,T,S,pH,H2CO3,HCO3,CO3,self%chem_enh_dph)
+            if (self%chem_enh_mult /= 1.0_rk) enh = 1.0_rk + self%chem_enh_mult*(enh - 1.0_rk)
             fwind = fwind*enh
             _SET_HORIZONTAL_DIAGNOSTIC_(self%id_chem_enh,enh)
          end if
@@ -621,8 +631,9 @@ contains
    ! of an NBS-calibrated electrode (about 0.13 pH units above the total scale): the hydroxide term is therefore underestimated by about a quarter (it is
    ! about a quarter of r at pH 8, so r is low by 5-10 % and alpha by less). The 6 % reduction of D at S = 35 is an extrapolation (Jaehne et al. measured CO2 in
    ! distilled water only). Returns 1 for a non-positive k or species.
-   pure function chem_enhancement(k_md,T,S,pH,H2CO3,HCO3,CO3) result(alpha)
-      real(rk), intent(in) :: k_md,T,S,pH,H2CO3,HCO3,CO3
+   ! jsasaki 2026-10-22: MUSE S10b review round 1 (astra 1): dph shifts the activity of the hydroxide term to Johnson's NBS scale (0: the former code)
+   pure function chem_enhancement(k_md,T,S,pH,H2CO3,HCO3,CO3,dph) result(alpha)
+      real(rk), intent(in) :: k_md,T,S,pH,H2CO3,HCO3,CO3,dph
       real(rk) :: alpha
       real(rk) :: TK,h,K1,K2,tau,r,D,z,Qz
       alpha = 1.0_rk
@@ -632,7 +643,8 @@ contains
       K1 = h*HCO3/H2CO3
       K2 = h*CO3/HCO3
       tau = 1.0_rk + h*h/(K1*K2 + K1*h)
-      r = exp(1246.98_rk - 6.19e4_rk/TK - 183.0_rk*log(TK)) + exp(-930.13_rk + 0.110_rk*sqrt(max(S,0.0_rk)) + 3.10e4_rk/TK + 140.9_rk*log(TK))/h   ! 1/s; Johnson (1982) eq. 19, Table 4: the salinity term is 0.110 S^0.5
+      ! jsasaki 2026-10-22: MUSE S10b review round 1: hydroxide term with a_H = h 10^(-dph) (dph = 0: h, the former code, bit identical)
+      r = exp(1246.98_rk - 6.19e4_rk/TK - 183.0_rk*log(TK)) + exp(-930.13_rk + 0.110_rk*sqrt(max(S,0.0_rk)) + 3.10e4_rk/TK + 140.9_rk*log(TK))/(h*10.0_rk**(-dph))   ! 1/s; Johnson (1982) eq. 19, Table 4: the salinity term is 0.110 S^0.5
       D = 5.019e-6_rk*exp(-19510.0_rk/(8.314462618_rk*TK))*(1.0_rk - 0.06_rk*S/35.0_rk)                                           ! m2/s
       z = D/(k_md/86400.0_rk)                                                                                                       ! m
       Qz = sqrt(r*tau/D)*z
