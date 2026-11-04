@@ -63,6 +63,8 @@ module ersem_pom_decay
       real(rk) :: k_oxidation  ! direct oxidation rate at Tref (1/d): POM → CO2 + O2
       real(rk) :: f_G1, f_G2, f_G3  ! G-model fractions for autolysis products
       real(rk) :: q10, Tref, K_O2, ur_O2
+      ! jsasaki 2026-11-05: switch so that the rates declared in 1/d act per day (FABM rates are per second unless dt is set)
+      logical  :: rates_per_day
    contains
       procedure :: initialize
       procedure :: do
@@ -99,6 +101,12 @@ contains
          'half-saturation oxygen concentration', default=5.0_rk)
       call self%get_parameter(self%ur_O2, 'ur_O2', 'mmol O_2/mg C', &
          'oxygen consumed per carbon in direct oxidation', default=0.1_rk)
+      !---> jsasaki 2026-11-05: k_autolysis/k_oxidation are declared in 1/d but self%dt was never set, so FABM applied them per
+      ! second (86400x too fast; same defect as dom_decay, S47 pfAc2 audit). Default .false. reproduces the former code exactly.
+      call self%get_parameter(self%rates_per_day, 'rates_per_day', '', &
+         'apply k_autolysis and k_oxidation per day (true) instead of per second (false, former behaviour)', default=.false.)
+      if (self%rates_per_day) self%dt = 86400._rk
+      !<--- jsasaki 2026-11-05
 
       ! --- Target POM ---
       call self%register_state_dependency(self%id_RPc, 'RPc', 'mg C/m^3', &

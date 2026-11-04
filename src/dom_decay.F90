@@ -51,6 +51,8 @@ module ersem_dom_decay
       real(rk) :: Tref        ! reference temperature (deg C)
       real(rk) :: K_O2        ! O2 half-saturation (mmol O2/m3)
       real(rk) :: ur_O2       ! O2 per C oxidized (mmol O2/mg C)
+      ! jsasaki 2026-11-05: switch so that the rates declared in 1/d act per day (FABM rates are per second unless dt is set)
+      logical  :: rates_per_day
    contains
       procedure :: initialize
       procedure :: do
@@ -75,6 +77,12 @@ contains
          'half-saturation oxygen concentration', default=5.0_rk)
       call self%get_parameter(self%ur_O2, 'ur_O2', 'mmol O_2/mg C', &
          'oxygen consumed per carbon oxidized', default=0.1_rk)
+      !---> jsasaki 2026-11-05: k_ox is declared in 1/d but self%dt was never set, so FABM applied it per second (86400x too fast;
+      ! found by the S47 pfAc2 audit: lit-arm water DOC oxidised within ~1 s). Default .false. reproduces the former code exactly.
+      call self%get_parameter(self%rates_per_day, 'rates_per_day', '', &
+         'apply k_ox per day (true) instead of per second (false, former behaviour)', default=.false.)
+      if (self%rates_per_day) self%dt = 86400._rk
+      !<--- jsasaki 2026-11-05
 
       ! --- Target DOM ---
       call self%register_state_dependency(self%id_RDc, 'RDc', 'mg C/m^3', &
