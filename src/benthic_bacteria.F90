@@ -282,12 +282,14 @@ contains
       ! retracted. Kept, default OFF. The dependency is registered
       ! unconditionally and read only; with h_h2s_inh = 0 the factor is exactly
       ! 1 and the result is bit-identical.
+      ! jsasaki 2026-11-05: required only when the inhibition is on: a host without a sulfur column (TB-FVCOM fabm_P53_A4,
+      ! decay re-test gate job 7256150) stopped with "H2S_col must be coupled"; read only under h_h2s_inh > 0 (unchanged).
       if (self%h2s_col_diag) then
          call self%register_dependency(self%id_H2S_col_diag,'H2S_col','mmol S/m^2', &
-            'benthic column free sulfide (inhibition only)')
+            'benthic column free sulfide (inhibition only)', required=self%h_h2s_inh > 0.0_rk)
       else
          call self%register_state_dependency(self%id_H2S_col,'H2S_col','mmol S/m^2', &
-            'benthic column free sulfide (inhibition only)')
+            'benthic column free sulfide (inhibition only)', required=self%h_h2s_inh > 0.0_rk)
       end if
       call self%register_state_dependency(self%id_G3c,'G3c','mmol C/m^2','dissolved inorganic carbon')
       if (.not.legacy_ersem_compatibility) call self%register_state_dependency(self%id_benTA,'benTA','mEq/m^2','benthic alkalinity')
