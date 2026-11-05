@@ -78,9 +78,11 @@ contains
       call self%get_parameter(self%ur_O2, 'ur_O2', 'mmol O_2/mg C', &
          'oxygen consumed per carbon oxidized', default=0.1_rk)
       !---> jsasaki 2026-11-05: k_ox is declared in 1/d but self%dt was never set, so FABM applied it per second (86400x too fast;
-      ! found by the S47 pfAc2 audit: lit-arm water DOC oxidised within ~1 s). Default .false. reproduces the former code exactly.
+      ! found by the S47 pfAc2 audit: lit-arm water DOC oxidised within ~1 s).
+      ! jsasaki 2026-11-05: default switched to .true. (owner decision 2026-11-05): the declared 1/d now acts per day; set
+      ! rates_per_day: false only to reproduce runs made before this date.
       call self%get_parameter(self%rates_per_day, 'rates_per_day', '', &
-         'apply k_ox per day (true) instead of per second (false, former behaviour)', default=.false.)
+         'apply k_ox per day (true) instead of per second (false, former behaviour before 2026-11-05)', default=.true.)
       if (self%rates_per_day) self%dt = 86400._rk
       !<--- jsasaki 2026-11-05
 

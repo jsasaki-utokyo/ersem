@@ -102,9 +102,11 @@ contains
       call self%get_parameter(self%ur_O2, 'ur_O2', 'mmol O_2/mg C', &
          'oxygen consumed per carbon in direct oxidation', default=0.1_rk)
       !---> jsasaki 2026-11-05: k_autolysis/k_oxidation are declared in 1/d but self%dt was never set, so FABM applied them per
-      ! second (86400x too fast; same defect as dom_decay, S47 pfAc2 audit). Default .false. reproduces the former code exactly.
+      ! second (86400x too fast; same defect as dom_decay, S47 pfAc2 audit).
+      ! jsasaki 2026-11-05: default switched to .true. (owner decision 2026-11-05): the declared 1/d now acts per day; set
+      ! rates_per_day: false only to reproduce runs made before this date.
       call self%get_parameter(self%rates_per_day, 'rates_per_day', '', &
-         'apply k_autolysis and k_oxidation per day (true) instead of per second (false, former behaviour)', default=.false.)
+         'apply k_autolysis and k_oxidation per day (true) instead of per second (false, former behaviour before 2026-11-05)', default=.true.)
       if (self%rates_per_day) self%dt = 86400._rk
       !<--- jsasaki 2026-11-05
 
