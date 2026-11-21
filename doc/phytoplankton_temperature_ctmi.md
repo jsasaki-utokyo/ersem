@@ -80,7 +80,14 @@ A safety clamp max(0, min(1, f)) is applied at runtime.
 **Properties:**
 - f(Topt) = 1.0 exactly (by construction)
 - f(Tmin) = f(Tmax) = 0.0
-- Unimodal cubic polynomial, singularity-free for all valid Tmin < Topt < Tmax
+- Singularity-free for all valid Tmin < Topt < Tmax, but **unimodal and positive on (Tmin, Tmax) only when
+  (2 Tmin + Tmax)/3 <= Topt <= (Tmin + 2 Tmax)/3** (correction, 2026-11-22). Outside that band the cubic has a
+  third root T3 = Topt + a b/(a + b) inside (Tmin, Tmax), is negative between Tmin and T3 (Topt in the upper third)
+  or between T3 and Tmax (lower third), and the clamp sets growth AND rest respiration to zero there. In
+  `fabm_P53_A4` (TB-FVCOM) this affects P2-P6: zero windows 5-6.9, 5-10.2, 5-17.6, 5-15.2 and 10-16.4 degC.
+  `initialize` now logs the root; `iswTemp: 3` is the Rosso et al. (1993) rational CTMI, which is positive and
+  unimodal on (Tmin, Tmax) whenever Topt > (Tmin + Tmax)/2 (enforced; all six P53_A4 PFTs qualify). Analysis:
+  TB-FVCOM `box-ersem/docs/ersem_issues.md` issue 1.
 - All three parameters have direct biological meaning:
   - **Tmin**: minimum temperature for growth (degC)
   - **Topt**: temperature at which growth rate is maximum (degC)

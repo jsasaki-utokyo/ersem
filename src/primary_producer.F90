@@ -123,26 +123,45 @@ contains
       call self%get_parameter(self%q10,   'q10',  '-',          'Q_10 temperature coefficient')
       call self%get_parameter(self%Tref,  'Tref', 'degrees_Celsius', &
          'reference temperature for Q10 function', default=20.0_rk)
-      call self%get_parameter(self%iswTemp,'iswTemp','',          'temperature response (1: Q10 with high-T suppression, 2: CTMI cardinal temperature model)', &
-                              default=1,minimum=1,maximum=2)
+      ! jsasaki 2026-11-22: box-ersem ERSEM issue 1: option 3 (Rosso et al. 1993 CTMI, valid for Topt > (Tmin+Tmax)/2); 1 and 2 unchanged
+      call self%get_parameter(self%iswTemp,'iswTemp','',          'temperature response (1: Q10 with high-T suppression, 2: cubic cardinal temperature model, &
+                              &3: Rosso CTMI)', default=1,minimum=1,maximum=3)
       call self%get_parameter(self%Tmin,  'Tmin', 'degrees_Celsius','minimum temperature for growth (CTMI only)',default=0.0_rk)
       call self%get_parameter(self%Topt,  'Topt', 'degrees_Celsius','optimal temperature for growth (CTMI only)',default=20.0_rk)
       call self%get_parameter(self%Tmax,  'Tmax', 'degrees_Celsius','maximum temperature for growth (CTMI only)',default=35.0_rk)
       ! Validate CTMI cardinal temperature ordering and precompute polynomial coefficients
-      if (self%iswTemp == 2) then
+      ! jsasaki 2026-11-22: box-ersem ERSEM issue 1: the ordering checks apply to options 2 and 3
+      if (self%iswTemp >= 2) then
          if (self%Tmin >= self%Topt) &
             call self%fatal_error('initialize', 'CTMI requires Tmin < Topt')
          if (self%Topt >= self%Tmax) &
             call self%fatal_error('initialize', 'CTMI requires Topt < Tmax')
+      end if
+      if (self%iswTemp == 2) then
          block
             real(rk) :: a, b, ab2
+            character(len=256) :: msg   ! jsasaki 2026-11-22: box-ersem ERSEM issue 1
             a = self%Topt - self%Tmin
             b = self%Topt - self%Tmax
             ab2 = (a * b)**2
             self%ctmi_a = -(a + b) / ab2
             self%ctmi_b = (a * b + (a + b) * self%Topt) / ab2
+            !---> jsasaki 2026-11-22: box-ersem ERSEM issue 1: the cubic has a third root T3 = Topt + a b/(a + b) inside
+            ! (Tmin, Tmax) unless (2 Tmin + Tmax)/3 <= Topt <= (Tmin + 2 Tmax)/3; between Tmin and T3 (Topt in the upper third)
+            ! or between T3 and Tmax (lower third) the cubic is negative and the clamp below returns zero growth AND zero rest
+            ! respiration. Report it (behaviour unchanged); iswTemp = 3 is the curve without this window.
+            if (3.0_rk*self%Topt > self%Tmin + 2.0_rk*self%Tmax .or. 3.0_rk*self%Topt < 2.0_rk*self%Tmin + self%Tmax) then
+               write (msg,'(a,f8.3,a,f8.3,a,f8.3,a)') 'iswTemp = 2: the cubic temperature response has a third root at ', &
+                  self%Topt + a*b/(a + b), ' degC inside (Tmin, Tmax) = (', self%Tmin, ',', self%Tmax, &
+                  '): growth and rest respiration are zero on one side of it; iswTemp = 3 avoids this'
+               call self%log_message(trim(msg))
+            end if
+            !<--- jsasaki 2026-11-22
          end block
       end if
+      ! jsasaki 2026-11-22: box-ersem ERSEM issue 1: the Rosso denominator is negative on [Tmin, Tmax] iff 2 Topt > Tmin + Tmax
+      if (self%iswTemp == 3 .and. 2.0_rk*self%Topt <= self%Tmin + self%Tmax) &
+         call self%fatal_error('initialize', 'iswTemp = 3 (Rosso CTMI) requires Topt > (Tmin + Tmax)/2 (pole inside the range otherwise)')
       call self%get_parameter(self%iswNutUptake,'iswNutUptake','', &
                               'nutrient uptake (1: linear affinity, 2: Michaelis-Menten saturation)',default=1,minimum=1,maximum=2)
       call self%get_parameter(self%KsN,  'KsN', 'mmol N/m^3','half-saturation for DIN uptake (iswNutUptake=2 only)',default=1.0_rk,minimum=1.0e-6_rk)
@@ -454,7 +473,8 @@ contains
          if (self%iswTemp == 1) then
             ! Original Q10 formulation with high-temperature suppression
             et = max(0.0_rk,self%q10**((ETW-self%Tref)/10._rk) - self%q10**((ETW-32._rk)/3._rk))
-         else
+         ! jsasaki 2026-11-22: box-ersem ERSEM issue 1: 'else' -> 'else if (iswTemp == 2)' to make room for option 3
+         else if (self%iswTemp == 2) then
             ! Polynomial CTMI (Cardinal Temperature Model with Inflection)
             ! Singularity-free cubic satisfying f(Tmin)=0, f(Tmax)=0,
             ! f(Topt)=1, f'(Topt)=0. Coefficients precomputed in initialize.
@@ -465,6 +485,18 @@ contains
                   * (self%ctmi_a * ETW + self%ctmi_b)
                et = max(0.0_rk, min(1.0_rk, et))
             end if
+         !---> jsasaki 2026-11-22: box-ersem ERSEM issue 1: Rosso et al. (1993) CTMI, f(Tmin) = f(Tmax) = 0, f(Topt) = 1,
+         ! positive on (Tmin, Tmax) for Topt > (Tmin + Tmax)/2 (checked in initialize); min() only absorbs round-off
+         else
+            if (ETW <= self%Tmin .or. ETW >= self%Tmax) then
+               et = 0.0_rk
+            else
+               et = (ETW - self%Tmax) * (ETW - self%Tmin)**2 &
+                  / ((self%Topt - self%Tmin) * ((self%Topt - self%Tmin) * (ETW - self%Topt) &
+                  - (self%Topt - self%Tmax) * (self%Topt + self%Tmin - 2.0_rk * ETW)))
+               et = max(0.0_rk, min(1.0_rk, et))
+            end if
+         !<--- jsasaki 2026-11-22
          end if
 
          ! Production...........................................................
@@ -477,7 +509,10 @@ contains
          iNut = MIN(iNI, iNs)
          sum = self%sum * et * iNut * iNf
 
-         if (parEIR>zeroX) then
+         ! jsasaki 2026-11-22: box-ersem ERSEM issue 1: sum > 0 guard. With sum = +0 (et = 0, or no nutrient) the old branch gave
+         ! sum = 0, rho = ChlCmin through x/0 = Inf, exactly what the else branch gives; with sum = -0 (the clamp max(0, -0) at the
+         ! cubic's root) it gave (-0)*(1 - exp(+Inf)) = NaN, and FP-trapping builds stopped on the division by zero.
+         if (parEIR>zeroX .and. sum>0._rk) then
             sum = sum * (1._rk-exp(-self%alpha*parEIR*ChlCpp/sum)) * exp(-self%beta*parEIR*ChlCpp/sum)
             rho = (self%phim - ChlCmin) * (sum/(self%alpha*parEIR*ChlCpp)) + ChlCmin
          else
