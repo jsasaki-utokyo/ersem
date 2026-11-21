@@ -153,7 +153,7 @@ contains
             if (3.0_rk*self%Topt > self%Tmin + 2.0_rk*self%Tmax .or. 3.0_rk*self%Topt < 2.0_rk*self%Tmin + self%Tmax) then
                write (msg,'(a,f8.3,a,f8.3,a,f8.3,a)') 'iswTemp = 2: the cubic temperature response has a third root at ', &
                   self%Topt + a*b/(a + b), ' degC inside (Tmin, Tmax) = (', self%Tmin, ',', self%Tmax, &
-                  '): growth and rest respiration are zero on one side of it; iswTemp = 3 avoids this'
+                  '): growth and rest respiration are zero on one side of it; iswTemp = 3 avoids this when Topt > (Tmin + Tmax)/2'
                call self%log_message(trim(msg))
             end if
             !<--- jsasaki 2026-11-22
@@ -161,7 +161,7 @@ contains
       end if
       ! jsasaki 2026-11-22: box-ersem ERSEM issue 1: the Rosso denominator is negative on [Tmin, Tmax] iff 2 Topt > Tmin + Tmax
       if (self%iswTemp == 3 .and. 2.0_rk*self%Topt <= self%Tmin + self%Tmax) &
-         call self%fatal_error('initialize', 'iswTemp = 3 (Rosso CTMI) requires Topt > (Tmin + Tmax)/2 (pole inside the range otherwise)')
+         call self%fatal_error('initialize', 'iswTemp = 3 (Rosso CTMI) requires Topt > (Tmin + Tmax)/2')
       call self%get_parameter(self%iswNutUptake,'iswNutUptake','', &
                               'nutrient uptake (1: linear affinity, 2: Michaelis-Menten saturation)',default=1,minimum=1,maximum=2)
       call self%get_parameter(self%KsN,  'KsN', 'mmol N/m^3','half-saturation for DIN uptake (iswNutUptake=2 only)',default=1.0_rk,minimum=1.0e-6_rk)
@@ -509,10 +509,11 @@ contains
          iNut = MIN(iNI, iNs)
          sum = self%sum * et * iNut * iNf
 
-         ! jsasaki 2026-11-22: box-ersem ERSEM issue 1: sum > 0 guard. With sum = +0 (et = 0, or no nutrient) the old branch gave
+         ! jsasaki 2026-11-22: box-ersem ERSEM issue 1: sum /= 0 guard. With sum = +0 (et = 0, or no nutrient) the old branch gave
          ! sum = 0, rho = ChlCmin through x/0 = Inf, exactly what the else branch gives; with sum = -0 (the clamp max(0, -0) at the
          ! cubic's root) it gave (-0)*(1 - exp(+Inf)) = NaN, and FP-trapping builds stopped on the division by zero.
-         if (parEIR>zeroX .and. sum>0._rk) then
+         ! jsasaki 2026-11-22: codex r1 #1: test /= 0 (both signed zeros), not > 0, so a finite parent result with sum < 0 is kept
+         if (parEIR>zeroX .and. sum /= 0._rk) then
             sum = sum * (1._rk-exp(-self%alpha*parEIR*ChlCpp/sum)) * exp(-self%beta*parEIR*ChlCpp/sum)
             rho = (self%phim - ChlCmin) * (sum/(self%alpha*parEIR*ChlCpp)) + ChlCmin
          else
