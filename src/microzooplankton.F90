@@ -7,6 +7,7 @@ module ersem_microzooplankton
 
    use ersem_shared
    use ersem_pelagic_base
+   use benthos_shared_laws, only: o2_limit   ! jsasaki 2026-11-22: O2 limitation law (isw_o2lim)
 
    implicit none
 
@@ -46,6 +47,11 @@ module ersem_microzooplankton
       real(rk) :: pe_R1
       real(rk) :: gutdiss
       real(rk) :: xR1n,xR1p
+      !---> jsasaki 2026-11-22: O2 limitation of feeding, rest respiration and mortality (box-ersem docs/plankton_o2_limitation.md 5.2)
+      integer  :: isw_o2lim
+      real(rk) :: o2lim_rl, o2lim_Kresp, o2lim_Kfeed, o2lim_Kmort, o2lim_n, o2lim_sdm
+      type (type_diagnostic_variable_id) :: id_o2lim_Fr, id_o2lim_g, id_o2lim_mort
+      !<--- jsasaki 2026-11-22
 
       ! ERSEM global parameters
       real(rk) :: R1R2,urB1_O2
@@ -87,6 +93,25 @@ contains
       call self%get_parameter(self%sd,     'sd',     '1/d',        'basal mortality')
       call self%get_parameter(self%sdo,    'sdo',    '1/d',        'maximum mortality due to oxygen limitation')
       call self%get_parameter(self%chro,   'chro',   '-',          'Michaelis-Menten constant for oxygen limitation')
+      !---> jsasaki 2026-11-22: O2 limitation (docs/plankton_o2_limitation.md 5.2); 0 (default): nothing read or registered
+      call self%get_parameter(self%isw_o2lim, 'isw_o2lim', '', &
+         'O2 limitation of feeding, rest respiration and mortality, replacing the sdo term [0: none]', default=0, minimum=0, maximum=1)
+      if (self%isw_o2lim == 1) then
+         call self%get_parameter(self%o2lim_rl,    'o2lim_rl',    'mmol O_2/m^3', 'O2 at and below which feeding and respiration stop', default=0.0_rk)
+         call self%get_parameter(self%o2lim_Kresp, 'o2lim_Kresp', 'mmol O_2/m^3', 'O2 at half rest respiration')
+         call self%get_parameter(self%o2lim_Kfeed, 'o2lim_Kfeed', 'mmol O_2/m^3', 'O2 at half feeding')
+         call self%get_parameter(self%o2lim_Kmort, 'o2lim_Kmort', 'mmol O_2/m^3', 'O2 at half the O2-related mortality')
+         call self%get_parameter(self%o2lim_n,     'o2lim_n',     '-',            'Hill exponent of the O2 factors', default=3.0_rk)
+         call self%get_parameter(self%o2lim_sdm,   'o2lim_sdm',   '1/d',          'O2-related mortality at anoxia (at the reference temperature)')
+         if (.not. (self%o2lim_rl >= 0.0_rk .and. self%o2lim_Kresp > self%o2lim_rl .and. self%o2lim_Kfeed > self%o2lim_rl &
+                    .and. self%o2lim_Kmort > self%o2lim_rl .and. max(self%o2lim_Kresp, self%o2lim_Kfeed, self%o2lim_Kmort) <= huge(1.0_rk) &
+                    .and. self%o2lim_n >= 1.0_rk .and. self%o2lim_n <= 10.0_rk .and. self%o2lim_sdm >= 0.0_rk .and. self%o2lim_sdm <= huge(1.0_rk))) &
+            call self%fatal_error('initialize', 'isw_o2lim = 1 needs 0 <= o2lim_rl < o2lim_K* (finite), 1 <= o2lim_n <= 10, o2lim_sdm >= 0')
+         call self%register_diagnostic_variable(self%id_o2lim_Fr,   'o2lim_Fr',   '-', 'O2 factor of rest respiration')
+         call self%register_diagnostic_variable(self%id_o2lim_g,    'o2lim_g',    '-', 'O2 factor of feeding')
+         call self%register_diagnostic_variable(self%id_o2lim_mort, 'o2lim_mort', 'mg C/m^3/d', 'mortality from O2 limitation')
+      end if
+      !<--- jsasaki 2026-11-22
       call self%get_parameter(self%qpc,    'qpc',    'mmol P/mg C','maximum phosphorus to carbon ratio')
       call self%get_parameter(self%qnc,    'qnc',    'mmol N/mg C','maximum nitrogen to carbon ratio')
       call self%get_parameter(self%stempp, 'stempp', '1/d',        'specific excretion rate of excess phosphorus')
@@ -256,6 +281,7 @@ contains
       real(rk) :: fZIRIp,fZIRDp,fZIRPp
       real(rk) :: fZIRIn,fZIRDn,fZIRPn
       real(rk) :: qpc,qnc,fZIN1p,fZINIn
+      real(rk) :: O2o_lim, Fr_o2, Ff_o2, Fm_o2, g_o2, sd_o2   ! jsasaki 2026-11-22: isw_o2lim locals
 
       ! Enter spatial loops (if any)
       _LOOP_BEGIN_
@@ -298,6 +324,16 @@ contains
          CORROX = 1._rk + self%chro
          eO2 = MIN(1._rk,CORROX*(eO2mO2/(self%chro + eO2mO2)))
 
+         !---> jsasaki 2026-11-22: O2 limitation (docs/plankton_o2_limitation.md 5.2, laws L1-L4): factors on water O2
+         if (self%isw_o2lim == 1) then
+            _GET_(self%id_O2o,O2o_lim)
+            Fr_o2 = o2_limit(O2o_lim, self%o2lim_rl, self%o2lim_Kresp, self%o2lim_n)
+            Ff_o2 = o2_limit(O2o_lim, self%o2lim_rl, self%o2lim_Kfeed, self%o2lim_n)
+            Fm_o2 = o2_limit(O2o_lim, self%o2lim_rl, self%o2lim_Kmort, self%o2lim_n)
+            g_o2 = min(Ff_o2, Fr_o2)
+         end if
+         !<--- jsasaki 2026-11-22
+
          ! Compute effective prey preference "sprey" (dimensionless).
          ! This equals the reference preference value, self%suprey, multiplied by a hyperbolic function
          ! of prey abundance ranging from 0 in the absence of prey, to 1 at abundant prey. As a result,
@@ -313,6 +349,7 @@ contains
          ! Prey uptake based on a Michaelis-Menten/Type II functional response with dynamic preferences "sprey".
          ! put_u is the relative rate of uptake (1/d), rug the absolute rate of uptake (mg C/m3/d)
          put_u = self%sum/(rum + self%chuc)*et*c
+         if (self%isw_o2lim == 1) put_u = put_u*g_o2   ! jsasaki 2026-11-22: L2: O2-limited feeding (prey losses follow)
          rug = put_u*rum
 
          ! Loss rates of individual prey types: sprey is the specific loss rate (1/d), fpreyc the absolute loss rate (mg C/m3/d)
@@ -329,6 +366,15 @@ contains
 
          ! Specific mortality (1/d): background mortality + mortality due to oxygen limitation.
          sd = self%sd + (1._rk - eO2)*self%sdo
+         !---> jsasaki 2026-11-22: L3 + L4 replace the saturation term: O2-related mortality and the withheld rest respiration
+         if (self%isw_o2lim == 1) then
+            sd_o2 = self%o2lim_sdm*(1._rk - Fm_o2)*et + (1._rk - Fr_o2)*self%srs*et
+            sd = self%sd + sd_o2
+            _SET_DIAGNOSTIC_(self%id_o2lim_Fr,Fr_o2)
+            _SET_DIAGNOSTIC_(self%id_o2lim_g,g_o2)
+            _SET_DIAGNOSTIC_(self%id_o2lim_mort,sd_o2*cP)
+         end if
+         !<--- jsasaki 2026-11-22
 
          ! Compute abolute mortality (mg C/m3/d) from specific mortality and biomass.
          rd = sd*cP
@@ -343,6 +389,7 @@ contains
 
          ! Rest respiration (mg C/m3/d), corrected for prevailing temperature
          rrs = self%srs*et*cP
+         if (self%isw_o2lim == 1) rrs = rrs*Fr_o2   ! jsasaki 2026-11-22: L1: O2-limited rest respiration
 
          ! Activity respiration (mg C/m3/d)
          rra = ineff * rug - ret

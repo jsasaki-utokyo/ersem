@@ -17,6 +17,7 @@ module benthos_shared_laws
    public :: th_q10, eT_mod, tur_enh, irr_enh, r_dbl_from, dbl_from_r, r_dbl_species, om_decay_rate, k_from_affinity
 
    public :: o2_supply_extent   ! jsasaki 2026-10-07: family B wave 2 (amendment 3): realised respiration extent under an O2 supply constraint
+   public :: o2_limit   ! jsasaki 2026-11-22: O2 limitation law of aerobic metabolism (TB-FVCOM box-ersem docs/plankton_o2_limitation.md)
 
 contains
 
@@ -117,5 +118,27 @@ contains
       real(rk) :: k
       k = (su + suf * eN) * H_ref
    end function
+
+   !---> jsasaki 2026-11-22: O2 limitation of aerobic metabolism, one law for ERSEM plankton and MUSE benthos
+   ! (TB-FVCOM box-ersem docs/plankton_o2_limitation.md section 4): the thresholded Hill function
+   ! F = x^n / (x^n + h^n), x = max(O2 - O2min, 0), h = K50 - O2min (K50 > O2min, n >= 1; O2 in mmol O2 m-3).
+   ! n = 1, O2min = 0 is the Monod O2/(O2 + K50) of MUSE's MPB maintenance and bacteria; n = 3 is MUSE's fauna hill3
+   ! (ERSEM benthic_fauna). F is 0 at and below O2min, continuous, and 1/2 at K50. The ratio raised to n is <= 1.
+   pure elemental function o2_limit(o2, o2min, k50, n) result(f)
+      real(rk), intent(in) :: o2, o2min, k50, n
+      real(rk) :: f, x, h, q
+      x = max(o2 - o2min, 0._rk)
+      h = k50 - o2min
+      if (x <= 0._rk) then
+         f = 0._rk
+      else if (x >= h) then
+         q = (h / x)**n
+         f = 1._rk / (1._rk + q)
+      else
+         q = (x / h)**n
+         f = q / (1._rk + q)
+      end if
+   end function
+   !<--- jsasaki 2026-11-22
 
 end module benthos_shared_laws

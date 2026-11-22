@@ -27,6 +27,7 @@ module ersem_primary_producer
 
    use ersem_shared
    use ersem_pelagic_base
+   use benthos_shared_laws, only: o2_limit   ! jsasaki 2026-11-22: O2 limitation of rest respiration (isw_o2lim)
 
    implicit none
 
@@ -67,6 +68,11 @@ module ersem_primary_producer
       ! jsasaki 2026-10-11: Stage Y diagnostic: isw_o2inh = 1 divides the gross productivity by 1 + max(0, O2 - o2ref_inh)/K_o2inh; 0 (default): bit-identical
       integer  :: isw_o2inh
       real(rk) :: o2ref_inh, K_o2inh
+      !---> jsasaki 2026-11-22: O2 limitation of rest respiration (TB-FVCOM box-ersem docs/plankton_o2_limitation.md 5.1)
+      integer  :: isw_o2lim
+      real(rk) :: o2lim_K, o2lim_n, o2lim_sdm
+      type (type_diagnostic_variable_id) :: id_o2lim_F, id_o2lim_loss
+      !<--- jsasaki 2026-11-22
       real(rk) :: R1R2,uB1c_O2,urB1_O2
       real(rk) :: qflc,qfRc,qurf
       integer :: Limnut
@@ -219,6 +225,24 @@ contains
       ! jsasaki 2026-10-11: review r2 #109: both O2-inhibition constants must be finite (NaN passes the bounds comparisons of the parameter reader)
       if (.not. (self%o2ref_inh >= 0.0_rk .and. self%o2ref_inh <= huge(1.0_rk) .and. self%K_o2inh >= 1.0e-6_rk .and. self%K_o2inh <= huge(1.0_rk))) &
          call self%fatal_error('initialize', 'o2ref_inh and K_o2inh must be finite (o2ref_inh >= 0, K_o2inh >= 1e-6)')
+      !---> jsasaki 2026-11-22: O2 limitation of rest respiration (docs/plankton_o2_limitation.md 5.1); 0 (default): nothing read
+      call self%get_parameter(self%isw_o2lim, 'isw_o2lim', '', 'O2 limitation of rest respiration, unmet part to lysis [0: none]', &
+                              default=0, minimum=0, maximum=1)
+      if (self%isw_o2lim == 1) then
+         call self%get_parameter(self%o2lim_K, 'o2lim_K', 'mmol O_2/m^3', 'O2 at half rest respiration', default=15.625_rk)
+         call self%get_parameter(self%o2lim_n, 'o2lim_n', '-', 'Hill exponent of the O2 factor', default=1.0_rk)
+         call self%get_parameter(self%o2lim_sdm, 'o2lim_sdm', '1/d', 'maximum dark-anoxia lysis', default=0.0_rk)
+         if (.not. (self%o2lim_K > 0.0_rk .and. self%o2lim_K <= huge(1.0_rk) .and. self%o2lim_n >= 1.0_rk &
+                    .and. self%o2lim_n <= 10.0_rk .and. self%o2lim_sdm >= 0.0_rk .and. self%o2lim_sdm <= huge(1.0_rk))) &
+            call self%fatal_error('initialize', 'isw_o2lim = 1 needs o2lim_K > 0, 1 <= o2lim_n <= 10, o2lim_sdm >= 0 (finite)')
+         ! the own-O2 credit is >= 0 only if activity respiration never uses more O2 than gross production makes
+         if (.not. (self%urB1_O2 > 0.0_rk .and. self%uB1c_O2 >= self%pu_ra*self%urB1_O2)) &
+            call self%fatal_error('initialize', 'isw_o2lim = 1 needs urB1_O2 > 0 and uB1c_O2 >= pu_ra*urB1_O2')
+         call self%register_diagnostic_variable(self%id_o2lim_F, 'o2lim_F', '-', 'O2 factor of rest respiration')
+         call self%register_diagnostic_variable(self%id_o2lim_loss, 'o2lim_loss', 'mg C/m^3/d', &
+                                                'lysis from O2-limited rest respiration and dark anoxia')
+      end if
+      !<--- jsasaki 2026-11-22
 
       ! Register state variables (handled by type_ersem_pelagic_base)
       call self%initialize_ersem_base(sedimentation=.true.)
@@ -378,6 +402,7 @@ contains
 
       real(rk) :: sdo,sum,sug,seo,sea,sra,sun,run,sPIRP
       real(rk) :: O2o_inh   ! jsasaki 2026-10-11: Stage Y diagnostic: water O2 for the inhibition factor
+      real(rk) :: O2o_lim, F_o2, srsT, spare, dem, phi_o2, u_o2   ! jsasaki 2026-11-22: isw_o2lim locals
       real(rk) :: runp,misp,rump
       real(rk) :: runn,misn,rumn,rumn3,rumn4,DIN_total
       real(rk) :: et,pe_RP
@@ -550,6 +575,27 @@ contains
          ! Productivity after subtracting excretion fluxes (1/d)
          sug = sum-seo-sea
 
+         !---> jsasaki 2026-11-22: O2 limitation of rest respiration (docs/plankton_o2_limitation.md 5.1, laws L1, L3-L5).
+         ! The cell pays rest respiration first from its own gross O2 (after activity respiration), the remainder phi from
+         ! ambient O2 with the factor F; the withheld part u = (1 - F) phi of srs, plus u o2lim_sdm, goes to lysis.
+         if (self%isw_o2lim == 1) then
+            _GET_(self%id_O2o,O2o_lim)
+            F_o2 = o2_limit(O2o_lim, 0.0_rk, self%o2lim_K, self%o2lim_n)
+            srsT = et*self%srs
+            spare = (sum*self%uB1c_O2/self%urB1_O2 - sug*self%pu_ra)*c*cenh
+            dem = srsT*cP
+            if (dem > 0.0_rk) then
+               phi_o2 = min(1.0_rk, max(0.0_rk, 1.0_rk - spare/dem))
+            else
+               phi_o2 = 0.0_rk
+            end if
+            u_o2 = (1.0_rk - F_o2)*phi_o2
+            sdo = sdo + u_o2*(srsT + self%o2lim_sdm)
+            _SET_DIAGNOSTIC_(self%id_o2lim_F,F_o2)
+            _SET_DIAGNOSTIC_(self%id_o2lim_loss,u_o2*(srsT + self%o2lim_sdm)*cP)
+         end if
+         !<--- jsasaki 2026-11-22
+
          ! Fraction of lysis flux that is particulate (remainder is dissolved)
          pe_RP = MIN(self%qplc/(qpc+ZeroX), self%qnlc/(qnc+ZeroX), 1.0_rk)
          ! Apply minimum POM fraction for lysis (jsasaki 2026-03-03)
@@ -602,6 +648,7 @@ contains
 
          ! Rest respiration rate (1/d)
          srs = et*self%srs
+         if (self%isw_o2lim == 1) srs = srs*(1.0_rk - u_o2)   ! jsasaki 2026-11-22: L1: the rest respiration actually done
 
          ! Activity respiration rate (1/d)
          sra = sug*self%pu_ra
@@ -636,10 +683,19 @@ contains
          _SET_ODE_(self%id_chl,(Chl_inc - Chl_loss))
 
          _SET_ODE_(self%id_O3c,(fPIO3c - fO3PIc)/CMass)
+         if (self%isw_o2lim == 1) then
+            ! jsasaki 2026-11-22: review r1 #6: the same net O2 change written so that it is exactly 0 at O2 = 0 when spare < dem
+            _SET_ODE_(self%id_O2o,self%urB1_O2*(max(spare - dem, 0.0_rk) - F_o2*max(dem - spare, 0.0_rk)))
+         else
          _SET_ODE_(self%id_O2o,(fO3PIc*self%uB1c_O2 - fPIO3c*self%urB1_O2))
+         end if
          if (self%isw_ledger == 1) then
             _SET_DIAGNOSTIC_(self%id_ledger_growth_O3c,(fPIO3c - fO3PIc)/CMass)
+            if (self%isw_o2lim == 1) then   ! jsasaki 2026-11-22: review r1 #6: the ledger uses the same expression
+               _SET_DIAGNOSTIC_(self%id_ledger_growth_O2o,self%urB1_O2*(max(spare - dem, 0.0_rk) - F_o2*max(dem - spare, 0.0_rk)))
+            else
             _SET_DIAGNOSTIC_(self%id_ledger_growth_O2o,(fO3PIc*self%uB1c_O2 - fPIO3c*self%urB1_O2))
+            end if
          end if
 
          ! Save rates of photosynthesis (a.k.a., gross primary production) and respiration
