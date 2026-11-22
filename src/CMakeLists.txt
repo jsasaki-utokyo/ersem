@@ -48,6 +48,7 @@ add_library(fabm_models_ersem OBJECT
             spm_optics.F90
             pom_decay.F90
             dom_decay.F90
+            phyto_migration.F90       # jsasaki 2026-11-22: box-ersem PFT redesign: phytoplankton diel vertical migration
            )
 
 target_link_libraries(fabm_models_ersem PRIVATE fabm_base)

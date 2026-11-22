@@ -39,6 +39,7 @@ module ersem_model_library
    use ersem_spm_optics
    use ersem_pom_decay       ! jsasaki 2026-03-19: POM hydrolysis + direct oxidation
    use ersem_dom_decay       ! jsasaki 2026-03-20: bacteria-independent DOM oxidation
+   use ersem_phyto_migration ! jsasaki 2026-11-22: box-ersem PFT redesign: phytoplankton diel vertical migration
 
    implicit none
 
@@ -101,6 +102,10 @@ contains
          case ('pom_decay');                               allocate(type_ersem_pom_decay::model)  ! jsasaki 2026-03-19
          case ('dom_decay');                               allocate(type_ersem_dom_decay::model)  ! jsasaki 2026-03-20
          case ('benthic_pom_class_split');                 allocate(type_ersem_benthic_pom_class_split::model)  ! jsasaki 2026-10-07: unification family C wave 2
+         !---> jsasaki 2026-11-22: box-ersem PFT redesign: phytoplankton diel vertical migration (phyto_migration.F90)
+         case ('phyto_migration_target');                  allocate(type_ersem_phyto_migration_target::model)
+         case ('phyto_migration_move');                    allocate(type_ersem_phyto_migration_move::model)
+         !<--- jsasaki 2026-11-22
          ! Add new models here
          case default
             call self%type_base_model_factory%create(name,model)
