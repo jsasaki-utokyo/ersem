@@ -70,7 +70,9 @@ module ersem_pom_decay
       procedure :: do
    end type
 
-   real(rk), parameter :: CMass = 12.0_rk
+   ! jsasaki 2026-11-23: the local CMass = 12.0 shadowed ersem_shared's 12.011: oxidised POC (debited in mg C) was
+   ! credited to DIC as fOx/12.0, creating 9.2e-4 mmol C per mmol oxidised (TB-FVCOM box-ersem/docs/m1_deposition.md
+   ! section 6.1, gpt review r1 #1); the shared constant is used now
 
 contains
 
