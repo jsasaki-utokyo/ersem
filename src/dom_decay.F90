@@ -21,7 +21,11 @@ module ersem_dom_decay
 
    use fabm_types
    use ersem_shared
-   use benthos_shared_laws, only: th_q10   ! jsasaki 2026-11-24: isw_law = 1: the pure Q10 law shared with the bed DOC decay
+   !---> jsasaki 2026-11-24: isw_law = 1: the pure Q10 law shared with the bed DOC decay, and ersem_shared's carbon mass under its own
+   ! name (the local CMass = 12.0 below is kept, unchanged, for the former behaviour)
+   use benthos_shared_laws, only: th_q10
+   use ersem_shared, only: CMass_shared => CMass
+   !<--- jsasaki 2026-11-24
 
    implicit none
 
@@ -64,8 +68,7 @@ module ersem_dom_decay
       procedure :: do
    end type
 
-   ! jsasaki 2026-11-24: renamed from CMass (it shadowed ersem_shared's CMass = 12.011); used only with isw_law = 0 (former behaviour)
-   real(rk), parameter :: CMass_legacy = 12.0_rk  ! mg C per mmol C
+   real(rk), parameter :: CMass = 12.0_rk  ! mg C per mmol C
 
 contains
 
@@ -136,18 +139,53 @@ contains
       real(rk) :: et, fO2, k_eff
       real(rk) :: fOx_c, fOx_n, fOx_p
 
+      !---> jsasaki 2026-11-24: isw_law = 1 (unified law) has its OWN loop, so that the loop of the former behaviour below stays
+      ! textually untouched: with the switch tested inside one loop the compiler generated other code for the former path and its
+      ! rate differed in the last bit (muse rev52 gate c0, job 7678439). Differences from the loop below: et = th_q10 (pure Q10,
+      ! exactly 1 at Tref) and DIC = fOx_c / CMass_shared (12.011)
+      if (self%isw_law == 1) then
+         _LOOP_BEGIN_
+            _GET_(self%id_ETW, ETW)
+            et = th_q10(ETW, self%q10, self%Tref)
+            _GET_(self%id_O2o, O2o)
+            O2o = max(0.0_rk, O2o)
+            fO2 = O2o / (O2o + self%K_O2)
+            k_eff = self%k_ox * et * fO2
+            _GET_(self%id_RDc, RDc)
+            RDc = max(0.0_rk, RDc)
+            fOx_c = k_eff * RDc
+            _SET_ODE_(self%id_RDc, -fOx_c)
+            _SET_ODE_(self%id_O2o, -fOx_c * self%ur_O2)
+            _SET_ODE_(self%id_O3c, +fOx_c / CMass_shared)
+            if (_AVAILABLE_(self%id_RDn)) then
+               _GET_(self%id_RDn, RDn)
+               fOx_n = k_eff * max(0.0_rk, RDn)
+               _SET_ODE_(self%id_RDn, -fOx_n)
+               if (_AVAILABLE_(self%id_N4n)) _SET_ODE_(self%id_N4n, +fOx_n)
+            else
+               fOx_n = 0.0_rk
+            end if
+            if (_AVAILABLE_(self%id_RDp)) then
+               _GET_(self%id_RDp, RDp)
+               fOx_p = k_eff * max(0.0_rk, RDp)
+               _SET_ODE_(self%id_RDp, -fOx_p)
+               if (_AVAILABLE_(self%id_N1p)) _SET_ODE_(self%id_N1p, +fOx_p)
+            else
+               fOx_p = 0.0_rk
+            end if
+            _SET_ODE_(self%id_TA, +fOx_n - fOx_p)
+            _SET_DIAGNOSTIC_(self%id_rate, fOx_c)
+         _LOOP_END_
+         return
+      end if
+      !<--- jsasaki 2026-11-24
+
       _LOOP_BEGIN_
 
          ! --- Temperature dependence ---
          _GET_(self%id_ETW, ETW)
-         !---> jsasaki 2026-11-24: isw_law = 1: pure Q10 (law P of the unification table), exactly 1 at Tref
-         if (self%isw_law == 1) then
-            et = th_q10(ETW, self%q10, self%Tref)
-         else
-            et = max(0.0_rk, self%q10**((ETW - self%Tref) / 10.0_rk) &
-                 - self%q10**((ETW - 32.0_rk) / 3.0_rk))
-         end if
-         !<--- jsasaki 2026-11-24
+         et = max(0.0_rk, self%q10**((ETW - self%Tref) / 10.0_rk) &
+              - self%q10**((ETW - 32.0_rk) / 3.0_rk))
 
          ! --- Oxygen limitation ---
          _GET_(self%id_O2o, O2o)
@@ -169,13 +207,7 @@ contains
          _SET_ODE_(self%id_O2o, -fOx_c * self%ur_O2)
 
          ! DIC production
-         !---> jsasaki 2026-11-24: isw_law = 1: ersem_shared's CMass (12.011); 0: the former local 12.0
-         if (self%isw_law == 1) then
-            _SET_ODE_(self%id_O3c, +fOx_c / CMass)
-         else
-            _SET_ODE_(self%id_O3c, +fOx_c / CMass_legacy)
-         end if
-         !<--- jsasaki 2026-11-24
+         _SET_ODE_(self%id_O3c, +fOx_c / CMass)
 
          ! --- Nitrogen (if tracked by this DOM class) ---
          if (_AVAILABLE_(self%id_RDn)) then
