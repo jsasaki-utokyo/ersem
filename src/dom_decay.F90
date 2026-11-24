@@ -21,6 +21,7 @@ module ersem_dom_decay
 
    use fabm_types
    use ersem_shared
+   use benthos_shared_laws, only: th_q10   ! jsasaki 2026-11-24: isw_law = 1: the pure Q10 law shared with the bed DOC decay
 
    implicit none
 
@@ -53,12 +54,18 @@ module ersem_dom_decay
       real(rk) :: ur_O2       ! O2 per C oxidized (mmol O2/mg C)
       ! jsasaki 2026-11-05: switch so that the rates declared in 1/d act per day (FABM rates are per second unless dt is set)
       logical  :: rates_per_day
+      !---> jsasaki 2026-11-24: isw_law (muse docs/carb_s10m/rev52/design.md T01, T02): 0 (default) = the former behaviour, bit identical
+      ! (modified Q10 with heat cut; DIC produced with 12.0 mg C per mmol C); 1 = unified law (pure Q10 th_q10, as the bed DOC decay
+      ! of MUSE; DIC produced with ersem_shared's CMass = 12.011, which conserves carbon)
+      integer  :: isw_law
+      !<--- jsasaki 2026-11-24
    contains
       procedure :: initialize
       procedure :: do
    end type
 
-   real(rk), parameter :: CMass = 12.0_rk  ! mg C per mmol C
+   ! jsasaki 2026-11-24: renamed from CMass (it shadowed ersem_shared's CMass = 12.011); used only with isw_law = 0 (former behaviour)
+   real(rk), parameter :: CMass_legacy = 12.0_rk  ! mg C per mmol C
 
 contains
 
@@ -85,6 +92,11 @@ contains
          'apply k_ox per day (true) instead of per second (false, former behaviour before 2026-11-05)', default=.true.)
       if (self%rates_per_day) self%dt = 86400._rk
       !<--- jsasaki 2026-11-05
+      !---> jsasaki 2026-11-24: isw_law: temperature law and carbon mass (default 0 reproduces every earlier run of every host)
+      call self%get_parameter(self%isw_law, 'isw_law', '', &
+         'temperature law and carbon mass (0: modified Q10 with heat cut, 12.0 mg C/mmol C (former); 1: pure Q10, 12.011)', default=0)
+      if (self%isw_law /= 0 .and. self%isw_law /= 1) call self%fatal_error('initialize', 'isw_law must be 0 or 1')
+      !<--- jsasaki 2026-11-24
 
       ! --- Target DOM ---
       call self%register_state_dependency(self%id_RDc, 'RDc', 'mg C/m^3', &
@@ -128,8 +140,14 @@ contains
 
          ! --- Temperature dependence ---
          _GET_(self%id_ETW, ETW)
-         et = max(0.0_rk, self%q10**((ETW - self%Tref) / 10.0_rk) &
-              - self%q10**((ETW - 32.0_rk) / 3.0_rk))
+         !---> jsasaki 2026-11-24: isw_law = 1: pure Q10 (law P of the unification table), exactly 1 at Tref
+         if (self%isw_law == 1) then
+            et = th_q10(ETW, self%q10, self%Tref)
+         else
+            et = max(0.0_rk, self%q10**((ETW - self%Tref) / 10.0_rk) &
+                 - self%q10**((ETW - 32.0_rk) / 3.0_rk))
+         end if
+         !<--- jsasaki 2026-11-24
 
          ! --- Oxygen limitation ---
          _GET_(self%id_O2o, O2o)
@@ -151,7 +169,13 @@ contains
          _SET_ODE_(self%id_O2o, -fOx_c * self%ur_O2)
 
          ! DIC production
-         _SET_ODE_(self%id_O3c, +fOx_c / CMass)
+         !---> jsasaki 2026-11-24: isw_law = 1: ersem_shared's CMass (12.011); 0: the former local 12.0
+         if (self%isw_law == 1) then
+            _SET_ODE_(self%id_O3c, +fOx_c / CMass)
+         else
+            _SET_ODE_(self%id_O3c, +fOx_c / CMass_legacy)
+         end if
+         !<--- jsasaki 2026-11-24
 
          ! --- Nitrogen (if tracked by this DOM class) ---
          if (_AVAILABLE_(self%id_RDn)) then
