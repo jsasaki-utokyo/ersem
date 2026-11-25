@@ -172,6 +172,7 @@ def identical(a, b):
 
 def check(runs):
     runs = Path(runs)
+    # jsasaki 2026-11-25: step_ref added (the rates of the first step, job 7685499)
     names = ['base_r1', 'base_r2', 'new_off', 'new_off0', 'new_on', 'step_off', 'step_on', 'step_ref']
     D, ok = {}, True
     for n in names:
@@ -192,7 +193,7 @@ def check(runs):
     # G3
     on = D['new_on'][0]
     for n in names:
-        if n not in ('new_on', 'step_on', 'step_ref'):
+        if n not in ('new_on', 'step_on', 'step_ref'):   # jsasaki 2026-11-25: step_ref has the switch on
             present = [k for k in D[n][0] if 'no3red' in k]
             print(f'G3 {n}: no3red variables {present}: {"PASS" if not present else "FAIL"}')
             ok &= not present
@@ -215,6 +216,7 @@ def check(runs):
     if not np.array_equal(t0, t1):
         raise ValueError('step runs have different time axes')
     i = int(np.flatnonzero(np.abs(t0 - dt) < 1e-6)[0])
+    # jsasaki 2026-11-25: time series only (job 7685417); state equality after the step, double precision (jobs 7685455-7685499)
     nt = len(t0)
     common = sorted(k for k in set(s0) & set(s1) if k != 'time' and s0[k].ndim and s0[k].shape[0] == nt)   # time series only
     fixed = sorted(k for k in set(s0) & set(s1) if k not in common and k != 'time')

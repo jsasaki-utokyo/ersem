@@ -31,7 +31,9 @@ PY="$WORK_DIR/mambaforge/envs/xgotm/bin/python"
 SETUP="$WORK_DIR/Github/ersem-setups/0d-aquarium"
 export OMP_NUM_THREADS=1
 die() { echo "GATE FAIL: $*"; exit 1; }
-[[ -e "$S" ]] && die "$S exists (use a new TAG; nothing is overwritten)"
+# jsasaki 2026-11-25: review r3 #3: claim the run directory atomically (a second job with the same TAG stops here)
+mkdir -p "$(dirname "$S")" || die "mkdir scratch"
+mkdir "$S" 2>/dev/null || die "$S exists (use a new TAG; nothing is overwritten)"
 #---> jsasaki 2026-11-25: review r2 #1: the base must be a strict ancestor WITHOUT the port, the new tree must contain it
 BASE_FULL=$(git -C "$E" rev-parse --verify "$BASE_SHA^{commit}") || die "BASE_SHA is not a commit"
 NEW_FULL=$(git -C "$E" rev-parse --verify "$NEW_SHA^{commit}") || die "NEW_SHA is not a commit"
@@ -40,23 +42,34 @@ git -C "$E" merge-base --is-ancestor "$BASE_FULL" "$NEW_FULL" || die "BASE_SHA i
 for item in "src/primary_producer.F90:isw_no3red" "src/carbonate_engine.F90:carbonate_engine_kw"; do
   f=${item%%:*}; w=${item##*:}
   # grep reads the whole file (no -q): with pipefail, an early exit of grep -q would fail the pipeline through SIGPIPE (job 7685726)
-  nb=$(git -C "$E" show "$BASE_FULL:$f" | grep -c "$w"); nn=$(git -C "$E" show "$NEW_FULL:$f" | grep -c "$w")
+  # jsasaki 2026-11-25: review r3 #2: each source read must succeed (an unreadable file is not a clean base)
+  git -C "$E" show "$BASE_FULL:$f" > "$S/guard_base.F90" || die "cannot read $f at the base"
+  git -C "$E" show "$NEW_FULL:$f" > "$S/guard_new.F90" || die "cannot read $f at the new commit"
+  nb=$(grep -c "$w" "$S/guard_base.F90"); nn=$(grep -c "$w" "$S/guard_new.F90")
   [[ "$nb" == 0 ]] || die "the base already contains $w ($f)"
   [[ "$nn" =~ ^[1-9][0-9]*$ ]] || die "the new tree lacks $w ($f)"
 done
 #<--- jsasaki 2026-11-25
-mkdir -p "$S/src/fabm" "$S/src/ersem_base" "$S/src/ersem_new" || die "mkdir"
+mkdir -p "$S/src/fabm" "$S/src/ersem_base" "$S/src/ersem_new" "$S/setup" || die "mkdir"
+#---> jsasaki 2026-11-25: review r3 #4: the setup inputs and the checker are copied once; every run uses the copies
+cp "$SETUP"/{run.nml,input.yaml,output.yaml,env_nns_annual.dat,wind.dat} "$S/setup/" || die "setup copy"
+cp "$G/gate_check.py" "$S/gate_check.py" || die "checker copy"
+CHK="$S/gate_check.py"
+#<--- jsasaki 2026-11-25
 
 # ---- frozen sources
 git -C "$WORK_DIR/Github/fabm" archive HEAD | tar -x -C "$S/src/fabm" || die "fabm archive"
 rsync -a --exclude '.git' "$WORK_DIR/Github/gotm/code/" "$S/src/gotm_code/" || die "gotm copy"
-git -C "$E" archive "$BASE_SHA" | tar -x -C "$S/src/ersem_base" || die "ersem base archive"
-git -C "$E" archive "$NEW_SHA" | tar -x -C "$S/src/ersem_new" || die "ersem new archive"
+# jsasaki 2026-11-25: review r3 #1: the archives use the validated object ids, not the arguments
+git -C "$E" archive "$BASE_FULL" | tar -x -C "$S/src/ersem_base" || die "ersem base archive"
+git -C "$E" archive "$NEW_FULL" | tar -x -C "$S/src/ersem_new" || die "ersem new archive"
 tree_hash() { (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); }
 { echo "fabm $(git -C "$WORK_DIR/Github/fabm" rev-parse HEAD) tree $(tree_hash "$S/src/fabm")"
   echo "gotm $(git -C "$WORK_DIR/Github/gotm/code" rev-parse HEAD) (working tree copy) tree $(tree_hash "$S/src/gotm_code")"
-  echo "ersem_base $(git -C "$E" rev-parse "$BASE_SHA")"; echo "ersem_new $(git -C "$E" rev-parse "$NEW_SHA")"
-  echo "setup $(git -C "$WORK_DIR/Github/ersem-setups" rev-parse HEAD 2>/dev/null || echo unknown) $SETUP"; } > "$S/SNAPSHOT.txt"
+  echo "ersem_base $BASE_FULL"; echo "ersem_new $NEW_FULL"   # jsasaki 2026-11-25: review r3 #1
+  echo "setup $(git -C "$WORK_DIR/Github/ersem-setups" rev-parse HEAD 2>/dev/null || echo unknown) $SETUP"
+  (cd "$S/setup" && sha256sum *) | sed 's/^/  setup copy /'   # jsasaki 2026-11-25: review r3 #4
+  echo "  checker copy $(sha256sum "$CHK" | cut -d' ' -f1)"; } > "$S/SNAPSHOT.txt"
 cat "$S/SNAPSHOT.txt"
 
 # ---- builds (site layer: GENKAI Intel stack, as fabm/src/drivers/0d/install_ersem_fabm0d_genkai.sh)
@@ -99,8 +112,8 @@ cmp -s "$YAML" "$S/src/ersem_new/testcases/fabm-ersem-15.06-L4-noben-docdyn-iop.
 mkrun() {   # name binary switch(none|0|1) mode(year|step|stepref)
   local R="$S/runs/$1"
   mkdir -p "$R" || return 1
-  cp "$SETUP"/{run.nml,input.yaml,output.yaml,env_nns_annual.dat,wind.dat} "$R/" || return 1
-  "$PY" "$G/gate_check.py" make_yaml "$YAML" "$R/fabm.yaml" "$3" || return 1
+  cp "$S/setup"/{run.nml,input.yaml,output.yaml,env_nns_annual.dat,wind.dat} "$R/" || return 1   # jsasaki 2026-11-25: review r3 #4
+  "$PY" "$CHK" make_yaml "$YAML" "$R/fabm.yaml" "$3" || return 1
   sed -i -e 's/^   time_step: .*/&\n   xtype: double/' "$R/output.yaml" || return 1   # jsasaki 2026-11-25: every variable in double precision
   if [[ "$4" == step || "$4" == stepref ]]; then
     #---> jsasaki 2026-11-25: one Euler step from a state where P1-P4 all take up nitrate (review r1 #1, #2)
@@ -108,12 +121,12 @@ mkrun() {   # name binary switch(none|0|1) mode(year|step|stepref)
     # (written into the initialization of fabm.yaml); forcing (PAR, temperature, salinity, wind) held constant at STEP_T.
     # stepref starts one step later from the same state: fabm0d evaluates a step's rates at the time of the step's end
     # (solar geometry), so stepref's record 0 holds exactly the rates of step_on's first step (job 7685499)
-    "$PY" "$G/gate_check.py" set_state "$R/fabm.yaml" "$S/runs/new_off/output.nc" "$STEP_T" || return 1
+    "$PY" "$CHK" set_state "$R/fabm.yaml" "$S/runs/new_off/output.nc" "$STEP_T" || return 1
     local t0="$STEP_T"; [[ "$4" == stepref ]] && t0="$STEP_T1"
     sed -i -e "s/^start=.*/start=\"$t0\"/" -e "s/^stop=.*/stop=\"$STEP_T4\"/" -e 's/^ode_method=.*/ode_method=1/' \
            -e "s/^env_file=.*/env_file='env_const.dat'/" "$R/run.nml" || return 1
-    "$PY" "$G/gate_check.py" make_env "$R/env_nns_annual.dat" "$R/env_const.dat" "$STEP_T" || return 1
-    "$PY" "$G/gate_check.py" make_env "$R/wind.dat" "$R/wind_const.dat" "$STEP_T" || return 1
+    "$PY" "$CHK" make_env "$R/env_nns_annual.dat" "$R/env_const.dat" "$STEP_T" || return 1
+    "$PY" "$CHK" make_env "$R/wind.dat" "$R/wind_const.dat" "$STEP_T" || return 1
     sed -i -e 's/^  file: wind.dat/  file: wind_const.dat/' "$R/input.yaml" || return 1
     grep -q 'file: wind_const.dat' "$R/input.yaml" || return 1
     sed -i -e 's/^   time_step: .*/   time_step: 1/' "$R/output.yaml" || return 1
@@ -138,14 +151,14 @@ runset() {   # names... (each "name binary switch mode"), all at the same time
 runset "base_r1 base none year" "base_r2 base none year" "new_off new none year" "new_off0 new 0 year" "new_on new 1 year" \
   || die "a year run failed"
 # jsasaki 2026-11-25: the step time is chosen from the finished new_off year run (review r1 #1)
-read -r STEP_T STEP_T1 STEP_T4 < <("$PY" "$G/gate_check.py" pick_state "$S/runs/new_off/output.nc") || die "pick_state"
+read -r STEP_T STEP_T1 STEP_T4 < <("$PY" "$CHK" pick_state "$S/runs/new_off/output.nc") || die "pick_state"
 STEP_T="${STEP_T/T/ }"; STEP_T1="${STEP_T1/T/ }"; STEP_T4="${STEP_T4/T/ }"
 echo "step start $STEP_T (reference $STEP_T1, stop $STEP_T4)"
 [[ -n "$STEP_T" && -n "$STEP_T1" && -n "$STEP_T4" ]] || die "no step time"
 runset "step_off new 0 step" "step_on new 1 step" "step_ref new 1 stepref" || die "a step run failed"
 
 # ---- decision
-"$PY" "$G/gate_check.py" check "$S/runs" > "$S/gate_result.txt" 2>&1; rc=$?
+"$PY" "$CHK" check "$S/runs" > "$S/gate_result.txt" 2>&1; rc=$?
 cat "$S/gate_result.txt"
 (( rc == 0 )) || die "gate_check exit $rc"
 echo "GATE PASS"
