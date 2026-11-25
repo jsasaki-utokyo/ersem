@@ -16,8 +16,9 @@
 #   new_off           : new binary, switch absent (default 0)
 #   new_off0          : new binary, isw_no3red: 0 written for P1-P4
 #   new_on            : new binary, isw_no3red: 1 for P1-P4
-#   step_off, step_on : new binary, Euler, 4 steps of 1800 s, every step written (one-step O2 check)
-#   step_ref          : as step_on, started one step later from the same initial state (the rates of step_on's first step)
+#   step_off, step_on : new binary, Euler, 4 steps of 1800 s, every step written (one-step O2 check), started from the
+#                       new_off state at the record where all of P1-P4 take up nitrate, forcing held constant
+#   step_ref          : as step_on, started one step later from the same state (the rates of step_on's first step)
 # and decides PASS / FAIL with gate_check.py (fail-closed; skill bit-identity-gates). Work and output stay in the
 # git-ignored scratch/port52_<TAG>/ of this repository. jsasaki 2026-11-25: new file.
 set -uo pipefail
@@ -46,7 +47,8 @@ tree_hash() { (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 s
 cat "$S/SNAPSHOT.txt"
 
 # ---- builds (site layer: GENKAI Intel stack, as fabm/src/drivers/0d/install_ersem_fabm0d_genkai.sh)
-# fabm/src/drivers/0d needs CMake >= 3.22; the system cmake is older: general software lives under $HOME/local (owner rule)
+# jsasaki 2026-11-25: fabm/src/drivers/0d needs CMake >= 3.22; the system cmake is older: general software lives under
+# $HOME/local (owner rule)
 CMAKE=""
 for c in "$HOME/local/bin/cmake" "$(command -v cmake)"; do
   [[ -x "$c" ]] || continue
@@ -78,41 +80,55 @@ for t in base new; do cat "$S/build/$t/PROVENANCE.txt" 2>/dev/null || { echo "bu
 (( rb == 0 && rn == 0 )) || die "build"
 
 # ---- runs (each in its own directory, serial, at the same time)
+# jsasaki 2026-11-25: the no-benthos test case (the benthic ones no longer initialise with this fork, jobs 7685360, 7685384)
 YAML="$S/src/ersem_base/testcases/fabm-ersem-15.06-L4-noben-docdyn-iop.yaml"
 cmp -s "$YAML" "$S/src/ersem_new/testcases/fabm-ersem-15.06-L4-noben-docdyn-iop.yaml" || die "test case differs between the two trees"
-mkrun() {   # name binary switch(none|0|1) mode(year|step)
+mkrun() {   # name binary switch(none|0|1) mode(year|step|stepref)
   local R="$S/runs/$1"
   mkdir -p "$R" || return 1
   cp "$SETUP"/{run.nml,input.yaml,output.yaml,env_nns_annual.dat,wind.dat} "$R/" || return 1
   "$PY" "$G/gate_check.py" make_yaml "$YAML" "$R/fabm.yaml" "$3" || return 1
-  sed -i -e 's/^   time_step: .*/&\n   xtype: double/' "$R/output.yaml" || return 1   # every variable in double precision
+  sed -i -e 's/^   time_step: .*/&\n   xtype: double/' "$R/output.yaml" || return 1   # jsasaki 2026-11-25: every variable in double precision
   if [[ "$4" == step || "$4" == stepref ]]; then
-    # at noon in June, so that the producers take up nitrate in the first step (at midnight on 1 January they do not: job 7685440).
-    # stepref starts one step later from the same initial state: fabm0d evaluates the rates of the step 12:00 -> 12:30 with the
-    # time (zenith angle) of 12:30, so stepref's record 0 holds exactly the rates of step_on's first step (job 7685499)
-    local t0="2008-06-01 12:00:00"; [[ "$4" == stepref ]] && t0="2008-06-01 12:30:00"
-    sed -i -e "s/^start=.*/start=\"$t0\"/" -e 's/^stop=.*/stop="2008-06-01 14:00:00"/' -e 's/^ode_method=.*/ode_method=1/' \
+    #---> jsasaki 2026-11-25: one Euler step from a state where P1-P4 all take up nitrate (review r1 #1, #2)
+    # start state: the new_off year-run state at the record STEP_T where the smallest nitrate uptake of P1-P4 is largest
+    # (written into the initialization of fabm.yaml); forcing (PAR, temperature, salinity, wind) held constant at STEP_T.
+    # stepref starts one step later from the same state: fabm0d evaluates a step's rates at the time of the step's end
+    # (solar geometry), so stepref's record 0 holds exactly the rates of step_on's first step (job 7685499)
+    "$PY" "$G/gate_check.py" set_state "$R/fabm.yaml" "$S/runs/new_off/output.nc" "$STEP_T" || return 1
+    local t0="$STEP_T"; [[ "$4" == stepref ]] && t0="$STEP_T1"
+    sed -i -e "s/^start=.*/start=\"$t0\"/" -e "s/^stop=.*/stop=\"$STEP_T4\"/" -e 's/^ode_method=.*/ode_method=1/' \
            -e "s/^env_file=.*/env_file='env_const.dat'/" "$R/run.nml" || return 1
-    # constant forcing: fabm0d evaluates a step's rates with the environment of the step's end (job 7685488)
-    "$PY" "$G/gate_check.py" make_env "$R/env_nns_annual.dat" "$R/env_const.dat" "2008-06-01 12:00:00" || return 1
+    "$PY" "$G/gate_check.py" make_env "$R/env_nns_annual.dat" "$R/env_const.dat" "$STEP_T" || return 1
+    "$PY" "$G/gate_check.py" make_env "$R/wind.dat" "$R/wind_const.dat" "$STEP_T" || return 1
+    sed -i -e 's/^  file: wind.dat/  file: wind_const.dat/' "$R/input.yaml" || return 1
+    grep -q 'file: wind_const.dat' "$R/input.yaml" || return 1
     sed -i -e 's/^   time_step: .*/   time_step: 1/' "$R/output.yaml" || return 1
+    #<--- jsasaki 2026-11-25
   fi
   echo "binary $S/build/$2/fabm0d $(sha256sum "$S/build/$2/fabm0d" | cut -d' ' -f1); switch $3; mode $4" > "$R/RUNINFO.txt"
   ( cd "$R" && "$S/build/$2/fabm0d" -y fabm.yaml > run.log 2>&1 ); local rc=$?
   echo "rc=$rc" >> "$R/RUNINFO.txt"
   return $rc
 }
-names=(base_r1 base_r2 new_off new_off0 new_on step_off step_on step_ref)
-specs=("base none year" "base none year" "new none year" "new 0 year" "new 1 year" "new 0 step" "new 1 step" "new 1 stepref")
-pids=()
-for i in "${!names[@]}"; do mkrun "${names[$i]}" ${specs[$i]} & pids+=($!); done
-fail=0
-for i in "${!pids[@]}"; do
-  wait "${pids[$i]}"; rc=$?
-  echo "run ${names[$i]} rc $rc"
-  (( rc == 0 )) || { fail=1; tail -20 "$S/runs/${names[$i]}/run.log"; }
-done
-(( fail == 0 )) || die "a run failed"
+runset() {   # names... (each "name binary switch mode"), all at the same time
+  local pids=() names=() fail=0 i
+  for spec in "$@"; do set -- $spec; mkrun "$@" & pids+=($!); names+=("$1"); done
+  for i in "${!pids[@]}"; do
+    wait "${pids[$i]}"; local rc=$?
+    echo "run ${names[$i]} rc $rc"
+    (( rc == 0 )) || { fail=1; tail -20 "$S/runs/${names[$i]}/run.log"; }
+  done
+  return $fail
+}
+runset "base_r1 base none year" "base_r2 base none year" "new_off new none year" "new_off0 new 0 year" "new_on new 1 year" \
+  || die "a year run failed"
+# jsasaki 2026-11-25: the step time is chosen from the finished new_off year run (review r1 #1)
+read -r STEP_T STEP_T1 STEP_T4 < <("$PY" "$G/gate_check.py" pick_state "$S/runs/new_off/output.nc") || die "pick_state"
+STEP_T="${STEP_T/T/ }"; STEP_T1="${STEP_T1/T/ }"; STEP_T4="${STEP_T4/T/ }"
+echo "step start $STEP_T (reference $STEP_T1, stop $STEP_T4)"
+[[ -n "$STEP_T" && -n "$STEP_T1" && -n "$STEP_T4" ]] || die "no step time"
+runset "step_off new 0 step" "step_on new 1 step" "step_ref new 1 stepref" || die "a step run failed"
 
 # ---- decision
 "$PY" "$G/gate_check.py" check "$S/runs" > "$S/gate_result.txt" 2>&1; rc=$?

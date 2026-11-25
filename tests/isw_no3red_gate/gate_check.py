@@ -2,7 +2,9 @@
 """Decision of the isw_no3red port gate (run by gate.pjsub). jsasaki 2026-11-25: new file.
 
   gate_check.py make_yaml SRC DST SWITCH   SWITCH = none (copy unchanged) | 0 | 1 (isw_no3red for every ersem/primary_producer)
-  gate_check.py make_env SRC DST TIME     constant environment around TIME (step runs)
+  gate_check.py make_env SRC DST TIME     constant environment (or wind) file around TIME (step runs)
+  gate_check.py pick_state NC              the step start time (and +30 min, +2 h) from the new_off year run
+  gate_check.py set_state YAML NC TIME     every initial value of YAML := the state in NC at TIME
   gate_check.py check RUNS                 exit 0 = PASS, 1 = FAIL, 2 = could not decide (fail-closed)
 
 Checks (skill bit-identity-gates):
@@ -11,10 +13,14 @@ Checks (skill bit-identity-gates):
   G2  switch off: new_off == base_r1 and new_off0 == base_r1, same variable set, bit for bit
   G3  switch on, whole year: P<n>_ledger_no3red_O2o == 2 * P<n>_fN3PIn at every record (exact), not all zero;
       the diagnostic is absent in every run with the switch off
-  G4  one Euler step from the same state under constant forcing (step_off, step_on): after the first step every state
-      variable except O2_o is identical
-      (and the oxygen module's own diagnostics of that state) and O2_o(on) - O2_o(off) = dt * sum_n P<n>_ledger_no3red_O2o / 86400
-      of the previous record to the round-off of the O2 states (double-precision output): O2 gained = 2 x nitrate uptake
+  G4  one Euler step (step_off, step_on) from the new_off year-run state at the record where all of P1-P4 take up nitrate
+      (pick_state, set_state), forcing held constant (make_env for PAR / temperature / salinity and for wind): after the
+      first step every STATE variable except O2_o is identical (diagnostics evaluated from the new state may differ, e.g.
+      O2_AOU, O2_fair, pel_nit_fN4N3n); every P<n>_fN3PIn of the step's rates is > 0; and O2_o(on) - O2_o(off) =
+      dt * sum_n P<n>_ledger_no3red_O2o / 86400 to the round-off of the O2 states (double-precision output), where the
+      rates are read from record 0 of step_ref (same state, started one step later: fabm0d evaluates a step's rates at the
+      time of the step's end): O2 gained = 2 x nitrate uptake
+  jsasaki 2026-11-25: G4 docstring after review r1 #3; pick_state / set_state after review r1 #1
 """
 import re
 import sys
@@ -69,6 +75,64 @@ def states_of(yaml_path):
     import yaml
     d = yaml.safe_load(Path(yaml_path).read_text())
     return {f'{i}_{k}' for i, v in d['instances'].items() for k in (v.get('initialization') or {})}
+
+
+#---> jsasaki 2026-11-25: review r1 #1: a step state in which all four producers take up nitrate
+PRODUCERS = ('P1', 'P2', 'P3', 'P4')
+
+
+def pick_state(nc_path):
+    """The record of the year run where the smallest nitrate uptake of P1-P4 is largest (all > 0); prints its time,
+    +30 min and +2 h as ISO strings (the step runs' start, reference start and stop)."""
+    import datetime as dt
+    import netCDF4
+    with netCDF4.Dataset(nc_path) as d:
+        up = np.array([np.asarray(d[f'{p}_fN3PIn'][:], float).reshape(len(d['time']), -1)[:, 0] for p in PRODUCERS])
+        t = netCDF4.num2date(d['time'][:], d['time'].units, only_use_cftime_datetimes=False)
+    low = up.min(axis=0); r = int(np.argmax(low))
+    if not low[r] > 0:
+        print('no record where all producers take up nitrate', file=sys.stderr)
+        return 2
+    t0 = dt.datetime(t[r].year, t[r].month, t[r].day, t[r].hour, t[r].minute, t[r].second)
+    print(*(x.strftime('%Y-%m-%dT%H:%M:%S') for x in (t0, t0 + dt.timedelta(minutes=30), t0 + dt.timedelta(hours=2))))
+    return 0
+
+
+def set_state(yaml_path, nc_path, at):
+    """Replace every initialization value in YAML by the state of NC at time `at` (exact repr of the double value)."""
+    import datetime as dt
+    import netCDF4
+    states = states_of(yaml_path)
+    with netCDF4.Dataset(nc_path) as d:
+        t = netCDF4.num2date(d['time'][:], d['time'].units, only_use_cftime_datetimes=False)
+        target = dt.datetime.strptime(at, '%Y-%m-%d %H:%M:%S')
+        hit = [i for i, x in enumerate(t) if (x.year, x.month, x.day, x.hour, x.minute, x.second) ==
+               (target.year, target.month, target.day, target.hour, target.minute, target.second)]
+        if len(hit) != 1:
+            print(f'time {at} not in {nc_path}', file=sys.stderr)
+            return 2
+        if d['O2_o'].dtype != np.float64:
+            print('the year run must write double precision', file=sys.stderr)
+            return 2
+        value = {k: float(np.asarray(d[k][hit[0]]).ravel()[0]) for k in states}
+    out, inst, in_init, n = [], None, False, 0
+    for line in Path(yaml_path).read_text().splitlines(keepends=True):
+        m = re.match(r'^  (\S[^:]*):\s*$', line)
+        if m:
+            inst, in_init = m.group(1), False
+        elif re.match(r'^    \S', line):
+            in_init = bool(re.match(r'^    initialization:\s*$', line))
+        elif in_init:
+            m = re.match(r'^(      )([^:#\s]+):\s*([^#\n]*?)(\s*#.*)?$', line.rstrip('\n'))
+            if m and f'{inst}_{m.group(2)}' in value:
+                line = f'{m.group(1)}{m.group(2)}: {value[f"{inst}_{m.group(2)}"]!r}{m.group(4) or ""}\n'; n += 1
+        out.append(line)
+    if n != len(states):
+        print(f'replaced {n} of {len(states)} initial values', file=sys.stderr)
+        return 2
+    Path(yaml_path).write_text(''.join(out))
+    return 0
+#<--- jsasaki 2026-11-25
 
 
 def load(path):
@@ -179,6 +243,11 @@ def check(runs):
     for k in states:
         if k in sr and k in s1 and sr[k][0].tobytes() != s1[k][0].tobytes():
             raise ValueError(f'step_ref does not start from the initial state of step_on: {k}')
+    # jsasaki 2026-11-25: review r1 #1: every producer must contribute to the step, or its O2 source is not tested
+    ups = {p: float(sr[f'{p}_fN3PIn'][0].ravel()[0]) for p in PRODUCERS}
+    allup = all(v > 0 for v in ups.values())
+    print(f'G4 nitrate uptake of the step (step_ref record 0, mmol N/m3/d): {ups}: {"PASS" if allup else "FAIL"}')
+    ok &= allup
     o2_on, o2_off = float(s1['O2_o'][i].ravel()[0]), float(s0['O2_o'][i].ravel()[0])
     gained = o2_on - o2_off
     exp = sum(float(sr[f'{p}_ledger_no3red_O2o'][0].ravel()[0]) for p in ('P1', 'P2', 'P3', 'P4')) * dt / 86400.0
@@ -198,6 +267,10 @@ if __name__ == '__main__':
     try:
         if sys.argv[1] == 'make_yaml':
             sys.exit(make_yaml(*sys.argv[2:5]))
+        if sys.argv[1] == 'pick_state':
+            sys.exit(pick_state(sys.argv[2]))
+        if sys.argv[1] == 'set_state':
+            sys.exit(set_state(*sys.argv[2:5]))
         if sys.argv[1] == 'make_env':
             sys.exit(make_env(*sys.argv[2:5]))
         if sys.argv[1] == 'check':
