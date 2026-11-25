@@ -156,6 +156,7 @@ def stop_seconds(run):
     return (get('stop') - get('start')).total_seconds(), float(re.search(r'^dt=([0-9.]+)', nml, re.M).group(1))
 
 
+# jsasaki 2026-11-25: review r4 #3: return value documented as the list of differing variables
 def identical(a, b):
     """The list of variables whose bytes differ (empty = identical); raises on anything that cannot be compared."""
     if set(a) != set(b):

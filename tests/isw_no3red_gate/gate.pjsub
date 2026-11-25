@@ -5,6 +5,8 @@
 #PJM -L elapse=00:20:00
 #PJM -j
 #PJM -X
+# jsasaki 2026-11-25: shared pool, 16 cores (two builds of 8 make workers, then up to 5 serial runs at once), 20 min: the
+# measured job takes about 4 min; the first submission as node=1 (job 7685318) was not placed. Whole file new on this date.
 # Gate of the port of the muse rev52 changes (primary_producer isw_no3red, carbonate_engine_kw) into this repository.
 #   pjsub -x BASE_SHA=<ersem commit before the port>,NEW_SHA=<ersem commit with the port>,TAG=<run tag> gate.pjsub
 # Builds the FABM 0-D driver (fabm/src/drivers/0d) twice from ONE frozen FABM / GOTM copy, with the ERSEM tree of
@@ -91,6 +93,7 @@ export LD_LIBRARY_PATH="$NCF/lib:$NC/lib:$H5/lib:${LD_LIBRARY_PATH:-}"
 build() {   # tag
   local B="$S/build/$1"
   mkdir -p "$B" || return 1
+  # jsasaki 2026-11-25: the selected CMake (>= 3.22); 8 make workers per build, the two builds side by side
   "$CMAKE" -S "$S/src/fabm/src/drivers/0d" -B "$B" -DGOTM_BASE="$S/src/gotm_code" -DFABM_ERSEM_BASE="$S/src/ersem_$1" \
     -DCMAKE_Fortran_COMPILER=ifx -DCMAKE_BUILD_TYPE=Release -DFABM_EMBED_VERSION=OFF -DGOTM_EMBED_VERSION=OFF \
     -DNetCDF_ROOT="$NC" -DNETCDF_DIR="$NC" -DNetCDF_FORTRAN_PATH="$NCF" -DHDF5_ROOT="$H5" -DCMAKE_PREFIX_PATH="$NCF" \
@@ -104,7 +107,8 @@ wait $pb; rb=$?; wait $pn; rn=$?
 for t in base new; do cat "$S/build/$t/PROVENANCE.txt" 2>/dev/null || { echo "build $t failed"; tail -30 "$S/build/$t/build.log"; }; done
 (( rb == 0 && rn == 0 )) || die "build"
 
-# ---- runs (each in its own directory, serial, at the same time)
+# ---- runs (each serial, in its own directory): first the five year runs at the same time; after they finish, the step
+# state is picked from new_off and the three step runs run at the same time (jsasaki 2026-11-25: review r5 #3)
 # jsasaki 2026-11-25: the no-benthos test case (the benthic ones no longer initialise with this fork, jobs 7685360, 7685384)
 YAML="$S/src/ersem_base/testcases/fabm-ersem-15.06-L4-noben-docdyn-iop.yaml"
 cmp -s "$YAML" "$S/src/ersem_new/testcases/fabm-ersem-15.06-L4-noben-docdyn-iop.yaml" || die "test case differs between the two trees"
