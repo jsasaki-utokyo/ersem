@@ -55,10 +55,11 @@ def make_yaml(src, dst, switch):
     return 0
 
 
+# jsasaki 2026-11-25: constant forcing for the step runs (review r2 #2: docstring)
 def make_env(src, dst, at):
-    """The environment line at time `at`, repeated hourly from 2 h before to 4 h after it: constant forcing over the step
-    runs, so that the rates of the first step are those written in record 0 (fabm0d evaluates the rates of a step with the
-    environment of the step's end time, job 7685488)."""
+    """The line of an hourly input file (environment: PAR, temperature, salinity; or wind) at time `at`, repeated hourly
+    from 2 h before to 4 h after it, so that these inputs are constant over the step runs. The solar geometry still moves
+    with time: the rates of step_on's first step are those of step_ref record 0, not of step_on's own record 0."""
     import datetime as dt
     t = dt.datetime.strptime(at, '%Y-%m-%d %H:%M:%S')
     line = next((l for l in Path(src).read_text().splitlines() if l.startswith(at)), None)
@@ -70,6 +71,7 @@ def make_env(src, dst, at):
     return 0
 
 
+# jsasaki 2026-11-25: the state-variable list for the G4 state equality (review r1 #3)
 def states_of(yaml_path):
     """Output names of the state variables (<instance>_<variable> of every initialization entry)."""
     import yaml
@@ -235,6 +237,7 @@ def check(runs):
     for k in ('O2_o', 'P1_ledger_no3red_O2o', 'P1_fN3PIn'):
         if s1[k].dtype != np.float64:
             raise ValueError(f'{k} is {s1[k].dtype}: the step runs must write double precision (output.yaml xtype: double)')
+    # jsasaki 2026-11-25: the rates of the step from step_ref (job 7685499 showed record 0 of step_on is evaluated earlier)
     # Euler: the step from record 0 to record 1 uses the record-0 state with the time of record 1 (zenith angle); step_ref
     # starts from the same initial state at that time, so its record 0 holds exactly those rates
     sr = D['step_ref'][0]

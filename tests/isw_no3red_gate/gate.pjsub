@@ -32,6 +32,19 @@ SETUP="$WORK_DIR/Github/ersem-setups/0d-aquarium"
 export OMP_NUM_THREADS=1
 die() { echo "GATE FAIL: $*"; exit 1; }
 [[ -e "$S" ]] && die "$S exists (use a new TAG; nothing is overwritten)"
+#---> jsasaki 2026-11-25: review r2 #1: the base must be a strict ancestor WITHOUT the port, the new tree must contain it
+BASE_FULL=$(git -C "$E" rev-parse --verify "$BASE_SHA^{commit}") || die "BASE_SHA is not a commit"
+NEW_FULL=$(git -C "$E" rev-parse --verify "$NEW_SHA^{commit}") || die "NEW_SHA is not a commit"
+[[ "$BASE_FULL" != "$NEW_FULL" ]] || die "BASE_SHA and NEW_SHA are the same commit"
+git -C "$E" merge-base --is-ancestor "$BASE_FULL" "$NEW_FULL" || die "BASE_SHA is not an ancestor of NEW_SHA"
+for item in "src/primary_producer.F90:isw_no3red" "src/carbonate_engine.F90:carbonate_engine_kw"; do
+  f=${item%%:*}; w=${item##*:}
+  # grep reads the whole file (no -q): with pipefail, an early exit of grep -q would fail the pipeline through SIGPIPE (job 7685726)
+  nb=$(git -C "$E" show "$BASE_FULL:$f" | grep -c "$w"); nn=$(git -C "$E" show "$NEW_FULL:$f" | grep -c "$w")
+  [[ "$nb" == 0 ]] || die "the base already contains $w ($f)"
+  [[ "$nn" =~ ^[1-9][0-9]*$ ]] || die "the new tree lacks $w ($f)"
+done
+#<--- jsasaki 2026-11-25
 mkdir -p "$S/src/fabm" "$S/src/ersem_base" "$S/src/ersem_new" || die "mkdir"
 
 # ---- frozen sources
@@ -111,6 +124,7 @@ mkrun() {   # name binary switch(none|0|1) mode(year|step|stepref)
   echo "rc=$rc" >> "$R/RUNINFO.txt"
   return $rc
 }
+# jsasaki 2026-11-25: review r1 #1: the runs in two sets (year runs, then the step runs from a year-run state)
 runset() {   # names... (each "name binary switch mode"), all at the same time
   local pids=() names=() fail=0 i
   for spec in "$@"; do set -- $spec; mkrun "$@" & pids+=($!); names+=("$1"); done
