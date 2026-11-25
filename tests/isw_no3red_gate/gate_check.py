@@ -259,11 +259,11 @@ def check(runs):
     exp = sum(float(sr[f'{p}_ledger_no3red_O2o'][0].ravel()[0]) for p in ('P1', 'P2', 'P3', 'P4')) * dt / 86400.0
     up = sum(float(sr[f'{p}_fN3PIn'][0].ravel()[0]) for p in ('P1', 'P2', 'P3', 'P4')) * dt / 86400.0
     prev = sum(float(s1[f'{p}_ledger_no3red_O2o'][0].ravel()[0]) for p in ('P1', 'P2', 'P3', 'P4')) * dt / 86400.0
-    print(f'    (record 0 of step_on, evaluated at its own start time: dt x sum ledger {prev:.17g}; orientation only)')
+    print(f'    (record 0 of step_on, evaluated at its own start time: (dt / 86400) x sum ledger {prev:.17g}; orientation only)')
     tol = 4 * np.finfo(float).eps * max(abs(o2_on), abs(o2_off))   # round-off of the two O2 states
     good = exp > 0 and abs(gained - exp) <= tol and abs(2 * up - exp) <= 4 * np.finfo(float).eps * exp
-    print(f'G4 O2 gained in the step {i - 1} -> {i}: {gained:.17g} mmol O2/m3; dt x sum ledger_no3red_O2o (step_ref record 0) {exp:.17g}; '
-          f'2 x dt x sum fN3PIn {2 * up:.17g}; |difference| {abs(gained - exp):.3g} (round-off bound {tol:.3g}): {"PASS" if good else "FAIL"}')
+    print(f'G4 O2 gained in the step {i - 1} -> {i}: {gained:.17g} mmol O2/m3; (dt / 86400) x sum ledger_no3red_O2o (step_ref record 0) {exp:.17g}; '
+          f'2 x (dt / 86400) x sum fN3PIn {2 * up:.17g}; |difference| {abs(gained - exp):.3g} (round-off bound {tol:.3g}): {"PASS" if good else "FAIL"}')
     ok &= good
     print('GATE', 'PASS' if ok else 'FAIL')
     return 0 if ok else 1

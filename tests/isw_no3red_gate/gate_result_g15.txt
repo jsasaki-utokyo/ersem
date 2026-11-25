@@ -44,3 +44,6 @@ G4 nitrate uptake of the step (step_ref record 0, mmol N/m3/d): {'P1': 0.4620090
     (record 0 of step_on, evaluated at its own start time: dt x sum ledger 0.047968313840136487; orientation only)
 G4 O2 gained in the step 0 -> 1: 0.047884687012924587 mmol O2/m3; dt x sum ledger_no3red_O2o (step_ref record 0) 0.04788468701291998; 2 x dt x sum fN3PIn 0.04788468701291998; |difference| 4.61e-15 (round-off bound 2.32e-13): PASS
 GATE PASS
+
+# Note (review round 6, 2026-11-25): in the G4 lines above, "dt x" stands for (dt / 86400) x with dt in seconds and the rates per day,
+# as computed by gate_check.py; the printed values include the conversion. Later checker versions print "(dt / 86400) x".
