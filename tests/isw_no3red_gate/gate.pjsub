@@ -1,0 +1,100 @@
+#!/bin/bash
+#PJM -L rscgrp=a-batch
+#PJM -L node=1
+#PJM -L elapse=00:50:00
+#PJM -j
+#PJM -X
+# Gate of the port of the muse rev52 changes (primary_producer isw_no3red, carbonate_engine_kw) into this repository.
+#   pjsub -x BASE_SHA=<ersem commit before the port>,NEW_SHA=<ersem commit with the port>,TAG=<run tag> gate.pjsub
+# Builds the FABM 0-D driver (fabm/src/drivers/0d) twice from ONE frozen FABM / GOTM copy, with the ERSEM tree of
+# BASE_SHA and of NEW_SHA (git archive, never the working tree), same compiler and flags; runs the ERSEM test case
+# testcases/fabm-ersem-15.06-L4-ben-docdyn-iop.yaml on the 0-D aquarium setup of ersem-setups (one year, RK4):
+#   base_r1, base_r2  : base binary twice (repeatability floor)
+#   new_off           : new binary, switch absent (default 0)
+#   new_off0          : new binary, isw_no3red: 0 written for P1-P4
+#   new_on            : new binary, isw_no3red: 1 for P1-P4
+#   step_off, step_on : new binary, Euler, 4 steps of 1800 s, every step written (one-step O2 check)
+# and decides PASS / FAIL with gate_check.py (fail-closed; skill bit-identity-gates). Work and output stay in the
+# git-ignored scratch/port52_<TAG>/ of this repository. jsasaki 2026-11-25: new file.
+set -uo pipefail
+: "${WORK_DIR:?WORK_DIR unset (set it in the login profile; the job needs #PJM -X)}"
+: "${BASE_SHA:?BASE_SHA unset}"; : "${NEW_SHA:?NEW_SHA unset}"; : "${TAG:?TAG unset}"
+E="$WORK_DIR/Github/ersem"
+G="$E/tests/isw_no3red_gate"
+S="$E/scratch/port52_$TAG"
+PY="$WORK_DIR/mambaforge/envs/xgotm/bin/python"
+SETUP="$WORK_DIR/Github/ersem-setups/0d-aquarium"
+export OMP_NUM_THREADS=1
+die() { echo "GATE FAIL: $*"; exit 1; }
+[[ -e "$S" ]] && die "$S exists (use a new TAG; nothing is overwritten)"
+mkdir -p "$S/src/fabm" "$S/src/ersem_base" "$S/src/ersem_new" || die "mkdir"
+
+# ---- frozen sources
+git -C "$WORK_DIR/Github/fabm" archive HEAD | tar -x -C "$S/src/fabm" || die "fabm archive"
+rsync -a --exclude '.git' "$WORK_DIR/Github/gotm/code/" "$S/src/gotm_code/" || die "gotm copy"
+git -C "$E" archive "$BASE_SHA" | tar -x -C "$S/src/ersem_base" || die "ersem base archive"
+git -C "$E" archive "$NEW_SHA" | tar -x -C "$S/src/ersem_new" || die "ersem new archive"
+tree_hash() { (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); }
+{ echo "fabm $(git -C "$WORK_DIR/Github/fabm" rev-parse HEAD) tree $(tree_hash "$S/src/fabm")"
+  echo "gotm $(git -C "$WORK_DIR/Github/gotm/code" rev-parse HEAD) (working tree copy) tree $(tree_hash "$S/src/gotm_code")"
+  echo "ersem_base $(git -C "$E" rev-parse "$BASE_SHA")"; echo "ersem_new $(git -C "$E" rev-parse "$NEW_SHA")"
+  echo "setup $(git -C "$WORK_DIR/Github/ersem-setups" rev-parse HEAD 2>/dev/null || echo unknown) $SETUP"; } > "$S/SNAPSHOT.txt"
+cat "$S/SNAPSHOT.txt"
+
+# ---- builds (site layer: GENKAI Intel stack, as fabm/src/drivers/0d/install_ersem_fabm0d_genkai.sh)
+type module >/dev/null 2>&1 || source /usr/share/Modules/init/bash
+set +eu; module load intel/2025.1.3 >/dev/null 2>&1; set -u
+command -v ifx >/dev/null 2>&1 || die "ifx not on PATH"
+NC=/home/app/intel/2024.1/netcdf/4.9.2; NCF=/home/app/intel/2024.1/netcdf-fortran/4.6.1; H5=/home/app/intel/2025.1.3/hdf5/1.14.4
+export PATH="$NC/bin:$NCF/bin:$H5/bin:$PATH"
+export LD_LIBRARY_PATH="$NCF/lib:$NC/lib:$H5/lib:${LD_LIBRARY_PATH:-}"
+build() {   # tag
+  local B="$S/build/$1"
+  mkdir -p "$B" || return 1
+  cmake -S "$S/src/fabm/src/drivers/0d" -B "$B" -DGOTM_BASE="$S/src/gotm_code" -DFABM_ERSEM_BASE="$S/src/ersem_$1" \
+    -DCMAKE_Fortran_COMPILER=ifx -DCMAKE_BUILD_TYPE=Release -DFABM_EMBED_VERSION=OFF -DGOTM_EMBED_VERSION=OFF \
+    -DNetCDF_ROOT="$NC" -DNETCDF_DIR="$NC" -DNetCDF_FORTRAN_PATH="$NCF" -DHDF5_ROOT="$H5" -DCMAKE_PREFIX_PATH="$NCF" \
+    > "$B/cmake.log" 2>&1 || return 1
+  cmake --build "$B" --target fabm0d -j 48 > "$B/build.log" 2>&1 || return 1
+  [[ -x "$B/fabm0d" ]] || return 1
+  echo "$1 binary sha256 $(sha256sum "$B/fabm0d" | cut -d' ' -f1)" > "$B/PROVENANCE.txt"
+}
+build base & pb=$!; build new & pn=$!
+wait $pb; rb=$?; wait $pn; rn=$?
+for t in base new; do cat "$S/build/$t/PROVENANCE.txt" 2>/dev/null || { echo "build $t failed"; tail -30 "$S/build/$t/build.log"; }; done
+(( rb == 0 && rn == 0 )) || die "build"
+
+# ---- runs (each in its own directory, serial, at the same time)
+YAML="$S/src/ersem_base/testcases/fabm-ersem-15.06-L4-ben-docdyn-iop.yaml"
+cmp -s "$YAML" "$S/src/ersem_new/testcases/fabm-ersem-15.06-L4-ben-docdyn-iop.yaml" || die "test case differs between the two trees"
+mkrun() {   # name binary switch(none|0|1) mode(year|step)
+  local R="$S/runs/$1"
+  mkdir -p "$R" || return 1
+  cp "$SETUP"/{run.nml,input.yaml,output.yaml,env_nns_annual.dat,wind.dat} "$R/" || return 1
+  "$PY" "$G/gate_check.py" make_yaml "$YAML" "$R/fabm.yaml" "$3" || return 1
+  if [[ "$4" == step ]]; then
+    sed -i -e 's/^stop=.*/stop="2008-01-01 02:00:00"/' -e 's/^ode_method=.*/ode_method=1/' "$R/run.nml" || return 1
+    sed -i -e 's/^   time_step: .*/   time_step: 1/' "$R/output.yaml" || return 1
+  fi
+  echo "binary $S/build/$2/fabm0d $(sha256sum "$S/build/$2/fabm0d" | cut -d' ' -f1); switch $3; mode $4" > "$R/RUNINFO.txt"
+  ( cd "$R" && "$S/build/$2/fabm0d" -y fabm.yaml > run.log 2>&1 ); local rc=$?
+  echo "rc=$rc" >> "$R/RUNINFO.txt"
+  return $rc
+}
+names=(base_r1 base_r2 new_off new_off0 new_on step_off step_on)
+specs=("base none year" "base none year" "new none year" "new 0 year" "new 1 year" "new 0 step" "new 1 step")
+pids=()
+for i in "${!names[@]}"; do mkrun "${names[$i]}" ${specs[$i]} & pids+=($!); done
+fail=0
+for i in "${!pids[@]}"; do
+  wait "${pids[$i]}"; rc=$?
+  echo "run ${names[$i]} rc $rc"
+  (( rc == 0 )) || { fail=1; tail -20 "$S/runs/${names[$i]}/run.log"; }
+done
+(( fail == 0 )) || die "a run failed"
+
+# ---- decision
+"$PY" "$G/gate_check.py" check "$S/runs" > "$S/gate_result.txt" 2>&1; rc=$?
+cat "$S/gate_result.txt"
+(( rc == 0 )) || die "gate_check exit $rc"
+echo "GATE PASS"
