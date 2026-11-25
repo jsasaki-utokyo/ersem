@@ -91,6 +91,12 @@ module ersem_primary_producer
       type (type_diagnostic_variable_id) :: id_ledger_puptake_N1p, id_ledger_puptake_TA
       type (type_diagnostic_variable_id) :: id_ledger_nuptake_N3n, id_ledger_nuptake_N4n, id_ledger_nuptake_TA
       type (type_diagnostic_variable_id) :: id_ledger_suptake_N5s
+      !---> jsasaki 2026-11-25: port of muse rev52 isw_no3red (muse docs/carb_s10m/rev52/design.md 2.4, 12 M2/M3): 1 = nitrate
+      ! assimilated by the producer returns 2 O2 per N (nitrate to amine is 8 e-: the O2-side equivalent of the 2 C per N reductant
+      ! of the MUSE bed producers under the CH2O convention; carbon, N and TA untouched); 0 (default) = former behaviour
+      integer :: isw_no3red
+      type (type_diagnostic_variable_id) :: id_ledger_no3red_O2o
+      !<--- jsasaki 2026-11-25
 
    contains
 
@@ -365,6 +371,14 @@ contains
             call self%register_diagnostic_variable(self%id_ledger_suptake_N5s, 'ledger_suptake_N5s', 'mmol Si/m^3/d', &
                  'ledger: net silicate uptake -> silicate', source=source_do)
       end if
+
+      !---> jsasaki 2026-11-25: port of muse rev52 isw_no3red: the diagnostic exists only with the switch on (off: no new output)
+      call self%get_parameter(self%isw_no3red, 'isw_no3red', '', &
+           'O2 released by nitrate assimilation, 2 O2 per N (0: off (former), 1: on)', default=0)
+      if (self%isw_no3red /= 0 .and. self%isw_no3red /= 1) call self%fatal_error('initialize', 'isw_no3red must be 0 or 1')
+      if (self%isw_no3red == 1) call self%register_diagnostic_variable(self%id_ledger_no3red_O2o, 'ledger_no3red_O2o', &
+           'mmol O_2/m^3/d', 'ledger: nitrate assimilation (2 O2 per N) -> oxygen', source=source_do)
+      !<--- jsasaki 2026-11-25
 
       ! Link to atmospheric CO2 (only if using CO2-enhanced primary production).
       if (self%cenh) call self%register_dependency(self%id_pco2a3,standard_variables%mole_fraction_of_carbon_dioxide_in_air)
@@ -794,6 +808,12 @@ contains
          _SET_ODE_(self%id_N3n,-fN3PIn)
          _SET_ODE_(self%id_N4n,-fN4PIn)
          _SET_ODE_(self%id_TA,  fN3PIn-fN4PIn) ! Alkalinity contributions: -1 for NO3, +1 for NH4
+         !---> jsasaki 2026-11-25: port of muse rev52 isw_no3red: second O2 source, after fN3PIn (>= 0) is known
+         if (self%isw_no3red == 1) then
+            _SET_ODE_(self%id_O2o, 2._rk*fN3PIn)
+            _SET_DIAGNOSTIC_(self%id_ledger_no3red_O2o, 2._rk*fN3PIn)
+         end if
+         !<--- jsasaki 2026-11-25
          if (self%isw_ledger == 1) then
             _SET_DIAGNOSTIC_(self%id_ledger_nuptake_N3n,-fN3PIn)
             _SET_DIAGNOSTIC_(self%id_ledger_nuptake_N4n,-fN4PIn)
