@@ -6,6 +6,20 @@ it is switched, and what a configuration must set to use it. The newest entry is
 
 ---
 
+## 2026-11-22 to 2026-11-23: TB-FVCOM box-ersem changes (FABM box driver, Tokyo Bay)
+
+Made by the box-ersem work (`~/Github/TB-FVCOM/box-ersem`); records in its `docs/`. One line each: switch and default.
+
+| Commit | Module | Switch (default) | What | Record (`~/Github/TB-FVCOM/box-ersem/docs/`) |
+|---|---|---|---|---|
+| 41cfcee | `primary_producer`, `microzooplankton`, `mesozooplankton`, `benthos_shared_laws` | `isw_o2lim` (0 = off: nothing read, nothing registered) | O2 limitation of plankton aerobic metabolism (P1-P6, Z4-Z6): thresholded Hill factor `o2_limit` shared with the MUSE benthos; the withheld rest respiration goes to lysis / mortality | `plankton_o2_limitation.md` (review rounds 1-3 PASS) |
+| 13a6a05 | new `phyto_migration` (models `phyto_migration_target`, `phyto_migration_move`) | opt-in: only a configuration that declares the instances uses it | phytoplankton diel vertical migration by swimming; production yaml unchanged with the module compiled in (771 / 771 variables identical, job 7653670) | `phytoplankton_types.md` 11.3 |
+| bf61176, da38386 | `primary_producer` | `iswTemp` 3 = Rosso CTMI (default 1 unchanged; 2 unchanged apart from a logged warning); the light-response guard `sum /= 0` is a defect fix without switch | iswTemp 3 (valid for Topt > (Tmin + Tmax)/2); the guard removes NaN / division by zero at a zero gross rate (sum = -0 at a root of the iswTemp 2 cubic) and keeps every finite result, bit identical in the Q10 gate | `ersem_issues.md` section 1; `doc/phytoplankton_temperature_ctmi.md` |
+| ea83637 | `sulfur_cycle`, new `sulfur_laws` | `isw_law` (0 = legacy, untouched) | 1 = the shared water / bed sulfur laws of MUSE (mass action, per-reaction Q10), 32 Strang sub-passes of exact extents, sulfate anomaly SO4a, conserved total_reactive_sulfur; needs the box driver's step length (not available in fabm0d). **Never enable it together with the rev47 `common47` sulfur of the MUSE ERSEM copies**: they are two implementations of the same law (muse `docs/carb_s10m/rev52/box_ersem_intake.md` E6) | `sulfur_unification.md` |
+| 82d67a2 | `pom_decay` | none (defect fix; changes results of configurations that use `pom_decay`) | DIC of direct oxidation uses `ersem_shared` CMass 12.011 instead of a local 12.0 (12.0 created carbon) | `m1_deposition.md` section 6.1 |
+
+---
+
 ## 2026-11-25: MUSE rev52 model-consistency fixes (tank closures, Nippon Steel mesocosm paper)
 
 **Why it matters to every ERSEM configuration of this fork.** An equation inventory of the coupled MUSE (bed) +
@@ -20,11 +34,23 @@ default reproduces the former behaviour bit for bit (verified: gate c0, muse rev
 | Module | Switch (default) | `1` means | Status in this repository | Record |
 |---|---|---|---|---|
 | `src/dom_decay.F90` | `isw_law` (0 = former) | pure Q10 temperature law `th_q10(T, q10, Tref)` (no heat cut; the law the MUSE bed uses for DOC decay) and DIC produced with `ersem_shared` CMass 12.011 instead of the local 12.0 (which lost 0.09 % of the oxidised carbon) | **in this repository** (e5282f5, ad03fc7) | rev52 triage T01, T02 |
-| `src/primary_producer.F90` | `isw_no3red` (0 = former) | nitrate assimilated by P1-P4 returns 2 O2 per N (nitrate to amine is 8 e-): closes the electron balance of the producers under the CH2O convention (section 2); carbon, N and TA untouched; diagnostic `ledger_no3red_O2o` registered only when on | **pending port** (executed in the muse rev52 source copy `~/Github/muse/docs/carb_s10m/rev52/source/ersem/src/primary_producer.F90`) | rev52 design 2.4, M2/M3 |
-| `src/carbonate_engine.F90` | none (new public function) | `carbonate_engine_kw(T, S, Pbar, opt_pH_scale, opt_k_carbonic, opt_total_borate)`: K_W on the pH scale of the solve (used by the MUSE bed; fixes K_W on the SWS scale used with a total-scale pH) | **pending port** (same source copy) | rev52 triage T06 |
+| `src/primary_producer.F90` | `isw_no3red` (0 = former) | nitrate assimilated by P1-P4 returns 2 O2 per N (nitrate to amine is 8 e-): closes the electron balance of the producers under the CH2O convention (section 2); carbon, N and TA untouched; diagnostic `ledger_no3red_O2o` registered only when on | **in this repository** (a9bc3af; ported from the muse rev52 source copy that the s52 binary executed, merged into this fork's current file) | rev52 design 2.4, M2/M3 |
+| `src/carbonate_engine.F90` | none (new public function) | `carbonate_engine_kw(T, S, Pbar, opt_pH_scale, opt_k_carbonic, opt_total_borate)`: K_W on the pH scale of the solve (used by the MUSE bed; fixes K_W on the SWS scale used with a total-scale pH) | **in this repository** (a7ae58a; identical to the muse rev52 copy apart from the edit marks) | rev52 triage T06 |
 
-The port of the two pending items into this repository, with the same default-off behaviour and a bit-identity gate
-against the current head, is scheduled after the MUSE rev52 refit is adopted; this entry will then name the commits.
+**Port gate (2026-11-25, after the adoption of s52).** `tests/isw_no3red_gate/` (`gate.pjsub`, `gate_check.py`;
+decision of the passing run in `tests/isw_no3red_gate/gate_result_g15.txt`): the FABM 0-D driver built twice from
+one frozen FABM (f1c4ac1b) / GOTM (4a4754bd) copy with this repository at fc61123 (before the port) and a7ae58a (after),
+ifx Release, test case `testcases/fabm-ersem-15.06-L4-noben-docdyn-iop.yaml` on `ersem-setups/0d-aquarium` (one year,
+RK4, every variable in double precision; the benthic 15.06 test cases no longer initialise with this fork). Results
+(job 7685855): floor (base twice) identical; switch absent and `isw_no3red: 0` both **bit identical** to the base
+(365 / 365 variables, 2929 records); `isw_no3red: 1`: `ledger_no3red_O2o` = 2 x `fN3PIn` exactly at every record of
+P1-P4, the term active (year-mean 0.06-0.17 mmol O2 m-3 d-1 per producer); one Euler step from the same state (the
+year-run state of 2008-09-27 15:00, where all of P1-P4 take up nitrate) under constant forcing: only the state O2_o
+differs, and **O2 gained = dt x 2 x nitrate uptake** to round-off (0.0478846870129 mmol O2 m-3, difference 4.6e-15,
+round-off bound 2.3e-13).
+gpt-6.2-sol review of the port: `doc/port52-review-20261125.md`, 7 rounds, **PASS** in round 7 (job 7686024); the
+port itself matched the executed rev52 code in every round; the findings concerned the gate (P3 not exercised, wind,
+commit guard, documentation) and were fixed, gate rerun PASS (job 7685855, `tests/isw_no3red_gate/gate_result_g15.txt`).
 
 Not ported, muse-only (exist only in the muse source copies since rev47-rev51, not in this repository): the photon
 cap of gross production and its accepted-extent counters (`receipts51`, `accepted_gross51`, `accepted_resp51`, in
