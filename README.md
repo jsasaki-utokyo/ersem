@@ -23,6 +23,10 @@ This repository contains a development version of ERSEM (European Regional Seas 
 
 This version includes the following extensions for estuarine/coastal applications:
 
+The dated history of changes, with their switches and what a configuration must set, is in
+[doc/MODIFICATION_HISTORY.md](doc/MODIFICATION_HISTORY.md) (read it before reusing a configuration; 2026-11-25: O2:C
+convention and DOC-decay law, MUSE rev52).
+
 | Module | Description | Documentation |
 |--------|-------------|:-------------:|
 | **pom_decay** | POM hydrolysis (POM→DOM) and direct oxidation (POM→CO₂+O₂) with independent rate constants. Parameterizes particle-attached microbial communities absent from standard ERSEM. Enables reproduction of mid-water hypoxia in eutrophic estuaries. | [doc/pom_decay_module.md](doc/pom_decay_module.md) |
