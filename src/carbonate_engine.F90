@@ -71,6 +71,7 @@ module carbonate_engine
    public :: carbonate_engine_solve, convert_pH_scale
    public :: carbonate_engine_solve_porewater, calcite_ksp
    public :: calcium_of_salinity   ! jsasaki 2026-10-07: family E
+   public :: carbonate_engine_kw   ! jsasaki 2026-11-25: port of muse rev52 T06: K_W on the pH scale of the solve
 
 contains
 
@@ -838,6 +839,19 @@ contains
       if (.not. (H2CO3 >= 0.0_rk .and. HCO3 >= 0.0_rk .and. CO3 >= 0.0_rk .and. fCO2_atm >= 0.0_rk &
                  .and. H2CO3 < 1.0_rk .and. HCO3 < 1.0_rk .and. CO3 < 1.0_rk)) success = .false.
    end subroutine carbonate_engine_solve_porewater
+
+   !---> jsasaki 2026-11-25: port of muse rev52 T06: K_W = [H+][OH-] (mol2 kg-2) exactly as the pore-water solve uses it: Millero (1995) on the
+   ! seawater scale, converted to the requested pH scale by calc_equilibrium_constants (convert_K), with the same temperature clamp
+   function carbonate_engine_kw(T, S, Pbar, opt_pH_scale, opt_k_carbonic, opt_total_borate) result(KW)
+      real(rk), intent(in) :: T, S, Pbar
+      integer,  intent(in) :: opt_pH_scale, opt_k_carbonic, opt_total_borate
+      real(rk) :: KW
+      real(rk) :: K0, K1, K2, KB, BT, ST, FT, Tclamp
+      Tclamp = max(T, -2.0_rk)
+      call calc_total_concentrations(S, opt_total_borate, BT, ST, FT)
+      call calc_equilibrium_constants(Tclamp, S, Pbar, opt_pH_scale, opt_k_carbonic, .false., ST, FT, K0, K1, K2, KB, KW)
+   end function carbonate_engine_kw
+   !<--- jsasaki 2026-11-25
 
    ! the depth scale-conversion factors of calc_equilibrium_constants (same formulas)
    subroutine scale_factors(T, S, Pbar, ST, FT, free2total, free2sws, fH, KS, KF)
