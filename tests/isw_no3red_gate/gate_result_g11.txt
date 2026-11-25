@@ -1,0 +1,38 @@
+# Gate of the isw_no3red / carbonate_engine_kw port: decision of job 7685554 (tests/isw_no3red_gate/gate.pjsub, TAG g11)
+# sources
+fabm f1c4ac1b06136f7c2901ef7ad494b3eb14cfc01a tree 26d4aa05fa644faf22d19bb7e5145ba54833a75d9c8c1dcd0fdccde490db44c9
+gotm 4a4754bdbecdf581fe89c599471b08c3b83b0981 (working tree copy) tree f7d6f67bb4839aab289059da8a5295b74f865afa473d7da5934f4067b6a26c96
+ersem_base fc6112336ac007e29eccca74c69c4449cee1651d
+ersem_new a7ae58a2f6ec8b704f9c3c6b62491e53e0051b07
+setup 3b312d6b694e423cd2ccf9b88666b181a691079e /home/pj24001722/ku40000343/Github/ersem-setups/0d-aquarium
+# binaries
+base binary sha256 14af8ad50bc03af7a05cfdd58c5739aa6352857c8b2af670c26d84e096f3c32d
+new binary sha256 30408bea9e847b2800ee31b59a8c66d99b57ae920b3bc351024c860bfc1f89eb
+# decision (gate_check.py check)
+G0 base_r1: 2929 records, last time 31622400 s, expected 31622400 s (seconds since 2008-01-01 00:00:00): PASS
+G0 base_r2: 2929 records, last time 31622400 s, expected 31622400 s (seconds since 2008-01-01 00:00:00): PASS
+G0 new_off: 2929 records, last time 31622400 s, expected 31622400 s (seconds since 2008-01-01 00:00:00): PASS
+G0 new_off0: 2929 records, last time 31622400 s, expected 31622400 s (seconds since 2008-01-01 00:00:00): PASS
+G0 new_on: 2929 records, last time 31622400 s, expected 31622400 s (seconds since 2008-01-01 00:00:00): PASS
+G0 step_off: 5 records, last time 7200 s, expected 7200 s (seconds since 2008-06-01 12:00:00): PASS
+G0 step_on: 5 records, last time 7200 s, expected 7200 s (seconds since 2008-06-01 12:00:00): PASS
+G0 step_ref: 4 records, last time 5400 s, expected 5400 s (seconds since 2008-06-01 12:30:00): PASS
+G1 floor base_r1 == base_r2: 365 variables, 0 differ []: PASS
+G2 new_off == base_r1: 365 variables, 0 differ []: PASS
+G2 new_off0 == base_r1: 365 variables, 0 differ []: PASS
+G3 base_r1: no3red variables []: PASS
+G3 base_r2: no3red variables []: PASS
+G3 new_off: no3red variables []: PASS
+G3 new_off0: no3red variables []: PASS
+G3 step_off: no3red variables []: PASS
+G3 P1: ledger_no3red_O2o == 2 fN3PIn at 2929 records: PASS; max ledger 1.51855 mmol O2/m3/d, mean 0.16771
+G3 P2: ledger_no3red_O2o == 2 fN3PIn at 2929 records: PASS; max ledger 1.06346 mmol O2/m3/d, mean 0.13832
+G3 P3: ledger_no3red_O2o == 2 fN3PIn at 2929 records: PASS; max ledger 0.891554 mmol O2/m3/d, mean 0.137131
+G3 P4: ledger_no3red_O2o == 2 fN3PIn at 2929 records: PASS; max ledger 0.330509 mmol O2/m3/d, mean 0.0606853
+G3 the term is active (sum |ledger| > 0): PASS
+    year: O2_o(on) - O2_o(off): final 0.356718, max 5.66216 mmol O2/m3 (orientation only)
+G4 record 0 (t = 0 s) identical except the new diagnostic: PASS
+G4 record 1 (t = 1800 s): state variables that differ: ['O2_o']; diagnostics that differ: ['O2_AOU', 'O2_eO2mO2', 'O2_fair', 'pel_nit_fN4N3n']: PASS
+    (record 0 of step_on, evaluated at its own start time: dt x sum ledger 0.0019998143523282672; orientation only)
+G4 O2 gained in the step 0 -> 1: 0.0020038875053387528 mmol O2/m3; dt x sum ledger_no3red_O2o (step_ref record 0) 0.0020038875053006227; 2 x dt x sum fN3PIn 0.0020038875053006227; |difference| 3.81e-14 (round-off bound 2.66e-13): PASS
+GATE PASS

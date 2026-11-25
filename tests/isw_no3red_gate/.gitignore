@@ -1,0 +1,2 @@
+# scheduler logs of gate.pjsub (the decision of the passing run is committed as gate_result_*.txt)
+*.out

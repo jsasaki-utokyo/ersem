@@ -1,19 +1,23 @@
 #!/bin/bash
 #PJM -L rscgrp=a-batch
-#PJM -L node=1
-#PJM -L elapse=00:50:00
+#PJM -L vnode=1
+#PJM -L vnode-core=16
+#PJM -L elapse=00:20:00
 #PJM -j
 #PJM -X
 # Gate of the port of the muse rev52 changes (primary_producer isw_no3red, carbonate_engine_kw) into this repository.
 #   pjsub -x BASE_SHA=<ersem commit before the port>,NEW_SHA=<ersem commit with the port>,TAG=<run tag> gate.pjsub
 # Builds the FABM 0-D driver (fabm/src/drivers/0d) twice from ONE frozen FABM / GOTM copy, with the ERSEM tree of
 # BASE_SHA and of NEW_SHA (git archive, never the working tree), same compiler and flags; runs the ERSEM test case
-# testcases/fabm-ersem-15.06-L4-ben-docdyn-iop.yaml on the 0-D aquarium setup of ersem-setups (one year, RK4):
+# testcases/fabm-ersem-15.06-L4-noben-docdyn-iop.yaml on the 0-D aquarium setup of ersem-setups (one year, RK4; the
+# benthic 15.06 test cases no longer initialise with this fork: G2 o_deep is not a setting, H1 needs O2o, jobs 7685360,
+# 7685384):
 #   base_r1, base_r2  : base binary twice (repeatability floor)
 #   new_off           : new binary, switch absent (default 0)
 #   new_off0          : new binary, isw_no3red: 0 written for P1-P4
 #   new_on            : new binary, isw_no3red: 1 for P1-P4
 #   step_off, step_on : new binary, Euler, 4 steps of 1800 s, every step written (one-step O2 check)
+#   step_ref          : as step_on, started one step later from the same initial state (the rates of step_on's first step)
 # and decides PASS / FAIL with gate_check.py (fail-closed; skill bit-identity-gates). Work and output stay in the
 # git-ignored scratch/port52_<TAG>/ of this repository. jsasaki 2026-11-25: new file.
 set -uo pipefail
@@ -42,6 +46,15 @@ tree_hash() { (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 s
 cat "$S/SNAPSHOT.txt"
 
 # ---- builds (site layer: GENKAI Intel stack, as fabm/src/drivers/0d/install_ersem_fabm0d_genkai.sh)
+# fabm/src/drivers/0d needs CMake >= 3.22; the system cmake is older: general software lives under $HOME/local (owner rule)
+CMAKE=""
+for c in "$HOME/local/bin/cmake" "$(command -v cmake)"; do
+  [[ -x "$c" ]] || continue
+  v=$("$c" --version | head -1 | awk '{print $3}')
+  if [[ "$(printf '%s\n' 3.22 "$v" | sort -V | head -1)" == 3.22 ]]; then CMAKE="$c"; break; fi
+done
+[[ -n "$CMAKE" ]] || die "no cmake >= 3.22"
+"$CMAKE" --version | head -1
 type module >/dev/null 2>&1 || source /usr/share/Modules/init/bash
 set +eu; module load intel/2025.1.3 >/dev/null 2>&1; set -u
 command -v ifx >/dev/null 2>&1 || die "ifx not on PATH"
@@ -51,11 +64,11 @@ export LD_LIBRARY_PATH="$NCF/lib:$NC/lib:$H5/lib:${LD_LIBRARY_PATH:-}"
 build() {   # tag
   local B="$S/build/$1"
   mkdir -p "$B" || return 1
-  cmake -S "$S/src/fabm/src/drivers/0d" -B "$B" -DGOTM_BASE="$S/src/gotm_code" -DFABM_ERSEM_BASE="$S/src/ersem_$1" \
+  "$CMAKE" -S "$S/src/fabm/src/drivers/0d" -B "$B" -DGOTM_BASE="$S/src/gotm_code" -DFABM_ERSEM_BASE="$S/src/ersem_$1" \
     -DCMAKE_Fortran_COMPILER=ifx -DCMAKE_BUILD_TYPE=Release -DFABM_EMBED_VERSION=OFF -DGOTM_EMBED_VERSION=OFF \
     -DNetCDF_ROOT="$NC" -DNETCDF_DIR="$NC" -DNetCDF_FORTRAN_PATH="$NCF" -DHDF5_ROOT="$H5" -DCMAKE_PREFIX_PATH="$NCF" \
     > "$B/cmake.log" 2>&1 || return 1
-  cmake --build "$B" --target fabm0d -j 48 > "$B/build.log" 2>&1 || return 1
+  "$CMAKE" --build "$B" --target fabm0d -j 8 > "$B/build.log" 2>&1 || return 1
   [[ -x "$B/fabm0d" ]] || return 1
   echo "$1 binary sha256 $(sha256sum "$B/fabm0d" | cut -d' ' -f1)" > "$B/PROVENANCE.txt"
 }
@@ -65,15 +78,23 @@ for t in base new; do cat "$S/build/$t/PROVENANCE.txt" 2>/dev/null || { echo "bu
 (( rb == 0 && rn == 0 )) || die "build"
 
 # ---- runs (each in its own directory, serial, at the same time)
-YAML="$S/src/ersem_base/testcases/fabm-ersem-15.06-L4-ben-docdyn-iop.yaml"
-cmp -s "$YAML" "$S/src/ersem_new/testcases/fabm-ersem-15.06-L4-ben-docdyn-iop.yaml" || die "test case differs between the two trees"
+YAML="$S/src/ersem_base/testcases/fabm-ersem-15.06-L4-noben-docdyn-iop.yaml"
+cmp -s "$YAML" "$S/src/ersem_new/testcases/fabm-ersem-15.06-L4-noben-docdyn-iop.yaml" || die "test case differs between the two trees"
 mkrun() {   # name binary switch(none|0|1) mode(year|step)
   local R="$S/runs/$1"
   mkdir -p "$R" || return 1
   cp "$SETUP"/{run.nml,input.yaml,output.yaml,env_nns_annual.dat,wind.dat} "$R/" || return 1
   "$PY" "$G/gate_check.py" make_yaml "$YAML" "$R/fabm.yaml" "$3" || return 1
-  if [[ "$4" == step ]]; then
-    sed -i -e 's/^stop=.*/stop="2008-01-01 02:00:00"/' -e 's/^ode_method=.*/ode_method=1/' "$R/run.nml" || return 1
+  sed -i -e 's/^   time_step: .*/&\n   xtype: double/' "$R/output.yaml" || return 1   # every variable in double precision
+  if [[ "$4" == step || "$4" == stepref ]]; then
+    # at noon in June, so that the producers take up nitrate in the first step (at midnight on 1 January they do not: job 7685440).
+    # stepref starts one step later from the same initial state: fabm0d evaluates the rates of the step 12:00 -> 12:30 with the
+    # time (zenith angle) of 12:30, so stepref's record 0 holds exactly the rates of step_on's first step (job 7685499)
+    local t0="2008-06-01 12:00:00"; [[ "$4" == stepref ]] && t0="2008-06-01 12:30:00"
+    sed -i -e "s/^start=.*/start=\"$t0\"/" -e 's/^stop=.*/stop="2008-06-01 14:00:00"/' -e 's/^ode_method=.*/ode_method=1/' \
+           -e "s/^env_file=.*/env_file='env_const.dat'/" "$R/run.nml" || return 1
+    # constant forcing: fabm0d evaluates a step's rates with the environment of the step's end (job 7685488)
+    "$PY" "$G/gate_check.py" make_env "$R/env_nns_annual.dat" "$R/env_const.dat" "2008-06-01 12:00:00" || return 1
     sed -i -e 's/^   time_step: .*/   time_step: 1/' "$R/output.yaml" || return 1
   fi
   echo "binary $S/build/$2/fabm0d $(sha256sum "$S/build/$2/fabm0d" | cut -d' ' -f1); switch $3; mode $4" > "$R/RUNINFO.txt"
@@ -81,8 +102,8 @@ mkrun() {   # name binary switch(none|0|1) mode(year|step)
   echo "rc=$rc" >> "$R/RUNINFO.txt"
   return $rc
 }
-names=(base_r1 base_r2 new_off new_off0 new_on step_off step_on)
-specs=("base none year" "base none year" "new none year" "new 0 year" "new 1 year" "new 0 step" "new 1 step")
+names=(base_r1 base_r2 new_off new_off0 new_on step_off step_on step_ref)
+specs=("base none year" "base none year" "new none year" "new 0 year" "new 1 year" "new 0 step" "new 1 step" "new 1 stepref")
 pids=()
 for i in "${!names[@]}"; do mkrun "${names[$i]}" ${specs[$i]} & pids+=($!); done
 fail=0
