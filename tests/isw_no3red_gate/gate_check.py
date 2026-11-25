@@ -157,7 +157,7 @@ def stop_seconds(run):
 
 
 def identical(a, b):
-    """0 identical, 1 differs; raises on anything that cannot be compared."""
+    """The list of variables whose bytes differ (empty = identical); raises on anything that cannot be compared."""
     if set(a) != set(b):
         raise ValueError(f'variable sets differ: {sorted(set(a) ^ set(b))}')
     diff = []
@@ -272,6 +272,7 @@ if __name__ == '__main__':
     try:
         if sys.argv[1] == 'make_yaml':
             sys.exit(make_yaml(*sys.argv[2:5]))
+        # jsasaki 2026-11-25: commands pick_state, set_state (review r1 #1) and make_env (constant forcing)
         if sys.argv[1] == 'pick_state':
             sys.exit(pick_state(sys.argv[2]))
         if sys.argv[1] == 'set_state':

@@ -41,7 +41,6 @@ NEW_FULL=$(git -C "$E" rev-parse --verify "$NEW_SHA^{commit}") || die "NEW_SHA i
 git -C "$E" merge-base --is-ancestor "$BASE_FULL" "$NEW_FULL" || die "BASE_SHA is not an ancestor of NEW_SHA"
 for item in "src/primary_producer.F90:isw_no3red" "src/carbonate_engine.F90:carbonate_engine_kw"; do
   f=${item%%:*}; w=${item##*:}
-  # grep reads the whole file (no -q): with pipefail, an early exit of grep -q would fail the pipeline through SIGPIPE (job 7685726)
   # jsasaki 2026-11-25: review r3 #2: each source read must succeed (an unreadable file is not a clean base)
   git -C "$E" show "$BASE_FULL:$f" > "$S/guard_base.F90" || die "cannot read $f at the base"
   git -C "$E" show "$NEW_FULL:$f" > "$S/guard_new.F90" || die "cannot read $f at the new commit"
@@ -151,6 +150,7 @@ runset() {   # names... (each "name binary switch mode"), all at the same time
 runset "base_r1 base none year" "base_r2 base none year" "new_off new none year" "new_off0 new 0 year" "new_on new 1 year" \
   || die "a year run failed"
 # jsasaki 2026-11-25: the step time is chosen from the finished new_off year run (review r1 #1)
+# jsasaki 2026-11-25: review r3 #4: every checker call uses the copy $CHK
 read -r STEP_T STEP_T1 STEP_T4 < <("$PY" "$CHK" pick_state "$S/runs/new_off/output.nc") || die "pick_state"
 STEP_T="${STEP_T/T/ }"; STEP_T1="${STEP_T1/T/ }"; STEP_T4="${STEP_T4/T/ }"
 echo "step start $STEP_T (reference $STEP_T1, stop $STEP_T4)"
@@ -158,6 +158,7 @@ echo "step start $STEP_T (reference $STEP_T1, stop $STEP_T4)"
 runset "step_off new 0 step" "step_on new 1 step" "step_ref new 1 stepref" || die "a step run failed"
 
 # ---- decision
+# jsasaki 2026-11-25: review r3 #4: the decision by the copied checker
 "$PY" "$CHK" check "$S/runs" > "$S/gate_result.txt" 2>&1; rc=$?
 cat "$S/gate_result.txt"
 (( rc == 0 )) || die "gate_check exit $rc"
