@@ -6,6 +6,21 @@ it is switched, and what a configuration must set to use it. The newest entry is
 
 ---
 
+## 2026-11-28: MUSE rev53 ERSEM text in the MUSE source copies (not in this repository)
+
+Made by the nippon-steel / muse rev53 work (`~/Github/muse/docs/carb_s10m/rev53/`; tank closures, adopted state s53, binary `fix53-v5a`); records `design.md`, `design_b.md`, `stage3.md`. The ERSEM modules are edited ONLY in the MUSE source copies
+`~/Github/muse/docs/carb_s10m/rev53/source/ersem/src/`; nothing was added to this repository by rev53 and the box-ersem build does not contain them. Every switch defaults to the former behaviour (all off: byte identical to the pinned rev52 binary).
+
+| Module (MUSE copy) | Switch / key (default) | What | Relation to this repository |
+|---|---|---|---|
+| `primary_producer`, `microzooplankton`, `mesozooplankton`, `benthos_shared_laws` | `isw_o2lim` (0) and its `o2lim_*` keys | O2 limitation of rest respiration and feeding, unmet part to lysis / mortality | the port of ersem 41cfcee (box-ersem), re-marked `jsasaki 2026-11-26: rev53 E1/E2` |
+| `primary_producer`, `pom_decay` | none | light-response guard (E4, ersem bf61176 + da38386) and shared `CMass` (E7, ersem 82d67a2) | ports of the commits named |
+| `bacteria_docdyn` | `o2law_mask` (0; bits 1 Q10 law, 2 uptake limiter, 4 saturation-dependent yield, 8 rest respiration with withheld maintenance), `o2law_K` (3.0), `o2law_n` (1.0); diagnostics `o2law_bits`, `o2law_F`, `o2law_rest_unl` and others | pelagic bacteria B1 O2 law (rev53 part B) | NEW in the MUSE copy only; not ported to this fork; port only with its gates (muse `docs/carb_s10m/rev53/stage2_merged.md`) |
+
+Adoption evidence: `~/Github/muse/docs/carb_s10m/rev53/stage3.md` (audited PASS), `~/Github/muse/docs/MODIFICATION_HISTORY.md` (2026-11-28 entry).
+
+---
+
 ## 2026-11-22 to 2026-11-23: TB-FVCOM box-ersem changes (FABM box driver, Tokyo Bay)
 
 Made by the box-ersem work (`~/Github/TB-FVCOM/box-ersem`); records in its `docs/`. One line each: switch and default.
