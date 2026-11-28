@@ -50,6 +50,7 @@ add_library(fabm_models_ersem OBJECT
             pom_decay.F90
             dom_decay.F90
             phyto_migration.F90       # jsasaki 2026-11-22: box-ersem PFT redesign: phytoplankton diel vertical migration
+            phyto_aggregation.F90     # jsasaki 2026-11-28: box-ersem aggregation sinking: shear coagulation transfer P1 <-> P1A
            )
 
 target_link_libraries(fabm_models_ersem PRIVATE fabm_base)

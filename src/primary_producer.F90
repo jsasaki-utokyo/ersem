@@ -97,6 +97,9 @@ module ersem_primary_producer
       integer :: isw_no3red
       type (type_diagnostic_variable_id) :: id_ledger_no3red_O2o
       !<--- jsasaki 2026-11-25
+      ! jsasaki 2026-11-28: aggregation_sinking.md 4.3, 5.1: 1 = zero-stock-safe producer for the aggregate pool P1A (no background
+      ! carbon, empty-stock ratios guarded so that an empty pool has exactly zero biological sources); 0 (default) = former behaviour
+      integer :: isw_agg_pool
 
    contains
 
@@ -219,6 +222,12 @@ contains
       call self%get_parameter(iopABS,  'iopABS', 'm^2/mg Chl','specific shortwave absorption', default=8.E-3_rk)
       call self%get_parameter(iopBBS,  'iopBBS', 'm^2/mg Chl','specific shortwave backscatter', default=3.E-3_rk)
       call self%get_parameter(c0,          'c0',     'mg C/m^3','background carbon concentration', default=0.0_rk)
+      !---> jsasaki 2026-11-28: aggregation_sinking.md 5.1: zero-stock-safe pool (P1A): no background of any constituent
+      call self%get_parameter(self%isw_agg_pool, 'isw_agg_pool', '', &
+           'zero-stock-safe aggregate pool: no background carbon, guarded empty-stock ratios (0: off (former), 1: on)', &
+           default=0, minimum=0, maximum=1)
+      if (self%isw_agg_pool == 1) c0 = 0.0_rk
+      !<--- jsasaki 2026-11-28
       call self%get_parameter(self%calcify,'calcify','',        'calcify',                         default=.false.)
       call self%get_parameter(self%rm,     'rm',     'm/d',     'background sinking velocity',     default=0.0_rk)
       call self%get_parameter(self%resm,   'resm',   'm/d',     'maximum nutrient-limitation-induced sinking velocity', default=0.0_rk)
@@ -428,6 +437,7 @@ contains
       real(rk) :: fPIR1c,fPIR2c
       real(rk) :: pco2a3,cenh
       real(rk) :: RainR, t
+      real(rk) :: cden   ! jsasaki 2026-11-28: aggregation_sinking.md 5.1
 
       real(rk),parameter :: onedayX = 1.0_rk
 
@@ -459,9 +469,17 @@ contains
 
          ! Ratios: phosphorus to carbon, nitrogen to carbon, chlorophyll to carbon.
          ! Note: these are protected against division by zero because c includes the background concentration.
-         qpc = p/c
-         qnc = n/c
-         ChlCpp = Chl/c
+         !---> jsasaki 2026-11-28: aggregation_sinking.md 5.1: isw_agg_pool = 1: an empty pool (c <= 0, no background) has
+         ! zero ratios instead of 0/0, so that all its biological sources are exactly zero
+         cden = c
+         if (self%isw_agg_pool == 1) then
+            if (cden <= 0.0_rk) cden = 1.0_rk
+         end if
+         qpc = p/cden
+         qnc = n/cden
+         ChlCpp = Chl/cden
+         if (self%isw_agg_pool == 1) ChlCpp = max(ChlCpp, 1.0e-30_rk)   ! a stock without chlorophyll: finite light response
+         !<--- jsasaki 2026-11-28
 
          ! Regulation factors...................................................
 
@@ -474,7 +492,7 @@ contains
          if (use_iron) then
             ! Limitation factor based on internal iron quota
             _GET_WITH_BACKGROUND_(self%id_f,f)
-            qfc = f/c
+            qfc = f/cden   ! jsasaki 2026-11-28: aggregation_sinking.md 5.1: guarded denominator (identical when isw_agg_pool = 0)
             iNf = MIN(1._rk,  &
                     MAX(ZeroX, (qfc-self%qflc) / (self%qfRc-self%qflc) ))
          else
@@ -896,6 +914,9 @@ contains
       _GET_WITH_BACKGROUND_(self%id_p,p)
       _GET_WITH_BACKGROUND_(self%id_n,n)
 
+      !---> jsasaki 2026-11-28: aggregation_sinking.md 5.1: an empty pool still has the prescribed sinking velocity
+      if (self%isw_agg_pool == 1 .and. c <= 0.0_rk) c = 1.0_rk
+      !<--- jsasaki 2026-11-28
       qpc = p/c
       qnc = n/c
 

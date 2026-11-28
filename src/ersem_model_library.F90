@@ -40,6 +40,7 @@ module ersem_model_library
    use ersem_pom_decay       ! jsasaki 2026-03-19: POM hydrolysis + direct oxidation
    use ersem_dom_decay       ! jsasaki 2026-03-20: bacteria-independent DOM oxidation
    use ersem_phyto_migration ! jsasaki 2026-11-22: box-ersem PFT redesign: phytoplankton diel vertical migration
+   use ersem_phyto_aggregation ! jsasaki 2026-11-28: box-ersem aggregation sinking: shear coagulation transfer P1 <-> P1A
 
    implicit none
 
@@ -105,6 +106,7 @@ contains
          !---> jsasaki 2026-11-22: box-ersem PFT redesign: phytoplankton diel vertical migration (phyto_migration.F90)
          case ('phyto_migration_target');                  allocate(type_ersem_phyto_migration_target::model)
          case ('phyto_migration_move');                    allocate(type_ersem_phyto_migration_move::model)
+         case ('phyto_aggregation');                       allocate(type_ersem_phyto_aggregation::model)  ! jsasaki 2026-11-28: box-ersem aggregation sinking
          !<--- jsasaki 2026-11-22
          ! Add new models here
          case default

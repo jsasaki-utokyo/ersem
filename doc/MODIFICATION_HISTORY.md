@@ -6,6 +6,19 @@ it is switched, and what a configuration must set to use it. The newest entry is
 
 ---
 
+## 2026-11-28: TB-FVCOM box-ersem aggregation sinking of diatoms (new default-off module, one default-off producer option)
+
+Made by the box-ersem work (`~/Github/TB-FVCOM/box-ersem`) from its registered design `docs/aggregation_sinking.md` (gpt-6.2-sol review, PASS in round 6; section 5.1). Nothing changes unless a configuration declares the new instances or sets the new key; with the module compiled in and no instance declared the model is bit identical to the previous build (gate I-G1, box-ersem `analysis/results/aggsink/gates/`).
+
+| Item | Switch (default) | What | Record (`~/Github/TB-FVCOM/box-ersem/docs/`) |
+|---|---|---|---|
+| new module `phyto_aggregation` (`src/phyto_aggregation.F90`, model name `ersem/phyto_aggregation`) | opt-in: only a configuration that declares an instance uses it | shear coagulation and break-up as a mass transfer between two pools of one functional type (single cells P1 and aggregates P1A) on c, n, p, s and chlorophyll: `k_agg = k0 + (8/pi) alpha_c gamma_c phi1` (single-cell volume fraction `phi1 = v_C C`), `k_dis = min(k_d <eps>/nu / gamma_b^2, k_dis_max)`; donor and receiver sources are equal and opposite, so every conserved quantity is unchanged. Turbulence input: the dissipation moments `box_shear_sqrt_dissipation`, `box_shear_dissipation` (`shear_source` 1) or one constant `box_shear_rate` (`shear_source` 2), linked by the host by standard variable name; `c_star` > 0 replaces the single-cell carbon of the collision term by a fixed value. Needs a host that supplies those variables (the TB-FVCOM box driver does; FVCOM-FABM and fabm0d do not) | `aggregation_sinking.md` sections 4.3, 5.1; gates I-G3, I-G4 |
+| `primary_producer` | `isw_agg_pool` (0 = off: nothing read, nothing registered, former arithmetic) | 1 = zero-stock-safe producer for the aggregate pool: no background carbon (`c0` forced to 0), the empty-stock ratios (p/c, n/c, Chl/c, Fe/c, also in `get_sinking_rate`) guarded so that an empty pool has exactly zero biological sources and keeps the prescribed sinking velocity `rm`; the arithmetic of a stock above zero is unchanged | `aggregation_sinking.md` 5.1; gates I-G1, I-G2 |
+
+Not changed: grazers do not eat the aggregate pool (the configuration generator adds no prey coupling); the configuration generator is box-ersem `analysis/aggsink/make_agg_yaml.py`.
+
+---
+
 ## 2026-11-28: MUSE rev53 ERSEM text in the MUSE source copies (not in this repository)
 
 Made by the nippon-steel / muse rev53 work (`~/Github/muse/docs/carb_s10m/rev53/`; tank closures, adopted state s53, binary `fix53-v5a`); records `design.md`, `design_b.md`, `stage3.md`. The ERSEM modules are edited ONLY in the MUSE source copies
